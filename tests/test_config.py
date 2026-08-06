@@ -5,7 +5,7 @@ import os
 import tempfile
 import unittest
 
-from jira_metrics import config
+from team_metrics import config
 
 
 class LoadEnvTests(unittest.TestCase):
@@ -32,7 +32,7 @@ class FileConfigTests(unittest.TestCase):
         return path
 
     def test_missing_optional_config_file_falls_back_to_defaults(self):
-        # Run from an empty temp dir so a stray ./.jira-metrics.json elsewhere
+        # Run from an empty temp dir so a stray ./.team-metrics.json elsewhere
         # (e.g. the repo root) can never leak into this test.
         with tempfile.TemporaryDirectory() as tmp:
             cwd = os.getcwd()
@@ -247,6 +247,24 @@ class NoGitlabNoPersonalFlagTests(unittest.TestCase):
         env["GITLAB_TOKEN"] = "gtok"
         run_cfg = config.parse_args(["--sprint-ids", "1"], environ=env)
         self.assertEqual(run_cfg.gitlab_env.base_url, "https://gitlab.example.com")
+
+    def test_fetch_flags_default_to_true(self):
+        run_cfg = config.parse_args(["--sprint-ids", "1"], environ=self._env())
+        self.assertTrue(run_cfg.fetch_mr_details)
+        self.assertTrue(run_cfg.fetch_pipeline_user)
+
+    def test_no_mr_details_flag_disables_fetch_mr_details(self):
+        run_cfg = config.parse_args(["--sprint-ids", "1", "--no-mr-details"], environ=self._env())
+        self.assertFalse(run_cfg.fetch_mr_details)
+        self.assertTrue(run_cfg.fetch_pipeline_user)  # unaffected
+
+    def test_no_pipeline_users_flag_disables_fetch_pipeline_user(self):
+        # Flag is plural ("users"), matching cli.py's own --no-pipeline-users
+        # exactly — RunConfig.fetch_pipeline_user (singular) is unrelated to
+        # the flag spelling, it just names the gitlab_client.py parameter.
+        run_cfg = config.parse_args(["--sprint-ids", "1", "--no-pipeline-users"], environ=self._env())
+        self.assertTrue(run_cfg.fetch_mr_details)  # unaffected
+        self.assertFalse(run_cfg.fetch_pipeline_user)
 
 
 class HistorySprintCountTests(unittest.TestCase):

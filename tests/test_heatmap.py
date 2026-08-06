@@ -2,7 +2,7 @@ import _pathfix  # noqa: F401
 
 import unittest
 
-from jira_metrics import heatmap, metrics, model
+from team_metrics import heatmap, metrics, model
 
 from helpers import dt, make_cfg, make_issue
 

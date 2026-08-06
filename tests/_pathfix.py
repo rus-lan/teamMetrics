@@ -1,4 +1,4 @@
-"""Adds `scripts/` to sys.path so `import jira_metrics` works.
+"""Adds `scripts/` to sys.path so `import team_metrics` works.
 
 `python3 -m unittest discover -s tests` (this project's required test
 command) treats `tests/` as its own top_level_dir and imports every test

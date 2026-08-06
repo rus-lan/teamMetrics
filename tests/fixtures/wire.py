@@ -1,6 +1,6 @@
 """Real API-shaped Jira/GitLab fixture data + the FakeOpener wiring for it.
 
-Shapes are taken from the actual client code (scripts/jira_metrics/
+Shapes are taken from the actual client code (scripts/team_metrics/
 jira_client.py, gitlab_client.py) and the two specs the team-lead brief
 named (.research/jira-metrics-source/SPEC.md §2,
 .research/ai-integration-metrics/SPEC.md §4). Anywhere a shape isn't pinned

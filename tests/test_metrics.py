@@ -2,7 +2,7 @@ import _pathfix  # noqa: F401
 
 import unittest
 
-from jira_metrics import metrics, model
+from team_metrics import metrics, model
 
 from helpers import dt, make_cfg, make_issue, make_timeline
 

@@ -45,7 +45,12 @@ INPUT CONTRACT (this module fetches nothing itself — SPEC.md's own note:
   `Sprint(name=s.name, start=s.start_at, end=s.end_at)`.
 - `pipelines` (optional): the flat `pipelines` list gitlab_client's
   GitLabClient.pipelines()/fetch_team_data() returns, only used for the
-  per-person pipeline-success share (`personal_pipeline_success`, m6).
+  per-person pipeline-success share (`personal_pipeline_success`, m6). When
+  every record's `user_lookup_available` is False (gitlab_client.py's
+  `fetch_pipeline_user=False` opt-out), `pipeline_success_rate` is None for
+  everyone AND `WARN_PIPELINE_SUCCESS_UNAVAILABLE` is added to
+  `person["warnings"]`, so a renderer can show "нет данных" instead of a
+  bare dash indistinguishable from "genuinely zero pipelines".
 
 Source-skill bug NOT ported: if no sprint scope is given, the source skill's
 JQL silently falls back to "every issue in a final status assigned to the
@@ -76,6 +81,7 @@ WARN_COMMITS_UNAVAILABLE = "WARN_COMMITS_UNAVAILABLE"
 WARN_CHANGES_COUNT_UNAVAILABLE = "WARN_CHANGES_COUNT_UNAVAILABLE"
 WARN_MR_CYCLE_TIME_UNAVAILABLE = "WARN_MR_CYCLE_TIME_UNAVAILABLE"
 WARN_TASK_CYCLE_TIME_UNAVAILABLE = "WARN_TASK_CYCLE_TIME_UNAVAILABLE"
+WARN_PIPELINE_SUCCESS_UNAVAILABLE = "WARN_PIPELINE_SUCCESS_UNAVAILABLE"
 
 # Source skill's jira_collector.py constants (SPEC.md §8), ported verbatim —
 # these are the ai-metrics spec's own vocabulary, distinct from (and not to
@@ -319,6 +325,23 @@ def personal_pipeline_success(user: str, pipelines: list) -> Optional[float]:
     return _safe_div(successful, len(user_pipes))
 
 
+def _pipeline_user_attribution_missing(pipelines: list) -> bool:
+    """True when pipeline data exists but its per-user attribution was
+    never collected — gitlab_client.py's `pipelines(fetch_pipeline_user=
+    False)` opt-out (audit finding 2a) sets every record's
+    `user_lookup_available` to False, which makes `personal_pipeline_success`
+    return None for EVERYONE the same way it would for a person who
+    genuinely triggered zero pipelines. Those two states must stay
+    distinguishable: "we did not ask" is not "the answer is zero". A record
+    with no `user_lookup_available` key at all (older/hand-built data) is
+    treated as available, matching pre-opt-out behaviour.
+
+    Deliberately NOT inferred from `user_username == ""` counts or sample
+    size — that's exactly the state-blurring the renderer refused to guess
+    at; the signal must come from the collector's own flag."""
+    return any(not p.get("user_lookup_available", True) for p in pipelines)
+
+
 # --------------------------------------------------------------------------
 # Per-person snapshot (SPEC.md §5.4/§5.8)
 # --------------------------------------------------------------------------
@@ -390,6 +413,10 @@ def personal_metrics(
     linked_keys = {m.get("jira_key") for m in my_mrs if m.get("jira_key")}
     mr_with_key = sum(1 for m in my_mrs if m.get("jira_key"))
 
+    pipelines = pipelines or []
+    if _pipeline_user_attribution_missing(pipelines):
+        warnings.append(WARN_PIPELINE_SUCCESS_UNAVAILABLE)
+
     return {
         "user": user,
         "mr_count": len(my_mrs),
@@ -428,7 +455,7 @@ def personal_metrics(
         "linked_tasks": len(linked_keys),
         "mr_with_jira_key": mr_with_key,
         "mr_per_task": _safe_div(mr_with_key, len(linked_keys)),
-        "pipeline_success_rate": personal_pipeline_success(user, pipelines or []),
+        "pipeline_success_rate": personal_pipeline_success(user, pipelines),
         "warnings": warnings,
     }
 

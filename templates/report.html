@@ -1083,7 +1083,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
   <div class="wrap">
     <div class="head-top">
       <div>
-        <div class="eyebrow">Jira team metrics</div>
+        <div class="eyebrow">Team metrics</div>
         <!-- {{HEADER_TITLE}} -->
         <h1 class="report-title">{{HEADER_TITLE}}</h1>
         <p class="report-subtitle">
@@ -1868,6 +1868,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
 
         <section class="section" id="sec-person-note">
           <div class="section-body">
+            <!-- {{PERSON_LIGHT_MODE_CAVEAT}} -->{{PERSON_LIGHT_MODE_CAVEAT}}
             <!-- {{PERSONAL_SEMANTICS_NOTE}} -->
             {{PERSONAL_SEMANTICS_NOTE}}
           </div>
@@ -2482,6 +2483,10 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
       <div class="param">
         <dt>Длительность запуска</dt>
         <dd><!-- {{PARAM_RUN_DURATION}} -->{{PARAM_RUN_DURATION}}</dd>
+      </div>
+      <div class="param">
+        <dt>Запросов к GitLab</dt>
+        <dd><!-- {{PARAM_GITLAB_REQUEST_COUNT}} -->{{PARAM_GITLAB_REQUEST_COUNT}}</dd>
       </div>
       <!-- {{LOOP_FOOTER_PARAMS_END}} -->
     </dl>

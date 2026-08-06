@@ -3,11 +3,14 @@ import _pathfix  # noqa: F401
 import http.client
 import json
 import socket
+import time
 import unittest
+import unittest.mock
 import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 
-from jira_metrics import gitlab_client as gc
+from team_metrics import gitlab_client as gc
 
 UTC = timezone.utc
 
@@ -105,6 +108,101 @@ class RetryLoopTests(unittest.TestCase):
         self.assertEqual(client._backoff_delay(2), 2.0)
         self.assertEqual(client._backoff_delay(4), 8.0)  # 0.5*2^4 == cap exactly
         self.assertEqual(client._backoff_delay(10), 8.0)  # far above cap -> clamped
+
+
+class RetryAfterTests(unittest.TestCase):
+    """Audit finding 1: a 429 used to sleep our own backoff regardless of
+    what the server asked for. Mirrors jira_client.py's Retry-After rule:
+    only ever widens the delay, capped at max_retry_after."""
+
+    def test_retry_after_widens_the_delay_beyond_our_backoff(self):
+        client = _client(base_backoff=0.5, max_backoff=8.0)
+        sleeps = []
+        client._sleep = lambda d: sleeps.append(d)
+        calls = {"n": 0}
+
+        def fake_attempt(url):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return b"slow down", 429, {"retry-after": "5"}, None
+            return b"ok", 200, {}, None
+
+        client._attempt = fake_attempt
+        client._do("Op", "/x")
+        # Our own backoff for attempt 0 is 0.5s; Retry-After: 5 must win.
+        self.assertEqual(sleeps, [5.0])
+
+    def test_our_backoff_wins_when_retry_after_is_shorter(self):
+        client = _client(base_backoff=5.0, max_backoff=30.0)
+        sleeps = []
+        client._sleep = lambda d: sleeps.append(d)
+        calls = {"n": 0}
+
+        def fake_attempt(url):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return b"slow down", 429, {"retry-after": "1"}, None
+            return b"ok", 200, {}, None
+
+        client._attempt = fake_attempt
+        client._do("Op", "/x")
+        self.assertEqual(sleeps, [5.0])  # our backoff (5.0) > Retry-After (1.0)
+
+    def test_retry_after_is_capped_at_max_retry_after(self):
+        client = _client(base_backoff=0.5, max_backoff=8.0, max_retry_after=60.0)
+        sleeps = []
+        client._sleep = lambda d: sleeps.append(d)
+        calls = {"n": 0}
+
+        def fake_attempt(url):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return b"slow down", 429, {"retry-after": "600"}, None  # server asks for 10 minutes
+            return b"ok", 200, {}, None
+
+        client._attempt = fake_attempt
+        client._do("Op", "/x")
+        self.assertEqual(sleeps, [60.0])  # clamped to max_retry_after, not 600
+
+    def test_missing_retry_after_header_falls_back_to_backoff(self):
+        client = _client(base_backoff=0.5, max_backoff=8.0)
+        sleeps = []
+        client._sleep = lambda d: sleeps.append(d)
+        calls = {"n": 0}
+
+        def fake_attempt(url):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return b"slow down", 429, {}, None  # no Retry-After header at all
+            return b"ok", 200, {}, None
+
+        client._attempt = fake_attempt
+        client._do("Op", "/x")
+        self.assertEqual(sleeps, [0.5])
+
+    def test_non_429_retryable_status_ignores_retry_after(self):
+        # A 503 carrying a Retry-After (some proxies add it to any 5xx)
+        # must not honour it — the rule is scoped to 429 specifically.
+        client = _client(base_backoff=0.5, max_backoff=8.0)
+        sleeps = []
+        client._sleep = lambda d: sleeps.append(d)
+        calls = {"n": 0}
+
+        def fake_attempt(url):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return b"down", 503, {"retry-after": "30"}, None
+            return b"ok", 200, {}, None
+
+        client._attempt = fake_attempt
+        client._do("Op", "/x")
+        self.assertEqual(sleeps, [0.5])
+
+    def test_parse_retry_after_seconds_rejects_garbage(self):
+        self.assertIsNone(gc._parse_retry_after_seconds(""))
+        self.assertIsNone(gc._parse_retry_after_seconds("not-a-number"))
+        self.assertIsNone(gc._parse_retry_after_seconds("-5"))
+        self.assertEqual(gc._parse_retry_after_seconds("12"), 12.0)
 
 
 class AttemptExceptionHandlingTests(unittest.TestCase):
@@ -265,6 +363,46 @@ class PaginationTests(unittest.TestCase):
         client._do = lambda op, path, params=None: (json.dumps([{"id": 1}, {"id": 2}]).encode(), {})
         with self.assertRaises(gc.GitLabError):
             client._get_paginated("Op", "/x", per_page=2)
+
+    def test_deadline_triggers_before_the_first_page_when_already_expired(self):
+        """Audit finding 3: the page cap bounds pages, not wall-clock — a
+        slow-but-responding server could hold a run open indefinitely.
+        Mirrors jira_client.py's test pattern: expire the deadline before
+        the first check by monkeypatching the module constant."""
+        original = gc._MAX_PAGINATION_SECONDS
+        gc._MAX_PAGINATION_SECONDS = -1.0
+        try:
+            client = _client()
+            calls = {"n": 0}
+
+            def fake_do(op, path, params=None):
+                calls["n"] += 1
+                return b"[]", {}
+
+            client._do = fake_do
+            with self.assertRaises(gc.GitLabError) as ctx:
+                client._get_paginated("Op", "/x", per_page=100)
+            self.assertEqual(ctx.exception.code, "UNREACHABLE")
+            self.assertEqual(calls["n"], 0)  # never even got to make a request
+        finally:
+            gc._MAX_PAGINATION_SECONDS = original
+
+    def test_deadline_triggers_mid_pagination_on_a_slow_server(self):
+        original = gc._MAX_PAGINATION_SECONDS
+        gc._MAX_PAGINATION_SECONDS = 0.01
+        try:
+            client = _client()
+
+            def fake_do(op, path, params=None):
+                time.sleep(0.02)  # slower than the deadline
+                return json.dumps([{"id": 1}, {"id": 2}]).encode(), {}  # full page -> keeps paginating
+
+            client._do = fake_do
+            with self.assertRaises(gc.GitLabError) as ctx:
+                client._get_paginated("Op", "/x", per_page=2)
+            self.assertEqual(ctx.exception.code, "UNREACHABLE")
+        finally:
+            gc._MAX_PAGINATION_SECONDS = original
 
 
 class FormatWindowBoundTests(unittest.TestCase):
@@ -479,6 +617,81 @@ class MissingDiffStatsTests(unittest.TestCase):
         self.assertEqual(record["jira_key"], "")
 
 
+class FetchMrDetailsOptOutTests(unittest.TestCase):
+    """Audit finding 2a: fetch_details=False must skip both per-MR fan-outs
+    (detail GET, commits GET) entirely, and the affected fields must degrade
+    to their existing UNAVAILABLE representation — never a fabricated 0."""
+
+    def _mr(self, **overrides):
+        base = {
+            "iid": 7,
+            "created_at": "2026-01-01T00:00:00Z",
+            "merged_at": "2026-01-02T00:00:00Z",
+            "title": "",
+            "description": "",
+            "author": {"username": "alice"},
+            "state": "merged",
+            "web_url": "https://x",
+        }
+        base.update(overrides)
+        return base
+
+    def test_opt_out_skips_detail_and_commit_fetches_entirely(self):
+        client = _client()
+
+        def boom(*a, **kw):
+            raise AssertionError("fetch_details=False must not call _mr_detail/_mr_commit_count")
+
+        client._mr_detail = boom
+        client._mr_commit_count = boom
+        record = client._build_mr_record("g/p", 1, self._mr(), fetch_details=False)
+        self.assertIsNone(record["additions"])
+        self.assertIsNone(record["deletions"])
+        self.assertFalse(record["diff_stats_available"])
+        self.assertIsNone(record["commits_count"])
+        self.assertFalse(record["commits_count_available"])
+        self.assertIsNone(record["changes_count"])
+        self.assertFalse(record["changes_count_available"])
+
+    def test_opt_out_still_uses_list_row_values_when_present(self):
+        client = _client()
+
+        def boom(*a, **kw):
+            raise AssertionError("list row already had everything; must not fetch")
+
+        client._mr_detail = boom
+        client._mr_commit_count = boom
+        record = client._build_mr_record(
+            "g/p", 1, self._mr(additions=5, deletions=1, changes_count=2, commits=4), fetch_details=False
+        )
+        self.assertEqual(record["additions"], 5)
+        self.assertTrue(record["diff_stats_available"])
+        self.assertEqual(record["commits_count"], 4)
+        self.assertTrue(record["commits_count_available"])
+
+    def test_default_still_fetches_details(self):
+        client = _client()
+        client._mr_detail = lambda pid, iid: {"additions": 1, "deletions": 1, "changes_count": 1, "commits": 1}
+        client._mr_commit_count = lambda pid, iid: 1
+        record = client._build_mr_record("g/p", 1, self._mr())  # fetch_details defaults to True
+        self.assertTrue(record["diff_stats_available"])
+        self.assertTrue(record["commits_count_available"])
+
+    def test_merge_requests_threads_the_flag_through(self):
+        client = _client()
+        client._mr_list = lambda project_id, author, state, window: [self._mr()]
+
+        captured = {}
+
+        def fake_build(project_path, project_id, mr, *, fetch_details=True):
+            captured["fetch_details"] = fetch_details
+            return {"author": "alice"}
+
+        client._build_mr_record = fake_build
+        client.merge_requests("g/p", 1, ["alice"], states=("merged",), fetch_mr_details=False)
+        self.assertFalse(captured["fetch_details"])
+
+
 class MrCycleTimeBuildTests(unittest.TestCase):
     """`_build_mr_record`'s cycle time (negative-delta -> None,
     round(sec/3600, 2)) had zero direct coverage."""
@@ -647,6 +860,42 @@ class ReadOnlyGuaranteeTests(unittest.TestCase):
         self.assertFalse(captured["has_data"])
 
 
+class ProxyOptOutTests(unittest.TestCase):
+    """trust_env_proxy (default True, unchanged behavior): the opener keeps
+    urllib's default ProxyHandler, so http_proxy/https_proxy from the
+    environment are honored — often desired on a corporate network.
+    trust_env_proxy=False builds the opener without a working proxy handler,
+    for a caller that wants every request to go direct regardless of the
+    environment. Mirrors JiraClient's identical parameter/tests
+    (test_jira_client.py's ProxyOptOutTests) for symmetry."""
+
+    def _proxy_handler(self, client):
+        return next((h for h in client._opener.handlers if isinstance(h, urllib.request.ProxyHandler)), None)
+
+    def test_default_keeps_the_environment_proxy_handler(self):
+        with unittest.mock.patch.dict("os.environ", {"https_proxy": "http://proxy.example.com:8080"}):
+            client = gc.GitLabClient("https://gitlab.example.com", "tok", sleep=lambda _d: None)
+            handler = self._proxy_handler(client)
+            self.assertIsNotNone(handler)
+            self.assertEqual(handler.proxies.get("https"), "http://proxy.example.com:8080")
+
+    def test_opt_out_ignores_the_environment_proxy(self):
+        with unittest.mock.patch.dict("os.environ", {"https_proxy": "http://proxy.example.com:8080"}):
+            client = gc.GitLabClient(
+                "https://gitlab.example.com", "tok", sleep=lambda _d: None, trust_env_proxy=False
+            )
+            handler = self._proxy_handler(client)
+            # No active proxy handler at all -> every request goes direct.
+            self.assertIsNone(handler)
+
+    def test_explicit_opener_bypasses_the_proxy_setting_entirely(self):
+        # A caller-supplied opener (as ReadOnlyGuaranteeTests uses) is used
+        # as-is; trust_env_proxy is irrelevant once `opener` is given.
+        sentinel = object()
+        client = gc.GitLabClient("https://gitlab.example.com", "tok", opener=sentinel, trust_env_proxy=False)
+        self.assertIs(client._opener, sentinel)
+
+
 class MergeRequestsFanOutTests(unittest.TestCase):
     def test_fans_out_over_authors_and_states_and_preserves_all_results(self):
         client = _client(max_workers=2)
@@ -655,7 +904,7 @@ class MergeRequestsFanOutTests(unittest.TestCase):
             return [{"iid": f"{author}-{state}"}]
 
         client._mr_list = fake_mr_list
-        client._build_mr_record = lambda project_path, project_id, mr: {"author": mr["iid"]}
+        client._build_mr_record = lambda project_path, project_id, mr, **kw: {"author": mr["iid"]}
 
         records = client.merge_requests("g/p", 1, ["alice", "bob"], states=("merged", "closed"))
         self.assertEqual(
@@ -681,7 +930,7 @@ class MergeRequestsFaultToleranceTests(unittest.TestCase):
             return [{"iid": f"{author}-{state}"}]
 
         client._mr_list = fake_mr_list
-        client._build_mr_record = lambda project_path, project_id, mr: {"author": mr["iid"]}
+        client._build_mr_record = lambda project_path, project_id, mr, **kw: {"author": mr["iid"]}
         errors = []
         records = client.merge_requests("g/p", 1, ["alice", "ghost"], states=("merged",), errors=errors)
         self.assertEqual([r["author"] for r in records], ["alice-merged"])
@@ -696,7 +945,7 @@ class MergeRequestsFaultToleranceTests(unittest.TestCase):
             raise gc.GitLabError("ListMergeRequests", "bad token", code="AUTH_FAILED", status_code=401)
 
         client._mr_list = fake_mr_list
-        client._build_mr_record = lambda project_path, project_id, mr: {}
+        client._build_mr_record = lambda project_path, project_id, mr, **kw: {}
         with self.assertRaises(gc.GitLabError) as ctx:
             client.merge_requests("g/p", 1, ["alice"], states=("merged",))
         self.assertEqual(ctx.exception.code, "AUTH_FAILED")
@@ -708,7 +957,7 @@ class MergeRequestsFaultToleranceTests(unittest.TestCase):
             raise gc.GitLabError("ListMergeRequests", "gone", code="NOT_FOUND", status_code=404)
 
         client._mr_list = fake_mr_list
-        client._build_mr_record = lambda project_path, project_id, mr: {}
+        client._build_mr_record = lambda project_path, project_id, mr, **kw: {}
         records = client.merge_requests("g/p", 1, ["ghost"], states=("merged",))  # no errors= given
         self.assertEqual(records, [])
 
@@ -756,27 +1005,6 @@ class CurrentUserTests(unittest.TestCase):
             client.current_user()
         self.assertEqual(ctx.exception.code, "UNREACHABLE")
 
-
-class UserDisplayNameTests(unittest.TestCase):
-    def test_returns_name_on_success(self):
-        client = _client()
-        client._attempt = lambda url: (json.dumps([{"username": "alice", "name": "Alice A"}]).encode(), 200, {}, None)
-        self.assertEqual(client.user_display_name("alice"), "Alice A")
-
-    def test_returns_none_on_error(self):
-        client = _client()
-        client._attempt = lambda url: (b"nope", 404, {}, None)
-        self.assertIsNone(client.user_display_name("alice"))
-
-    def test_returns_none_when_user_list_empty(self):
-        client = _client()
-        client._attempt = lambda url: (b"[]", 200, {}, None)
-        self.assertIsNone(client.user_display_name("ghost"))
-
-    def test_falls_back_to_username_when_name_is_blank(self):
-        client = _client()
-        client._attempt = lambda url: (json.dumps([{"username": "alice", "name": ""}]).encode(), 200, {}, None)
-        self.assertEqual(client.user_display_name("alice"), "alice")
 
 
 class CoverageRecordTests(unittest.TestCase):
@@ -853,12 +1081,66 @@ class PipelineJobUserTests(unittest.TestCase):
         self.assertEqual(client._pipeline_job_user(1, 42), ("", ""))
 
 
+class FetchPipelineUserOptOutTests(unittest.TestCase):
+    """Audit finding 2a: fetch_pipeline_user=False must skip the per-
+    pipeline jobs fan-out entirely, and the skip must be distinguishable
+    (user_lookup_available=False) from "looked up, genuinely nobody"."""
+
+    def test_opt_out_skips_the_fan_out_entirely(self):
+        client = _client()
+
+        def boom(*a, **kw):
+            raise AssertionError("fetch_pipeline_user=False must not call _pipeline_job_user")
+
+        client._pipeline_list = lambda project_id, window: [{"id": 1, "status": "success"}]
+        client._pipeline_job_user = boom
+        records = client.pipelines("g/p", 1, fetch_pipeline_user=False)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["user_username"], "")
+        self.assertEqual(records[0]["user_name"], "")
+        self.assertFalse(records[0]["user_lookup_available"])
+
+    def test_default_still_looks_up_and_marks_available(self):
+        client = _client()
+        client._pipeline_list = lambda project_id, window: [{"id": 1, "status": "success"}]
+        client._pipeline_job_user = lambda project_id, pipeline_id: ("alice", "Alice A")
+        records = client.pipelines("g/p", 1)  # fetch_pipeline_user defaults to True
+        self.assertEqual(records[0]["user_username"], "alice")
+        self.assertTrue(records[0]["user_lookup_available"])
+
+    def test_lookup_attempted_but_genuinely_empty_still_marks_available(self):
+        # Distinguishes "we tried and found nobody" from "we never tried".
+        client = _client()
+        client._pipeline_list = lambda project_id, window: [{"id": 1, "status": "success"}]
+        client._pipeline_job_user = lambda project_id, pipeline_id: ("", "")
+        records = client.pipelines("g/p", 1)
+        self.assertEqual(records[0]["user_username"], "")
+        self.assertTrue(records[0]["user_lookup_available"])
+
+    def test_fetch_team_data_threads_the_flag_through(self):
+        client = _client()
+        client.project_id = lambda path: 1
+        client.merge_requests = lambda path, pid, employees, **kw: []
+        client.deployments = lambda path, pid, window=None: []
+        client.coverage = lambda path, pid, window=None: []
+
+        captured = {}
+
+        def fake_pipelines(path, pid, window=None, fetch_pipeline_user=True):
+            captured["fetch_pipeline_user"] = fetch_pipeline_user
+            return []
+
+        client.pipelines = fake_pipelines
+        gc.fetch_team_data(client, projects=["g/a"], employees=["alice"], fetch_pipeline_user=False)
+        self.assertFalse(captured["fetch_pipeline_user"])
+
+
 class FetchTeamDataTests(unittest.TestCase):
     def test_concatenates_across_projects(self):
         client = _client()
         client.project_id = lambda path: {"g/a": 1, "g/b": 2}[path]
-        client.merge_requests = lambda path, pid, employees, window=None, errors=None: [{"project": path}]
-        client.pipelines = lambda path, pid, window=None: [{"project": path}]
+        client.merge_requests = lambda path, pid, employees, **kw: [{"project": path}]
+        client.pipelines = lambda path, pid, **kw: [{"project": path}]
         client.deployments = lambda path, pid, window=None: [{"project": path}]
         client.coverage = lambda path, pid, window=None: [{"project": path}]
         result = gc.fetch_team_data(client, projects=["g/a", "g/b"], employees=["alice"])
@@ -889,8 +1171,8 @@ class FetchTeamDataTests(unittest.TestCase):
             return 1
 
         client.project_id = resolve
-        client.merge_requests = lambda path, pid, employees, window=None, errors=None: []
-        client.pipelines = lambda path, pid, window=None: []
+        client.merge_requests = lambda path, pid, employees, **kw: []
+        client.pipelines = lambda path, pid, **kw: []
         client.deployments = lambda path, pid, window=None: []
         client.coverage = lambda path, pid, window=None: []
         result = gc.fetch_team_data(client, projects=["g/missing", "g/ok"], employees=["alice"])
@@ -910,7 +1192,7 @@ class FetchTeamDataTests(unittest.TestCase):
         client = _client()
         client.project_id = lambda path: 1
 
-        def fake_merge_requests(path, pid, employees, window=None, errors=None):
+        def fake_merge_requests(path, pid, employees, window=None, errors=None, **kw):
             if errors is not None:
                 errors.append(
                     {"project": path, "author": "renamed-user", "state": "merged", "code": "NOT_FOUND", "message": "user not found"}
@@ -918,13 +1200,88 @@ class FetchTeamDataTests(unittest.TestCase):
             return [{"project": path, "author": "alice"}]
 
         client.merge_requests = fake_merge_requests
-        client.pipelines = lambda path, pid, window=None: []
+        client.pipelines = lambda path, pid, **kw: []
         client.deployments = lambda path, pid, window=None: []
         client.coverage = lambda path, pid, window=None: []
         result = gc.fetch_team_data(client, projects=["g/a"], employees=["alice", "renamed-user"])
         self.assertEqual(len(result["merge_requests"]), 1)
         self.assertEqual(len(result["mr_fetch_errors"]), 1)
         self.assertEqual(result["mr_fetch_errors"][0]["author"], "renamed-user")
+
+
+class _FakeResp:
+    def __init__(self, status, body):
+        self.status = status
+        self.headers = {}
+        self._body = body
+
+    def read(self):
+        return json.dumps(self._body).encode()
+
+
+class _FakeOpener:
+    """A fake urllib opener so the REAL GitLabClient._attempt() executes
+    (and increments the real request counter) — request-count tests must
+    exercise the actual counting code, not a stubbed _attempt that skips
+    over it."""
+
+    def __init__(self, responder):
+        self._responder = responder
+
+    def open(self, req, timeout=None):
+        status, body = self._responder(req.full_url)
+        return _FakeResp(status, body)
+
+
+def _fixture_responder(url):
+    if "/merge_requests" in url:
+        return 200, []
+    if "/pipelines" in url:
+        return 200, []
+    if "/deployments" in url:
+        return 200, []
+    return 200, {"id": 1}  # the plain project_id lookup
+
+
+class RequestCountTests(unittest.TestCase):
+    """Audit finding 2b: fetch_team_data() must return an accurate count of
+    actual HTTP round trips made during that call, scoped to just that call
+    (never cumulative across a client reused for multiple runs)."""
+
+    def test_request_count_matches_a_known_fixture_run(self):
+        client = gc.GitLabClient(
+            "https://gitlab.example.com", "tok", opener=_FakeOpener(_fixture_responder), sleep=lambda d: None
+        )
+        result = gc.fetch_team_data(client, projects=["g/p"], employees=["alice"])
+        # 1 project_id + 2 MR-state fetches (merged, closed) + 1 pipeline
+        # list (empty -> no per-pipeline fan-out) + 1 deployments list +
+        # 1 coverage list (empty -> no GetPipeline follow-up) = 6 requests.
+        self.assertEqual(result["request_count"], 6)
+        self.assertEqual(client.request_count, 6)
+
+    def test_request_count_is_scoped_to_one_call_not_cumulative(self):
+        client = gc.GitLabClient(
+            "https://gitlab.example.com", "tok", opener=_FakeOpener(_fixture_responder), sleep=lambda d: None
+        )
+        first = gc.fetch_team_data(client, projects=["g/p"], employees=["alice"])
+        second = gc.fetch_team_data(client, projects=["g/p"], employees=["alice"])
+        self.assertEqual(first["request_count"], second["request_count"])  # not doubled on the 2nd run
+        self.assertEqual(client.request_count, first["request_count"] + second["request_count"])
+
+    def test_request_count_includes_retries(self):
+        calls = {"n": 0}
+
+        def flaky_then_ok(url):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                return 503, "down"
+            return 200, {"id": 1}
+
+        client = gc.GitLabClient(
+            "https://gitlab.example.com", "tok", opener=_FakeOpener(flaky_then_ok), sleep=lambda d: None
+        )
+        client.project_id("g/p")
+        self.assertEqual(client.request_count, 3)  # 2 failed attempts + 1 success, all real HTTP round trips
 
 
 if __name__ == "__main__":

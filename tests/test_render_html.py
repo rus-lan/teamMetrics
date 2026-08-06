@@ -12,9 +12,9 @@ import re
 import unittest
 from html.parser import HTMLParser
 
-from jira_metrics import jira_client as jc
-from jira_metrics import model, report_data
-from jira_metrics import render_html as rh
+from team_metrics import jira_client as jc
+from team_metrics import model, report_data
+from team_metrics import render_html as rh
 
 from helpers import dt
 
@@ -74,30 +74,45 @@ class FakeJiraClient:
 
 
 class FakeGitLabClient:
+    """Duck-typed stub matching gitlab_client.GitLabClient's public surface —
+    only what glc.fetch_team_data() calls. No network involvement. Kept in
+    the same shape as tests/test_report_data.py's double so the two stay
+    consistent rather than drifting into two different fakes."""
+
     def __init__(self, project_ids, mrs_by_project=None, pipelines_by_project=None, deployments_by_project=None, coverage_by_project=None):
         self._project_ids = project_ids
         self._mrs = mrs_by_project or {}
         self._pipelines = pipelines_by_project or {}
         self._deployments = deployments_by_project or {}
         self._coverage = coverage_by_project or {}
-        self.mr_calls = []
+        self.mr_calls = []  # [(path, authors_tuple, window)]
+        # fetch_team_data() reads client.request_count before and after its
+        # own call and reports the delta — one "request" per stubbed method
+        # call is a fine duck-typed stand-in since this fake never does real
+        # HTTP.
+        self.request_count = 0
 
     def project_id(self, path):
+        self.request_count += 1
         return self._project_ids.get(path)
 
-    def merge_requests(self, path, project_id, authors, *, states=(), window=None, errors=None):
+    def merge_requests(self, path, project_id, authors, *, states=(), window=None, errors=None, fetch_mr_details=True):
         self.mr_calls.append((path, tuple(authors), window))
+        self.request_count += 1
         if not authors:
             return []
         return list(self._mrs.get(path, []))
 
-    def pipelines(self, path, project_id, *, window=None):
+    def pipelines(self, path, project_id, *, window=None, fetch_pipeline_user=True):
+        self.request_count += 1
         return list(self._pipelines.get(path, []))
 
     def deployments(self, path, project_id, *, window=None):
+        self.request_count += 1
         return list(self._deployments.get(path, []))
 
     def coverage(self, path, project_id, *, window=None):
+        self.request_count += 1
         return list(self._coverage.get(path, []))
 
 
@@ -279,7 +294,7 @@ class MarkerCommentDeduplicationTests(unittest.TestCase):
         # at the real content position, doubling every value's payload.
         report = build_multi_sprint_report(with_gitlab=True)
         out = rh.render_html(report)
-        self.assertEqual(out.count("jira-team-metrics"), 1)
+        self.assertEqual(out.count("team-metrics"), 1)
 
 
 # --------------------------------------------------------------------------
@@ -839,6 +854,102 @@ class PersonCardExtraStatsTests(unittest.TestCase):
         html = self._card_html({"rework_share": None, "pipeline_success_rate": None})
         self.assertIn('data-status="none"><div class="stat-label">доля переработок', html)
         self.assertIn('data-status="none"><div class="stat-label">успешность пайплайнов', html)
+
+    @staticmethod
+    def _pipeline_stat_block(html):
+        # Scope to just the pipeline-success .stat div, by walking balanced
+        # <div>/</div> tags from its opening tag — the card's MR bar chart
+        # also says "нет данных" in its own aria-label whenever the
+        # fixture's sprints list is empty, which would false-positive a
+        # fixed-window or unscoped substring check.
+        label_at = html.index('<div class="stat-label">успешность пайплайнов')
+        start = html.rindex('<div class="stat"', 0, label_at)
+        depth = 0
+        end = start
+        for m in re.finditer(r"<div\b[^>]*>|</div>", html[start:]):
+            end = start + m.end()
+            depth += 1 if m.group(0).startswith("<div") else -1
+            if depth == 0:
+                break
+        return html[start:end]
+
+    def test_pipeline_success_three_states_are_distinguishable(self):
+        # State 1 — not collected (fetch_pipeline_user=False this run):
+        # pipeline_success_rate=None + WARN_PIPELINE_SUCCESS_UNAVAILABLE.
+        # Must render as "нет данных", the same signal the MR diff-stats
+        # gap already uses — never a bare, unexplained dash.
+        not_collected = self._pipeline_stat_block(self._card_html({
+            "pipeline_success_rate": None, "warnings": ["WARN_PIPELINE_SUCCESS_UNAVAILABLE"],
+        }))
+        self.assertIn("нет данных", not_collected)
+        self.assertIn("badge-na", not_collected)
+
+        # State 2 — collected, genuinely zero pipelines for this person: no
+        # warning code, plain none-state, no "нет данных" badge.
+        genuinely_none = self._pipeline_stat_block(self._card_html({"pipeline_success_rate": None, "warnings": []}))
+        self.assertNotIn("нет данных", genuinely_none)
+        self.assertIn('data-status="none"', genuinely_none)
+
+        # State 3 — a real measurement must never be flagged as unavailable.
+        real_value = self._pipeline_stat_block(self._card_html({"pipeline_success_rate": 0.6, "warnings": []}))
+        self.assertNotIn("нет данных", real_value)
+        self.assertIn("60", real_value)
+
+
+class LightModeAuditTests(unittest.TestCase):
+    """Audit finding 2b (request_count) and 2a (fetch_mr_details/
+    fetch_pipeline_user opt-outs) — the footer must show the actual GitLab
+    request cost, and a run built with the heavy fan-outs skipped must say
+    so somewhere a reader will see, not just as a suspiciously low number."""
+
+    @staticmethod
+    def _person_tab_ctx(params_extra):
+        report = {
+            "params": dict({"gitlab_request_count": None, "gitlab_fetch_mr_details": None,
+                             "gitlab_fetch_pipeline_user": None}, **params_extra),
+            "personal": {"available": True, "data": {"people": []}},
+            "engineering": {"available": False},
+            "gitlab_fetch_issues": {"skipped_projects": [], "mr_fetch_errors": []},
+            "semantics_notes": [],
+        }
+        ctx: dict = {}
+        rh.build_person_tab(report, ctx)
+        return ctx
+
+    def test_request_count_renders_with_a_gitlab_specific_label(self):
+        ctx: dict = {}
+        rh.build_footer({"params": {"gitlab_request_count": 342}, "gitlab_fetch_issues": {}}, ctx)
+        self.assertIn("342", ctx["PARAM_GITLAB_REQUEST_COUNT"])
+        self.assertIn("GitLab", ctx["PARAM_GITLAB_REQUEST_COUNT"])
+
+    def test_request_count_is_a_dash_when_gitlab_was_never_configured(self):
+        ctx: dict = {}
+        rh.build_footer({"params": {"gitlab_request_count": None}, "gitlab_fetch_issues": {}}, ctx)
+        self.assertEqual(ctx["PARAM_GITLAB_REQUEST_COUNT"], rh.EM_DASH)
+
+    def test_no_caveat_when_both_heavy_fetches_ran(self):
+        ctx = self._person_tab_ctx({"gitlab_fetch_mr_details": True, "gitlab_fetch_pipeline_user": True})
+        self.assertEqual(ctx["PERSON_LIGHT_MODE_CAVEAT"], "")
+
+    def test_caveat_names_mr_details_when_that_fetch_was_skipped(self):
+        ctx = self._person_tab_ctx({"gitlab_fetch_mr_details": False, "gitlab_fetch_pipeline_user": True})
+        self.assertIn("УРЕЗАННЫЙ РЕЖИМ", ctx["PERSON_LIGHT_MODE_CAVEAT"])
+        self.assertIn("детали MR", ctx["PERSON_LIGHT_MODE_CAVEAT"])
+        self.assertNotIn("привязка пайплайнов", ctx["PERSON_LIGHT_MODE_CAVEAT"])
+
+    def test_caveat_names_pipeline_user_when_that_fetch_was_skipped(self):
+        ctx = self._person_tab_ctx({"gitlab_fetch_mr_details": True, "gitlab_fetch_pipeline_user": False})
+        self.assertIn("привязка пайплайнов", ctx["PERSON_LIGHT_MODE_CAVEAT"])
+        self.assertNotIn("детали MR", ctx["PERSON_LIGHT_MODE_CAVEAT"])
+
+    def test_full_render_places_caveat_on_the_personal_tab(self):
+        report = build_multi_sprint_report(with_gitlab=True)
+        report["params"]["gitlab_fetch_mr_details"] = False
+        report["params"]["gitlab_fetch_pipeline_user"] = False
+        out = rh.render_html(report)
+        self.assertIn("УРЕЗАННЫЙ РЕЖИМ", out)
+        person_section = out[out.index('id="panel-person"'):out.index('id="panel-eng"')]
+        self.assertIn("УРЕЗАННЫЙ РЕЖИМ", person_section)
 
 
 # --------------------------------------------------------------------------

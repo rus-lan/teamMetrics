@@ -3,7 +3,7 @@ import _pathfix  # noqa: F401
 import random
 import unittest
 
-from jira_metrics import forecast
+from team_metrics import forecast
 
 
 class PercentileTests(unittest.TestCase):

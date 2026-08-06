@@ -6,9 +6,9 @@ import _pathfix  # noqa: F401
 import dataclasses
 import unittest
 
-from jira_metrics import jira_client as jc
-from jira_metrics import metrics as metrics_mod
-from jira_metrics import model, report_data
+from team_metrics import jira_client as jc
+from team_metrics import metrics as metrics_mod
+from team_metrics import model, report_data
 
 from helpers import dt, make_cfg
 
@@ -568,23 +568,35 @@ class FakeGitLabClient:
         self._deployments = deployments_by_project or {}
         self._coverage = coverage_by_project or {}
         self.mr_calls = []  # [(path, authors_tuple, window)]
+        self.pipelines_calls = []  # [fetch_pipeline_user, ...]
+        # fetch_team_data() reads client.request_count before and after its
+        # own call and reports the delta — one "request" per stubbed method
+        # call is a fine duck-typed stand-in since this fake never does real
+        # HTTP.
+        self.request_count = 0
 
     def project_id(self, path):
+        self.request_count += 1
         return self._project_ids.get(path)
 
-    def merge_requests(self, path, project_id, authors, *, states=(), window=None, errors=None):
-        self.mr_calls.append((path, tuple(authors), window))
+    def merge_requests(self, path, project_id, authors, *, states=(), window=None, errors=None, fetch_mr_details=True):
+        self.mr_calls.append((path, tuple(authors), window, fetch_mr_details))
+        self.request_count += 1
         if not authors:
             return []
         return list(self._mrs.get(path, []))
 
-    def pipelines(self, path, project_id, *, window=None):
+    def pipelines(self, path, project_id, *, window=None, fetch_pipeline_user=True):
+        self.pipelines_calls.append(fetch_pipeline_user)
+        self.request_count += 1
         return list(self._pipelines.get(path, []))
 
     def deployments(self, path, project_id, *, window=None):
+        self.request_count += 1
         return list(self._deployments.get(path, []))
 
     def coverage(self, path, project_id, *, window=None):
+        self.request_count += 1
         return list(self._coverage.get(path, []))
 
 
@@ -704,6 +716,34 @@ class BuildCombinedReportTests(unittest.TestCase):
         )
         self.assertIn("skipped_projects", report["gitlab_fetch_issues"])
         self.assertIn("mr_fetch_errors", report["gitlab_fetch_issues"])
+
+    def test_request_count_and_opt_out_flags_echoed_into_params_when_gitlab_used(self):
+        report = report_data.build_combined_report(
+            self.client, sprint_ids=[500], now=dt(2026, 2, 7),
+            gitlab_client_obj=self.gitlab, gitlab_projects=["group/proj"], employees=["alice"],
+        )
+        # 1 project_id + 1 merge_requests + 1 pipelines + 1 deployments + 1
+        # coverage call against the single stubbed project -> 5.
+        self.assertEqual(report["params"]["gitlab_request_count"], 5)
+        self.assertIs(report["params"]["gitlab_fetch_mr_details"], True)
+        self.assertIs(report["params"]["gitlab_fetch_pipeline_user"], True)
+
+    def test_opt_out_flags_are_threaded_through_to_the_gitlab_client_calls(self):
+        report_data.build_combined_report(
+            self.client, sprint_ids=[500], now=dt(2026, 2, 7),
+            gitlab_client_obj=self.gitlab, gitlab_projects=["group/proj"], employees=["alice"],
+            fetch_mr_details=False, fetch_pipeline_user=False,
+        )
+        self.assertEqual(self.gitlab.mr_calls[0][3], False)  # fetch_mr_details reached merge_requests()
+        self.assertEqual(self.gitlab.pipelines_calls, [False])  # fetch_pipeline_user reached pipelines()
+
+    def test_params_gitlab_fields_are_none_when_gitlab_not_configured(self):
+        report = report_data.build_combined_report(
+            self.client, sprint_ids=[500], now=dt(2026, 2, 7), gitlab_client_obj=None,
+        )
+        self.assertIsNone(report["params"]["gitlab_request_count"])
+        self.assertIsNone(report["params"]["gitlab_fetch_mr_details"])
+        self.assertIsNone(report["params"]["gitlab_fetch_pipeline_user"])
 
     def test_semantics_notes_are_nonempty_russian_prose(self):
         report = report_data.build_combined_report(

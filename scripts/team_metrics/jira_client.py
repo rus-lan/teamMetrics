@@ -573,6 +573,21 @@ class JiraClient:
     <=4 parallel requests, 30s per-attempt timeout, 3 retries (4 attempts) on
     429/5xx/network errors with backoff min(500ms*2^attempt, 8s), Retry-After
     honored on 429 capped at 60s; other 4xx never retried (SPEC §2).
+
+    Redirects: the opener is built with _NoRedirect, whose redirect_request()
+    always returns None — per CPython's urllib.request.HTTPRedirectHandler,
+    that makes a 3xx fall through to an HTTPError instead of urllib silently
+    issuing a second request to whatever host the Location header names,
+    carrying the Authorization: Bearer <PAT> header with it.
+
+    Proxies: by default (trust_env_proxy=True, unchanged from before this
+    parameter existed) the opener still includes urllib's default
+    ProxyHandler, so http_proxy/https_proxy/no_proxy from the environment
+    are honored and the PAT travels through whatever they point at — normal
+    and often desired on a corporate network. Pass trust_env_proxy=False to
+    build the opener without a working ProxyHandler (an empty-dict
+    ProxyHandler({}) replaces the default one and picks up no environment
+    proxy), so every request goes direct regardless of the environment.
     """
 
     def __init__(
@@ -587,6 +602,8 @@ class JiraClient:
         max_backoff: float = DEFAULT_MAX_BACKOFF,
         max_retry_after: float = DEFAULT_MAX_RETRY_AFTER,
         sleep=time.sleep,
+        opener=None,
+        trust_env_proxy: bool = True,
     ):
         # Reject a CR/LF-bearing token here, before it ever reaches an HTTP
         # header: http.client validates header values itself and raises a
@@ -604,7 +621,12 @@ class JiraClient:
         self.max_backoff = max_backoff
         self.max_retry_after = max_retry_after
         self._sem = threading.Semaphore(max_parallel)
-        self._opener = urllib.request.build_opener(_NoRedirect)
+        if opener is not None:
+            self._opener = opener
+        elif trust_env_proxy:
+            self._opener = urllib.request.build_opener(_NoRedirect)
+        else:
+            self._opener = urllib.request.build_opener(_NoRedirect, urllib.request.ProxyHandler({}))
         self._sleep = sleep
 
     def _backoff_delay(self, attempt: int) -> float:

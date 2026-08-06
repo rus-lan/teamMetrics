@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import _pathfix  # noqa: F401  (must run before any `jira_metrics` import — see tests/_pathfix.py)
+import _pathfix  # noqa: F401  (must run before any `team_metrics` import — see tests/_pathfix.py)
 
 from datetime import datetime, timezone
 
-from jira_metrics import model
+from team_metrics import model
 
 UTC = timezone.utc
 

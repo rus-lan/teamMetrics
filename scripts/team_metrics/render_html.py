@@ -1529,6 +1529,7 @@ def _sum_field(people: list, key: str) -> float:
 def build_person_tab(report: dict, ctx: dict) -> str:
     personal = report.get("personal") or {}
     if not personal.get("available"):
+        ctx["PERSON_LIGHT_MODE_CAVEAT"] = ""
         ctx["PERSONAL_SEMANTICS_NOTE"] = (
             '<div class="banner"><span class="banner-tag">НЕДОСТУПНО</span>'
             f'<div class="banner-body"><b>Персональные метрики недоступны.</b>'
@@ -1536,6 +1537,31 @@ def build_person_tab(report: dict, ctx: dict) -> str:
             "</div></div>"
         )
         return "unavailable"
+
+    # A run built with the heavy GitLab fan-outs skipped (audit finding 2a)
+    # must say so somewhere a reader will actually see it — not only as a
+    # request count in the footer. This is the one tab those two opt-outs
+    # actually change (team-level engineering tiles aggregate by pipeline
+    # status, not by author, so they are unaffected either way).
+    params = report.get("params") or {}
+    light_mode_bits = []
+    if params.get("gitlab_fetch_mr_details") is False:
+        light_mode_bits.append(
+            "детали MR (размер диффа, коммиты, изменения) не собирались — соответствующие колонки "
+            "и карточки размечены «нет данных», это не означает, что там 0"
+        )
+    if params.get("gitlab_fetch_pipeline_user") is False:
+        light_mode_bits.append(
+            "привязка пайплайнов к конкретному человеку не собиралась — «успешность пайплайнов» "
+            "на карточках участников размечена «нет данных» у всех"
+        )
+    ctx["PERSON_LIGHT_MODE_CAVEAT"] = (
+        '<div class="banner"><span class="banner-tag">УРЕЗАННЫЙ РЕЖИМ</span>'
+        "<div class=\"banner-body\"><b>Этот запуск пропустил часть сбора данных в GitLab ради меньшей нагрузки.</b>"
+        f'<span class="detail">{esc("; ".join(light_mode_bits))}.</span></div></div>'
+        if light_mode_bits
+        else ""
+    )
 
     notes = report.get("semantics_notes") or []
     ctx["PERSONAL_SEMANTICS_NOTE"] = (
@@ -1679,10 +1705,20 @@ def build_person_card(inner: str, person: dict) -> str:
     rework_display = f'{fmt_num(rework_share * 100, 1)}<span class="u">%</span>' if rework_share is not None else EM_DASH
     stat_rework = f'<div class="stat" data-status="{rework_status}"><div class="stat-label">доля переработок</div><div class="stat-value">{rework_display}</div></div>'
 
+    # Three states, not two (WARN_PIPELINE_SUCCESS_UNAVAILABLE): "not
+    # collected" (fetch_pipeline_user=False this run) must read as "нет
+    # данных", same as the MR diff-stats gap above — never the same bare
+    # dash as "collected, genuinely zero for this person" / "no GitLab
+    # pipeline data at all", which keep the plain none-state they already had.
     pipeline_rate = person.get("pipeline_success_rate")
-    pipeline_status = "none" if pipeline_rate is None else ""
+    pipeline_unavailable = "WARN_PIPELINE_SUCCESS_UNAVAILABLE" in (person.get("warnings") or [])
+    pipeline_status = "none" if pipeline_rate is None or pipeline_unavailable else ""
     pipeline_display = f'{fmt_num(pipeline_rate * 100, 1)}<span class="u">%</span>' if pipeline_rate is not None else EM_DASH
-    stat_pipeline = f'<div class="stat" data-status="{pipeline_status}"><div class="stat-label">успешность пайплайнов</div><div class="stat-value">{pipeline_display}</div></div>'
+    pipeline_extra = '<span class="badge-na">нет данных</span>' if pipeline_unavailable else ""
+    stat_pipeline = (
+        f'<div class="stat" data-status="{pipeline_status}"><div class="stat-label">успешность пайплайнов</div>'
+        f'<div class="stat-value">{pipeline_display}</div>{f"<div style=margin-top:5px>{pipeline_extra}</div>" if pipeline_extra else ""}</div>'
+    )
 
     sprints = person.get("sprints") or []
     bars_svg = build_person_bar_svg(sprints)
@@ -1777,7 +1813,7 @@ def build_footer(report: dict, ctx: dict) -> None:
     eng = report.get("engineering") or {}
     gitlab_configured = eng.get("available") or (report.get("personal") or {}).get("available")
 
-    ctx["FOOTER_TOOL_NAME"] = "jira-team-metrics"
+    ctx["FOOTER_TOOL_NAME"] = "team-metrics"
     ctx["FOOTER_TOOL_VERSION"] = esc(f"calc_schema_version {report.get('schema_version', '?')}")
     disclaimers = []
     if gitlab_issues.get("skipped_projects"):
@@ -1848,6 +1884,13 @@ def build_footer(report: dict, ctx: dict) -> None:
     ctx["PARAM_JOB_ID"] = EM_DASH
     ctx["PARAM_GENERATED_AT"] = esc(params.get("generated_at") or EM_DASH)
     ctx["PARAM_RUN_DURATION"] = EM_DASH
+
+    gitlab_request_count = params.get("gitlab_request_count")
+    if gitlab_request_count is None:
+        ctx["PARAM_GITLAB_REQUEST_COUNT"] = EM_DASH
+    else:
+        request_word = ru_plural(gitlab_request_count, "запрос", "запроса", "запросов")
+        ctx["PARAM_GITLAB_REQUEST_COUNT"] = esc(f"{fmt_int(gitlab_request_count)} {request_word} к GitLab")
 
 
 # ==========================================================================

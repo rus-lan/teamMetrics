@@ -53,18 +53,18 @@ jobs:
       - name: Verify artifacts
         run: |
           ls -la dist/release/
-          test -f dist/release/jira-metrics-report.tar.gz
+          test -f dist/release/team-metrics.tar.gz
           test -f dist/release/install.sh
           test -f dist/release/checksums-sha256.txt
-          grep -q "jira-metrics-report.tar.gz" dist/release/checksums-sha256.txt
+          grep -q "team-metrics.tar.gz" dist/release/checksums-sha256.txt
           grep -q "install.sh" dist/release/checksums-sha256.txt
 
       - name: Smoke-test the tarball
         run: |
           TMP_DIR="$(mktemp -d)"
-          tar xzf dist/release/jira-metrics-report.tar.gz -C "$TMP_DIR"
-          test -x "$TMP_DIR/jira-metrics-report/scripts/jira-metrics"
-          "$TMP_DIR/jira-metrics-report/scripts/jira-metrics" --version
+          tar xzf dist/release/team-metrics.tar.gz -C "$TMP_DIR"
+          test -x "$TMP_DIR/team-metrics/scripts/team-metrics"
+          "$TMP_DIR/team-metrics/scripts/team-metrics" --version
 
       - name: Check install.sh syntax
         run: sh -n dist/release/install.sh
@@ -92,7 +92,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "${{ steps.version.outputs.tag }}" \
-            dist/release/jira-metrics-report.tar.gz \
+            dist/release/team-metrics.tar.gz \
             dist/release/install.sh \
             dist/release/checksums-sha256.txt \
             --title "${{ steps.version.outputs.tag }}" \

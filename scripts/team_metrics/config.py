@@ -23,7 +23,11 @@ DEFAULT_CANCELLED_STATUSES = ["Cancelled", "Отменено", "Rejected"]
 DEFAULT_HISTORY_SPRINTS = 5
 MAX_HISTORY_SPRINTS = 20
 DEFAULT_SEED = 42
-DEFAULT_CONFIG_FILENAME = ".jira-metrics.json"
+DEFAULT_CONFIG_FILENAME = ".team-metrics.json"
+# Pre-2.0.0 name (the project was called jira-metrics-report before the
+# rename) -- kept only so init/doctor can point a user at a config file they
+# might not realize is now unused under its old name. Never read from.
+OLD_CONFIG_FILENAME = ".jira-metrics.json"
 
 # Mirrors personal_metrics.FINAL_STATUSES_DEFAULT — duplicated here (rather
 # than imported) so config.py, which only the CLI/env layer depends on,
@@ -186,7 +190,7 @@ def load_gitlab_env(environ: Optional[dict] = None) -> Optional[GitLabEnv]:
 def add_pipeline_args(p: argparse.ArgumentParser) -> None:
     """Adds every report_data.py flag except `--json`/`--out`, which differ
     between report_data.py's own CLI (JSON-only, unchanged below) and the
-    `run` subcommand of the `jira-metrics` dispatcher (writes JSON + HTML,
+    `run` subcommand of the `team-metrics` dispatcher (writes JSON + HTML,
     see cli.py) — shared here so the two never drift apart."""
     target = p.add_mutually_exclusive_group(required=True)
     target.add_argument("--sprint-ids", help="Comma-separated Jira sprint ids (target sprints)")
@@ -225,8 +229,30 @@ def add_pipeline_args(p: argparse.ArgumentParser) -> None:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="jira_metrics", description="Jira team metrics report data builder")
+    p = argparse.ArgumentParser(prog="team_metrics", description="Jira team metrics report data builder")
     add_pipeline_args(p)
+    # --no-mr-details/--no-pipeline-users are deliberately NOT in
+    # add_pipeline_args(): cli.py's `run` subcommand defines its own copy of
+    # these two directly on its parser (Russian help text, plus its own
+    # --light combined shorthand) rather than sharing — putting them in the
+    # shared function risks a double registration and an
+    # argparse.ArgumentError on cli.py's side (observed in practice while
+    # this was being wired concurrently). Flag spelling here (plural
+    # "users") matches cli.py's exactly so build_run_config_from_args()'s
+    # getattr(...) reads the same attribute name from either parser's
+    # Namespace.
+    p.add_argument(
+        "--no-mr-details",
+        action="store_true",
+        help="Skip the per-MR detail + commits GETs (gitlab_client audit finding 2a) — the single largest "
+        "request-volume driver; affected fields degrade to their existing UNAVAILABLE+flag representation",
+    )
+    p.add_argument(
+        "--no-pipeline-users",
+        action="store_true",
+        help="Skip the per-pipeline jobs GET used to attribute a pipeline to a person (audit finding 2a) — "
+        "the second-largest request-volume driver; affected records get user_lookup_available=False",
+    )
     p.add_argument("--json", action="store_true", help="Print the full report_data dict as JSON to stdout")
     p.add_argument("--out", default=None, help="Write the JSON report to this file")
     return p
@@ -248,19 +274,28 @@ class RunConfig:
     gitlab_env: Optional[GitLabEnv]
     no_gitlab: bool
     no_personal: bool
+    fetch_mr_details: bool
+    fetch_pipeline_user: bool
 
 
 def build_run_config_from_args(args: argparse.Namespace, environ: Optional[dict] = None) -> RunConfig:
     """Builds a RunConfig from an already-parsed Namespace holding at least the
     args `add_pipeline_args()` adds (sprint_ids/sprint_names/board_id/history/
-    seed/target_items/iterations/config/no_gitlab/no_personal).
+    seed/target_items/iterations/config/no_gitlab/no_personal/no_mr_details/
+    no_pipeline_users).
 
     `json_out`/`out_path` come from `args.json`/`args.out` when present,
     defaulting to False/None otherwise. report_data.py's own CLI (below)
-    supplies both; the `run` subcommand of the `jira-metrics` dispatcher
+    supplies both; the `run` subcommand of the `team-metrics` dispatcher
     (cli.py) supplies neither — it manages its own --out/--json-out file
     writing and passes a Namespace with those two attributes stripped so this
-    function's defaults apply."""
+    function's defaults apply.
+
+    `fetch_mr_details`/`fetch_pipeline_user` read `args.no_mr_details`/
+    `args.no_pipeline_users` (note: plural "users") via getattr with a False
+    default — defensive rather than direct attribute access, so a Namespace
+    that somehow lacks them still gets the unchanged, full-fetch default
+    instead of an AttributeError."""
     env = load_env(environ)
     gitlab_env = load_gitlab_env(environ)
     file_config = load_file_config(args.config)
@@ -290,6 +325,8 @@ def build_run_config_from_args(args: argparse.Namespace, environ: Optional[dict]
         gitlab_env=gitlab_env,
         no_gitlab=args.no_gitlab,
         no_personal=args.no_personal,
+        fetch_mr_details=not getattr(args, "no_mr_details", False),
+        fetch_pipeline_user=not getattr(args, "no_pipeline_users", False),
     )
 
 

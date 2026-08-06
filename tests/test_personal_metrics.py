@@ -3,7 +3,7 @@ import _pathfix  # noqa: F401
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from jira_metrics import personal_metrics as pm
+from team_metrics import personal_metrics as pm
 
 UTC = timezone.utc
 
@@ -458,6 +458,64 @@ class PipelineSuccessByUserTests(unittest.TestCase):
     def test_personal_metrics_without_pipelines_arg_is_none(self):
         result = pm.personal_metrics("alice", mrs=[], issues=[])
         self.assertIsNone(result["pipeline_success_rate"])
+
+
+class PipelineUserAttributionMissingTests(unittest.TestCase):
+    """team-lead follow-up: fetch_pipeline_user=False makes every record's
+    user_username == "", so pipeline_success_rate silently becomes None for
+    EVERY person — indistinguishable from "genuinely zero pipelines" unless
+    this module raises its own warning off gitlab_client.py's
+    user_lookup_available flag."""
+
+    def test_opted_out_run_warns_and_stays_none_not_a_fabricated_rate(self):
+        # Mirrors gitlab_client.py's pipelines(fetch_pipeline_user=False)
+        # output shape: every record carries user_lookup_available=False.
+        pipelines = [
+            {"user_username": "", "status": "success", "user_lookup_available": False},
+            {"user_username": "", "status": "failed", "user_lookup_available": False},
+        ]
+        result = pm.personal_metrics("alice", mrs=[], issues=[], pipelines=pipelines)
+        self.assertIsNone(result["pipeline_success_rate"])
+        self.assertIn(pm.WARN_PIPELINE_SUCCESS_UNAVAILABLE, result["warnings"])
+
+    def test_genuinely_zero_pipelines_for_this_person_does_not_warn(self):
+        # Attribution WAS collected (user_lookup_available=True); this
+        # person simply triggered none — a real "0", not "we didn't ask".
+        pipelines = [
+            {"user_username": "bob", "status": "success", "user_lookup_available": True},
+        ]
+        result = pm.personal_metrics("alice", mrs=[], issues=[], pipelines=pipelines)
+        self.assertIsNone(result["pipeline_success_rate"])
+        self.assertNotIn(pm.WARN_PIPELINE_SUCCESS_UNAVAILABLE, result["warnings"])
+
+    def test_no_pipeline_data_at_all_does_not_warn(self):
+        # A third distinct state: nothing was fetched at all (e.g. GitLab
+        # not configured) — not the same as "we asked and got nothing back".
+        result = pm.personal_metrics("alice", mrs=[], issues=[], pipelines=[])
+        self.assertIsNone(result["pipeline_success_rate"])
+        self.assertNotIn(pm.WARN_PIPELINE_SUCCESS_UNAVAILABLE, result["warnings"])
+
+    def test_successful_lookup_with_a_real_rate_does_not_warn(self):
+        pipelines = [
+            {"user_username": "alice", "status": "success", "user_lookup_available": True},
+            {"user_username": "alice", "status": "failed", "user_lookup_available": True},
+        ]
+        result = pm.personal_metrics("alice", mrs=[], issues=[], pipelines=pipelines)
+        self.assertEqual(result["pipeline_success_rate"], 0.5)
+        self.assertNotIn(pm.WARN_PIPELINE_SUCCESS_UNAVAILABLE, result["warnings"])
+
+    def test_missing_flag_defaults_to_available_for_backward_compatibility(self):
+        # Hand-built fixtures / pre-opt-out data that never set the flag at
+        # all must behave exactly as before this fix — no spurious warning.
+        pipelines = [{"user_username": "alice", "status": "success"}]
+        result = pm.personal_metrics("alice", mrs=[], issues=[], pipelines=pipelines)
+        self.assertNotIn(pm.WARN_PIPELINE_SUCCESS_UNAVAILABLE, result["warnings"])
+
+    def test_helper_function_directly(self):
+        self.assertTrue(pm._pipeline_user_attribution_missing([{"user_lookup_available": False}]))
+        self.assertFalse(pm._pipeline_user_attribution_missing([{"user_lookup_available": True}]))
+        self.assertFalse(pm._pipeline_user_attribution_missing([]))
+        self.assertFalse(pm._pipeline_user_attribution_missing([{}]))  # missing key -> available
 
 
 class TzAwareValidationTests(unittest.TestCase):

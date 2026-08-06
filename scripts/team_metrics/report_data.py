@@ -790,6 +790,8 @@ def build_combined_report(
     employees: list[str] = (),
     final_statuses: Iterable[str] = personal_metrics.FINAL_STATUSES_DEFAULT,
     include_personal: bool = True,
+    fetch_mr_details: bool = True,
+    fetch_pipeline_user: bool = True,
 ) -> dict:
     """build_report()'s output PLUS `personal` (build_personal_report),
     `engineering` (build_engineering_metrics), `semantics_notes` and
@@ -802,6 +804,18 @@ def build_combined_report(
     must never fail the whole run. `include_personal=False` (--no-personal)
     disables only the personal tab; engineering (team-level pipelines/
     deployments/coverage) still runs as long as GitLab is configured.
+
+    `fetch_mr_details`/`fetch_pipeline_user` (default True, unchanged
+    behavior) pass straight through to gitlab_client.fetch_team_data() —
+    audit finding 2a: these two fan-outs are the largest GitLab
+    request-volume drivers (one request per MR, twice; one per pipeline).
+    Whatever value each actually ran with is echoed into
+    `report["params"]["gitlab_fetch_mr_details"/"gitlab_fetch_pipeline_
+    user"]` (None if GitLab was never configured), together with
+    `report["params"]["gitlab_request_count"]` (the actual HTTP round-trip
+    count this run made — audit finding 2b) — a report produced with the
+    heavy fetches skipped must say so on its face, not just show a
+    suspiciously low number.
 
     A genuine GitLab-side fault DURING a configured fetch is not degraded —
     glc.GitLabError propagates out of this function (most notably
@@ -826,6 +840,12 @@ def build_combined_report(
     personal_available, personal_reason, personal_data = False, "GitLab is not configured for this run", None
     engineering_available, engineering_reason, engineering_data = False, "GitLab is not configured for this run", None
     gitlab_fetch_issues = {"skipped_projects": [], "mr_fetch_errors": []}
+    # None (not False/0) when GitLab was never configured: neither fetch ran
+    # one way or the other, so True/False would misleadingly imply a
+    # decision was actually made about a fetch that never happened.
+    report["params"]["gitlab_request_count"] = None
+    report["params"]["gitlab_fetch_mr_details"] = None
+    report["params"]["gitlab_fetch_pipeline_user"] = None
 
     if gitlab_client_obj is not None:
         # Window = the TARGET sprints' own dates (min start / max end) — the
@@ -840,8 +860,16 @@ def build_combined_report(
         # level, not employee-scoped) still run for the engineering tab.
         effective_employees = list(employees) if include_personal else []
         gitlab_data = glc.fetch_team_data(
-            gitlab_client_obj, projects=list(gitlab_projects), employees=effective_employees, window=window
+            gitlab_client_obj,
+            projects=list(gitlab_projects),
+            employees=effective_employees,
+            window=window,
+            fetch_mr_details=fetch_mr_details,
+            fetch_pipeline_user=fetch_pipeline_user,
         )
+        report["params"]["gitlab_request_count"] = gitlab_data.get("request_count")
+        report["params"]["gitlab_fetch_mr_details"] = fetch_mr_details
+        report["params"]["gitlab_fetch_pipeline_user"] = fetch_pipeline_user
         # Per-project/per-author failures fetch_team_data tolerates rather
         # than raising (e.g. a renamed login, one unreachable project) —
         # surfaced so the report can disclose exactly what was skipped even
@@ -944,6 +972,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             employees=run_cfg.file_config.employees,
             final_statuses=run_cfg.file_config.final_statuses,
             include_personal=not run_cfg.no_personal,
+            fetch_mr_details=run_cfg.fetch_mr_details,
+            fetch_pipeline_user=run_cfg.fetch_pipeline_user,
         )
     except (ReportError, jc.JiraError, glc.GitLabError) as e:
         # glc.GitLabError here is a genuine GitLab-side fault during a

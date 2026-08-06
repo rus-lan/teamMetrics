@@ -1,0 +1,6 @@
+{
+  "gitlab": {
+    "projects": ["team/checkout-web", "team/checkout-api", "team/payments-mobile"]
+  },
+  "employees": ["alice", "bob", "carol", "dave"]
+}

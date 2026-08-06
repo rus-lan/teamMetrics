@@ -1,4 +1,4 @@
-"""Coverage for the jira-metrics command dispatcher (init/check/run/report).
+"""Coverage for the team-metrics command dispatcher (init/check/run/report).
 
 No real network calls anywhere in this file: `check`/`run` use dependency-
 injected fake Jira/GitLab client classes (cli.cmd_check/cmd_run accept
@@ -19,13 +19,13 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-from jira_metrics import cli
-from jira_metrics import config as config_mod
-from jira_metrics import gitlab_client as glc
-from jira_metrics import jira_client as jc
-from jira_metrics import metrics as metrics_mod
-from jira_metrics import model, report_data
-from jira_metrics import render_html as render_html_mod
+from team_metrics import cli
+from team_metrics import config as config_mod
+from team_metrics import gitlab_client as glc
+from team_metrics import jira_client as jc
+from team_metrics import metrics as metrics_mod
+from team_metrics import model, report_data
+from team_metrics import render_html as render_html_mod
 
 from helpers import dt
 
@@ -69,7 +69,7 @@ def _run_main(argv, environ):
     """Runs cli.main() capturing stdout/stderr; returns (exit_code, out, err)."""
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        code = cli.main(argv, environ=environ, invocation="jira-metrics")
+        code = cli.main(argv, environ=environ, invocation="team-metrics")
     return code, out.getvalue(), err.getvalue()
 
 
@@ -85,8 +85,8 @@ class InitCommandTests(unittest.TestCase):
             self.assertEqual(code, 0)
             dest = tmp / config_mod.DEFAULT_CONFIG_FILENAME
             self.assertTrue(dest.exists())
-            self.assertIn("файл .jira-metrics.json создан", out)
-            self.assertIn("jira-metrics check", out)
+            self.assertIn("файл .team-metrics.json создан", out)
+            self.assertIn("team-metrics check", out)
 
     def test_written_config_matches_bundled_example(self):
         with _tempdir() as tmp:
@@ -145,6 +145,26 @@ class InitCommandTests(unittest.TestCase):
             code, out, _err = _run_main(["init"], environ=environ)
             self.assertEqual(code, 0)
             self.assertIn("только один из GITLAB_URL/GITLAB_TOKEN", out)
+
+    def test_old_config_filename_present_prints_migration_hint(self):
+        with _tempdir() as tmp:
+            (tmp / config_mod.OLD_CONFIG_FILENAME).write_text("{}", encoding="utf-8")
+            code, out, _err = _run_main(["init"], environ={})
+            self.assertEqual(code, 0)
+            self.assertIn(config_mod.OLD_CONFIG_FILENAME, out)
+            self.assertIn("team-metrics", out)
+            # init still writes the new file from the bundled example --
+            # the old file is never read, only pointed at.
+            self.assertTrue((tmp / config_mod.DEFAULT_CONFIG_FILENAME).exists())
+            self.assertEqual((tmp / config_mod.OLD_CONFIG_FILENAME).read_text(encoding="utf-8"), "{}")
+
+    def test_old_config_filename_ignored_once_new_one_exists(self):
+        with _tempdir() as tmp:
+            (tmp / config_mod.OLD_CONFIG_FILENAME).write_text("{}", encoding="utf-8")
+            (tmp / config_mod.DEFAULT_CONFIG_FILENAME).write_text('{"marker": "already-migrated"}', encoding="utf-8")
+            code, out, _err = _run_main(["init"], environ={})
+            self.assertEqual(code, 1)  # refused without --force, same as any pre-existing dest
+            self.assertNotIn(config_mod.OLD_CONFIG_FILENAME, out)
 
 
 # --------------------------------------------------------------------------
@@ -315,6 +335,60 @@ class CheckCommandTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn(f"{SKIP} {ITEM_GITLAB_PROJECTS}", out)
 
+    def test_no_proxy_flag_passes_trust_env_proxy_false_to_jira_client(self):
+        captured = {}
+
+        def factory(*_a, **kw):
+            captured.update(kw)
+            return _OKJiraClient()
+
+        args = cli.build_parser().parse_args(["check", "--no-proxy"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli.cmd_check(args, _jira_env(), jira_client_cls=factory, gitlab_client_cls=lambda *_a, **_kw: _OKGitLabClient())
+        self.assertIs(captured.get("trust_env_proxy"), False)
+
+    def test_default_passes_trust_env_proxy_true_to_jira_client(self):
+        captured = {}
+
+        def factory(*_a, **kw):
+            captured.update(kw)
+            return _OKJiraClient()
+
+        args = cli.build_parser().parse_args(["check"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli.cmd_check(args, _jira_env(), jira_client_cls=factory, gitlab_client_cls=lambda *_a, **_kw: _OKGitLabClient())
+        self.assertIs(captured.get("trust_env_proxy"), True)
+
+    def test_no_proxy_flag_passes_trust_env_proxy_false_to_gitlab_client(self):
+        captured = {}
+
+        def factory(*_a, **kw):
+            captured.update(kw)
+            return _OKGitLabClient()
+
+        args = cli.build_parser().parse_args(["check", "--no-proxy"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli.cmd_check(
+                args, {**_jira_env(), **_gitlab_env()},
+                jira_client_cls=lambda *_a, **_kw: _OKJiraClient(), gitlab_client_cls=factory,
+            )
+        self.assertIs(captured.get("trust_env_proxy"), False)
+
+    def test_default_passes_trust_env_proxy_true_to_gitlab_client(self):
+        captured = {}
+
+        def factory(*_a, **kw):
+            captured.update(kw)
+            return _OKGitLabClient()
+
+        args = cli.build_parser().parse_args(["check"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli.cmd_check(
+                args, {**_jira_env(), **_gitlab_env()},
+                jira_client_cls=lambda *_a, **_kw: _OKJiraClient(), gitlab_client_cls=factory,
+            )
+        self.assertIs(captured.get("trust_env_proxy"), True)
+
     def test_configured_gitlab_projects_all_resolve(self):
         with _tempdir() as tmp:
             (tmp / config_mod.DEFAULT_CONFIG_FILENAME).write_text(
@@ -452,6 +526,144 @@ class RunCommandTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertIn("ошибка настройки", err.getvalue())
 
+    def test_no_proxy_flag_passes_trust_env_proxy_false_to_jira_client(self):
+        captured = {}
+
+        def factory(*_a, **kw):
+            captured.update(kw)
+            return _FakeJiraClient()
+
+        with _tempdir():
+            args = cli.build_parser().parse_args(["run", "--sprint-ids", "100", "--no-gitlab", "--no-proxy"])
+            with contextlib.redirect_stdout(io.StringIO()):
+                cli.cmd_run(args, _jira_env(), jira_client_cls=factory)
+        self.assertIs(captured.get("trust_env_proxy"), False)
+
+    def test_default_passes_trust_env_proxy_true_to_jira_client(self):
+        captured = {}
+
+        def factory(*_a, **kw):
+            captured.update(kw)
+            return _FakeJiraClient()
+
+        with _tempdir():
+            args = cli.build_parser().parse_args(["run", "--sprint-ids", "100", "--no-gitlab"])
+            with contextlib.redirect_stdout(io.StringIO()):
+                cli.cmd_run(args, _jira_env(), jira_client_cls=factory)
+        self.assertIs(captured.get("trust_env_proxy"), True)
+
+    def test_no_proxy_flag_passes_trust_env_proxy_false_to_gitlab_client(self):
+        """GitLabClient is only constructed when GitLab is actually
+        configured (not --no-gitlab) — build_combined_report() itself is
+        spied out so the fake GitLab client (which only implements
+        current_user()/project_id(), not the full fetch_team_data()
+        interface) never has to handle a real fetch."""
+        captured = {}
+
+        def factory(*_a, **kw):
+            captured.update(kw)
+            return _OKGitLabClient()
+
+        fixture = _build_fixture_report_dict()
+        with _tempdir():
+            args = cli.build_parser().parse_args(["run", "--sprint-ids", "100", "--no-proxy"])
+            with unittest.mock.patch.object(cli.report_data, "build_combined_report", return_value=fixture):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cli.cmd_run(
+                        args, {**_jira_env(), **_gitlab_env()},
+                        jira_client_cls=lambda *_a, **_kw: _FakeJiraClient(), gitlab_client_cls=factory,
+                    )
+        self.assertIs(captured.get("trust_env_proxy"), False)
+
+    def test_default_passes_trust_env_proxy_true_to_gitlab_client(self):
+        captured = {}
+
+        def factory(*_a, **kw):
+            captured.update(kw)
+            return _OKGitLabClient()
+
+        fixture = _build_fixture_report_dict()
+        with _tempdir():
+            args = cli.build_parser().parse_args(["run", "--sprint-ids", "100"])
+            with unittest.mock.patch.object(cli.report_data, "build_combined_report", return_value=fixture):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cli.cmd_run(
+                        args, {**_jira_env(), **_gitlab_env()},
+                        jira_client_cls=lambda *_a, **_kw: _FakeJiraClient(), gitlab_client_cls=factory,
+                    )
+        self.assertIs(captured.get("trust_env_proxy"), True)
+
+    # -- --no-mr-details / --no-pipeline-users / --light -----------------
+
+    def _run_with_spy(self, extra_argv, spy_return):
+        """Runs cmd_run with report_data.build_combined_report() replaced by
+        a spy that records its kwargs and returns `spy_return` — isolates
+        cli.py's own flag-wiring logic from report_data.py's actual behavior
+        (out of scope, another agent's file) while still letting
+        render_html.render_html() run for real against a fully valid report
+        dict (spy_return should come from _build_fixture_report_dict())."""
+        captured = {}
+
+        def spy(*_a, **kw):
+            captured.update(kw)
+            return spy_return
+
+        with _tempdir():
+            args = cli.build_parser().parse_args(["run", "--sprint-ids", "100", "--no-gitlab"] + extra_argv)
+            with unittest.mock.patch.object(cli.report_data, "build_combined_report", side_effect=spy):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    code = cli.cmd_run(args, _jira_env(), jira_client_cls=lambda *_a, **_kw: _FakeJiraClient())
+        return code, out.getvalue(), captured
+
+    def test_default_passes_both_fanout_flags_true(self):
+        code, _out, captured = self._run_with_spy([], _build_fixture_report_dict())
+        self.assertEqual(code, 0)
+        self.assertIs(captured.get("fetch_mr_details"), True)
+        self.assertIs(captured.get("fetch_pipeline_user"), True)
+
+    def test_no_mr_details_flag_disables_only_mr_details(self):
+        code, _out, captured = self._run_with_spy(["--no-mr-details"], _build_fixture_report_dict())
+        self.assertEqual(code, 0)
+        self.assertIs(captured.get("fetch_mr_details"), False)
+        self.assertIs(captured.get("fetch_pipeline_user"), True)
+
+    def test_no_pipeline_users_flag_disables_only_pipeline_user(self):
+        code, _out, captured = self._run_with_spy(["--no-pipeline-users"], _build_fixture_report_dict())
+        self.assertEqual(code, 0)
+        self.assertIs(captured.get("fetch_mr_details"), True)
+        self.assertIs(captured.get("fetch_pipeline_user"), False)
+
+    def test_light_flag_disables_both_fanouts(self):
+        code, _out, captured = self._run_with_spy(["--light"], _build_fixture_report_dict())
+        self.assertEqual(code, 0)
+        self.assertIs(captured.get("fetch_mr_details"), False)
+        self.assertIs(captured.get("fetch_pipeline_user"), False)
+
+    def test_light_combined_with_an_individual_flag_still_disables_both(self):
+        code, _out, captured = self._run_with_spy(["--light", "--no-mr-details"], _build_fixture_report_dict())
+        self.assertEqual(code, 0)
+        self.assertIs(captured.get("fetch_mr_details"), False)
+        self.assertIs(captured.get("fetch_pipeline_user"), False)
+
+    # -- request-count print ----------------------------------------------
+
+    def test_prints_gitlab_request_count_when_available(self):
+        fixture = dict(_build_fixture_report_dict())
+        fixture["params"] = {**fixture.get("params", {}), "gitlab_request_count": 1234}
+        code, out, _captured = self._run_with_spy([], fixture)
+        self.assertEqual(code, 0)
+        self.assertIn("1234", out)
+        self.assertIn("GitLab", out)
+        self.assertIn("без учёта Jira", out, "must label the count as GitLab-only, not imply it is the run's total")
+
+    def test_omits_request_count_line_when_gitlab_was_not_used(self):
+        fixture = dict(_build_fixture_report_dict())
+        fixture["params"] = {**fixture.get("params", {}), "gitlab_request_count": None}
+        code, out, _captured = self._run_with_spy([], fixture)
+        self.assertEqual(code, 0)
+        self.assertNotIn("HTTP-запросов к GitLab", out)
+
 
 # --------------------------------------------------------------------------
 # report
@@ -570,19 +782,20 @@ class HelpTextIsRussianTests(unittest.TestCase):
     def test_top_level_help_is_russian(self):
         text = self._help_text(["--help"])
         self.assertIn("Отчёты по метрикам команды из Jira и GitLab", text)
-        self.assertIn("Создать .jira-metrics.json в текущей папке", text)
+        self.assertIn("Создать .team-metrics.json в текущей папке", text)
         self.assertIn("Проверить настройку Jira/GitLab без построения отчёта", text)
         self.assertIn("Собрать данные из Jira/GitLab, посчитать метрики, записать JSON и HTML", text)
         self.assertIn("Отрисовать HTML из уже полученного JSON-файла — без обращений к сети", text)
 
     def test_init_help_is_russian(self):
         text = self._help_text(["init", "--help"])
-        self.assertIn("Перезаписать существующий .jira-metrics.json", text)
+        self.assertIn("Перезаписать существующий .team-metrics.json", text)
 
     def test_check_help_is_russian(self):
         text = self._help_text(["check", "--help"])
         self.assertIn("Список id спринтов через запятую", text)
         self.assertIn("Пропустить проверки GitLab", text)
+        self.assertIn(cli.NO_PROXY_HELP, text)
 
     def test_run_help_is_russian(self):
         """Covers _translate_pipeline_help(): flags run shares with
@@ -594,6 +807,27 @@ class HelpTextIsRussianTests(unittest.TestCase):
         self.assertIn("Пропустить обе вкладки GitLab", text)
         self.assertIn("Путь для HTML-отчёта", text)
         self.assertIn("Путь для JSON-файла с данными", text)
+        self.assertIn(cli.NO_PROXY_HELP, text)
+
+    def test_run_help_states_the_fanout_tradeoff_plainly(self):
+        """Item 3 of the task: a user must see this in --help, not discover
+        it only by reading the report afterwards."""
+        text = self._help_text(["run", "--help"])
+        self.assertIn(cli.NO_MR_DETAILS_HELP, text)
+        self.assertIn(cli.NO_PIPELINE_USERS_HELP, text)
+        # Not a full-string check for LIGHT_HELP: argparse's wrapper can
+        # break a line right at the hyphen inside "--no-mr-details" (turning
+        # it into "--no-mr- details" even after whitespace-collapsing), which
+        # LIGHT_HELP itself quotes verbatim — check distinctive fragments
+        # either side of that risk spot instead.
+        self.assertIn("Отключить оба тяжёлых обхода GitLab разом", text)
+        self.assertIn("экономит около 1200 запросов из ~1660", text)
+        self.assertIn("связанные метрики станут «нет данных»", text)
+        for help_text in (cli.NO_MR_DETAILS_HELP, cli.NO_PIPELINE_USERS_HELP, cli.LIGHT_HELP):
+            self.assertIn("нет данных", help_text)
+        self.assertIn("800", cli.NO_MR_DETAILS_HELP)
+        self.assertIn("750", cli.NO_PIPELINE_USERS_HELP)
+        self.assertIn("1660", cli.LIGHT_HELP)
 
     def test_report_help_is_russian(self):
         text = self._help_text(["report", "--help"])
@@ -619,37 +853,37 @@ class HelpTextIsRussianTests(unittest.TestCase):
 
 class InvocationNameTests(unittest.TestCase):
     def test_relative_candidate_used_as_is(self):
-        self.assertEqual(cli._resolve_invocation_name("scripts/jira-metrics", {}), "scripts/jira-metrics")
+        self.assertEqual(cli._resolve_invocation_name("scripts/team-metrics", {}), "scripts/team-metrics")
 
     def test_dot_slash_relative_candidate_used_as_is(self):
-        self.assertEqual(cli._resolve_invocation_name("./scripts/jira-metrics", {}), "./scripts/jira-metrics")
+        self.assertEqual(cli._resolve_invocation_name("./scripts/team-metrics", {}), "./scripts/team-metrics")
 
     def test_python_dash_m_friendly_string_used_as_is(self):
-        self.assertEqual(cli._resolve_invocation_name("python3 -m jira_metrics", {}), "python3 -m jira_metrics")
+        self.assertEqual(cli._resolve_invocation_name("python3 -m team_metrics", {}), "python3 -m team_metrics")
 
     def test_absolute_candidate_collapses_to_basename(self):
-        name = cli._resolve_invocation_name("/home/alice/.claude/skills/jira-metrics-report/scripts/jira-metrics", {})
-        self.assertEqual(name, "jira-metrics")
+        name = cli._resolve_invocation_name("/home/alice/.claude/skills/team-metrics/scripts/team-metrics", {})
+        self.assertEqual(name, "team-metrics")
 
     def test_env_override_wins_over_a_relative_candidate(self):
-        name = cli._resolve_invocation_name("scripts/jira-metrics", {cli.INVOCATION_NAME_ENV_VAR: "jira-metrics"})
-        self.assertEqual(name, "jira-metrics")
+        name = cli._resolve_invocation_name("scripts/team-metrics", {cli.INVOCATION_NAME_ENV_VAR: "team-metrics"})
+        self.assertEqual(name, "team-metrics")
 
     def test_env_override_wins_over_an_absolute_candidate(self):
         name = cli._resolve_invocation_name(
-            "/home/alice/.claude/skills/jira-metrics-report/scripts/jira-metrics",
-            {cli.INVOCATION_NAME_ENV_VAR: "jira-metrics"},
+            "/home/alice/.claude/skills/team-metrics/scripts/team-metrics",
+            {cli.INVOCATION_NAME_ENV_VAR: "team-metrics"},
         )
-        self.assertEqual(name, "jira-metrics")
+        self.assertEqual(name, "team-metrics")
 
     def test_empty_or_missing_candidate_falls_back_to_short_name(self):
-        self.assertEqual(cli._resolve_invocation_name(None, {}), "jira-metrics")
-        self.assertEqual(cli._resolve_invocation_name("", {}), "jira-metrics")
+        self.assertEqual(cli._resolve_invocation_name(None, {}), "team-metrics")
+        self.assertEqual(cli._resolve_invocation_name("", {}), "team-metrics")
 
     def test_result_is_never_an_absolute_path(self):
         candidates = (
-            None, "", "scripts/jira-metrics", "./scripts/jira-metrics",
-            "/home/alice/.claude/skills/jira-metrics-report/scripts/jira-metrics", "/",
+            None, "", "scripts/team-metrics", "./scripts/team-metrics",
+            "/home/alice/.claude/skills/team-metrics/scripts/team-metrics", "/",
         )
         for candidate in candidates:
             with self.subTest(candidate=candidate):
@@ -658,23 +892,23 @@ class InvocationNameTests(unittest.TestCase):
 
     def test_init_hint_never_contains_an_absolute_path_after_simulated_global_install(self):
         with _tempdir():
-            absolute_argv0 = "/home/alice/.claude/skills/jira-metrics-report/scripts/jira-metrics"
+            absolute_argv0 = "/home/alice/.claude/skills/team-metrics/scripts/team-metrics"
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 code = cli.main(["init"], environ={}, invocation=absolute_argv0)
             self.assertEqual(code, 0)
             self.assertNotIn("/home/alice", out.getvalue())
-            self.assertIn("jira-metrics check", out.getvalue())
+            self.assertIn("team-metrics check", out.getvalue())
 
     def test_init_hint_honors_launcher_env_override(self):
         with _tempdir():
-            absolute_argv0 = "/home/alice/.claude/skills/jira-metrics-report/scripts/jira-metrics"
+            absolute_argv0 = "/home/alice/.claude/skills/team-metrics/scripts/team-metrics"
             out = io.StringIO()
-            environ = {cli.INVOCATION_NAME_ENV_VAR: "jira-metrics"}
+            environ = {cli.INVOCATION_NAME_ENV_VAR: "team-metrics"}
             with contextlib.redirect_stdout(out):
                 code = cli.main(["init"], environ=environ, invocation=absolute_argv0)
             self.assertEqual(code, 0)
-            self.assertIn("дальше: jira-metrics check", out.getvalue())
+            self.assertIn("дальше: team-metrics check", out.getvalue())
 
 
 # --------------------------------------------------------------------------
@@ -697,7 +931,7 @@ class VersionCommandTests(unittest.TestCase):
             with unittest.mock.patch.object(cli, "VERSION_PATH", version_file):
                 code, out = self._run_version(["--version"])
         self.assertEqual(code, 0)
-        self.assertIn("jira-metrics 9.9.9", out)
+        self.assertIn("team-metrics 9.9.9", out)
 
     def test_short_flag_also_works(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -706,7 +940,7 @@ class VersionCommandTests(unittest.TestCase):
             with unittest.mock.patch.object(cli, "VERSION_PATH", version_file):
                 code, out = self._run_version(["-v"])
         self.assertEqual(code, 0)
-        self.assertIn("jira-metrics 2.0.0", out)
+        self.assertIn("team-metrics 2.0.0", out)
 
     def test_survives_missing_version_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -714,7 +948,7 @@ class VersionCommandTests(unittest.TestCase):
             with unittest.mock.patch.object(cli, "VERSION_PATH", missing):
                 code, out = self._run_version(["--version"])
         self.assertEqual(code, 0, "a missing VERSION file must degrade gracefully, not crash")
-        self.assertIn("jira-metrics", out)
+        self.assertIn("team-metrics", out)
         self.assertIn("не найден файл VERSION", out)
 
     def test_survives_empty_version_file(self):
@@ -724,7 +958,7 @@ class VersionCommandTests(unittest.TestCase):
             with unittest.mock.patch.object(cli, "VERSION_PATH", version_file):
                 code, out = self._run_version(["--version"])
         self.assertEqual(code, 0)
-        self.assertIn("jira-metrics", out)
+        self.assertIn("team-metrics", out)
 
 
 # --------------------------------------------------------------------------
@@ -733,7 +967,16 @@ class VersionCommandTests(unittest.TestCase):
 
 
 class DoctorCommandTests(unittest.TestCase):
-    def _doctor(self, environ, *, template_exists=True, global_dir_exists=True, launcher_found=True, write_config=True):
+    def _doctor(
+        self,
+        environ,
+        *,
+        template_exists=True,
+        global_dir_exists=True,
+        launcher_found=True,
+        write_config=True,
+        write_old_config=False,
+    ):
         with contextlib.ExitStack() as stack:
             tmp = Path(stack.enter_context(tempfile.TemporaryDirectory()))
 
@@ -761,13 +1004,15 @@ class DoctorCommandTests(unittest.TestCase):
             workdir.mkdir()
             if write_config:
                 (workdir / config_mod.DEFAULT_CONFIG_FILENAME).write_text("{}", encoding="utf-8")
+            if write_old_config:
+                (workdir / config_mod.OLD_CONFIG_FILENAME).write_text("{}", encoding="utf-8")
             old_cwd = os.getcwd()
             os.chdir(workdir)
             stack.callback(os.chdir, old_cwd)
 
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                code = cli.main(["doctor"], environ=environ, invocation="jira-metrics")
+                code = cli.main(["doctor"], environ=environ, invocation="team-metrics")
             return code, out.getvalue()
 
     def test_healthy_checkout_all_pass(self):
@@ -776,10 +1021,11 @@ class DoctorCommandTests(unittest.TestCase):
         self.assertIn(f"{PASS} версия Python", out)
         self.assertIn(f"{PASS} файлы skill", out)
         self.assertIn(f"{PASS} установка skill", out)
-        self.assertIn(f"{PASS} команда jira-metrics в PATH", out)
+        self.assertIn(f"{PASS} команда team-metrics в PATH", out)
         self.assertIn(f"{PASS} файл настроек в текущей папке", out)
         self.assertIn(f"{PASS} переменные окружения", out)
         self.assertIn(f"{PASS} самопроверка шаблона отчёта", out)
+        self.assertIn(f"{PASS} прокси", out)
 
     def test_run_from_checkout_warns_not_fails(self):
         code, out = self._doctor({}, global_dir_exists=False)
@@ -791,12 +1037,26 @@ class DoctorCommandTests(unittest.TestCase):
         code, out = self._doctor({}, write_config=False)
         self.assertEqual(code, 0)
         self.assertIn(f"{WARN} файл настроек в текущей папке", out)
-        self.assertIn("jira-metrics init", out)
+        self.assertIn("team-metrics init", out)
+
+    def test_old_config_file_warns_with_migration_hint_instead_of_init_hint(self):
+        code, out = self._doctor({}, write_config=False, write_old_config=True)
+        self.assertEqual(code, 0)
+        self.assertIn(f"{WARN} файл настроек в текущей папке", out)
+        self.assertIn(config_mod.OLD_CONFIG_FILENAME, out)
+        self.assertIn(config_mod.DEFAULT_CONFIG_FILENAME, out)
+        self.assertNotIn("team-metrics init", out)
+
+    def test_new_config_file_takes_priority_over_old_one(self):
+        code, out = self._doctor({}, write_config=True, write_old_config=True)
+        self.assertEqual(code, 0)
+        self.assertIn(f"{PASS} файл настроек в текущей папке", out)
+        self.assertNotIn(config_mod.OLD_CONFIG_FILENAME, out)
 
     def test_launcher_not_on_path_warns_not_fails(self):
         code, out = self._doctor({}, launcher_found=False)
         self.assertEqual(code, 0)
-        self.assertIn(f"{WARN} команда jira-metrics в PATH", out)
+        self.assertIn(f"{WARN} команда team-metrics в PATH", out)
         self.assertIn("PATH", out)
 
     def test_missing_template_fails(self):
@@ -845,6 +1105,91 @@ class DoctorCommandTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn(f"{FAIL} версия Python", out)
         self.assertIn("3.8.5", out)
+
+    # -- proxy item -----------------------------------------------------
+
+    def test_no_proxy_configured_passes(self):
+        code, out = self._doctor({})
+        self.assertEqual(code, 0)
+        self.assertIn(f"{PASS} прокси", out)
+        self.assertIn("не настроен", out)
+
+    def test_https_proxy_configured_warns(self):
+        code, out = self._doctor({"HTTPS_PROXY": "http://proxy.corp.example.com:8080"})
+        self.assertEqual(code, 0, "proxy exposure is a WARN, never a FAIL")
+        self.assertIn(f"{WARN} прокси", out)
+        self.assertIn("proxy.corp.example.com", out)
+        self.assertIn("Bearer", out)
+
+    def test_lowercase_https_proxy_env_var_also_detected(self):
+        code, out = self._doctor({"https_proxy": "http://proxy.corp.example.com:8080"})
+        self.assertIn(f"{WARN} прокси", out)
+        self.assertIn("proxy.corp.example.com", out)
+
+    def test_http_proxy_configured_warns(self):
+        code, out = self._doctor({"HTTP_PROXY": "http://proxy2.example.com:3128"})
+        self.assertIn(f"{WARN} прокси", out)
+        self.assertIn("proxy2.example.com", out)
+
+    def test_proxy_url_credentials_never_printed(self):
+        environ = {"HTTPS_PROXY": "http://svc-account:sup3r-secret-proxy-pw@proxy.corp.example.com:8080"}
+        code, out = self._doctor(environ)
+        self.assertIn(f"{WARN} прокси", out)
+        self.assertIn("proxy.corp.example.com", out)
+        self.assertNotIn("svc-account", out)
+        self.assertNotIn("sup3r-secret-proxy-pw", out)
+        self.assertNotIn("@proxy.corp.example.com", out, "the host-only extraction must not leave the userinfo separator behind")
+
+    def test_no_proxy_covering_jira_host_downgrades_to_pass(self):
+        environ = {
+            "JIRA_BASE_URL": "https://jira.example.com",
+            "HTTPS_PROXY": "http://proxy.corp.example.com:8080",
+            "no_proxy": "jira.example.com",
+        }
+        code, out = self._doctor(environ)
+        self.assertEqual(code, 0)
+        self.assertIn(f"{PASS} прокси", out)
+        self.assertIn("no_proxy", out)
+        self.assertNotIn(f"{WARN} прокси", out)
+
+    def test_no_proxy_domain_suffix_match_covers_subdomain(self):
+        environ = {
+            "JIRA_BASE_URL": "https://jira.corp.example.com",
+            "HTTPS_PROXY": "http://proxy.corp.example.com:8080",
+            "NO_PROXY": "example.com",
+        }
+        code, out = self._doctor(environ)
+        self.assertIn(f"{PASS} прокси", out)
+
+    def test_no_proxy_not_covering_jira_host_still_warns(self):
+        environ = {
+            "JIRA_BASE_URL": "https://jira.example.com",
+            "HTTPS_PROXY": "http://proxy.corp.example.com:8080",
+            "no_proxy": "other.example.com",
+        }
+        code, out = self._doctor(environ)
+        self.assertIn(f"{WARN} прокси", out)
+        self.assertIn("jira.example.com", out)
+
+    def test_proxy_set_without_jira_base_url_warns_and_notes_it_cannot_check_no_proxy(self):
+        code, out = self._doctor({"HTTPS_PROXY": "http://proxy.corp.example.com:8080"})
+        self.assertIn(f"{WARN} прокси", out)
+        self.assertIn("JIRA_BASE_URL", out)
+
+    def test_proxy_warning_names_the_no_proxy_flag_as_the_remedy(self):
+        code, out = self._doctor({"HTTPS_PROXY": "http://proxy.corp.example.com:8080"})
+        self.assertIn(f"{WARN} прокси", out)
+        self.assertIn("--no-proxy", out)
+
+    def test_proxy_warning_states_the_flag_covers_both_jira_and_gitlab(self):
+        """GitLabClient now accepts trust_env_proxy too (same as JiraClient) —
+        the remedy text must say --no-proxy covers both, not just Jira, and
+        must NOT carry the old "GitLab ещё не поддерживает" caveat (that
+        would now be a lie)."""
+        code, out = self._doctor({"HTTPS_PROXY": "http://proxy.corp.example.com:8080"})
+        self.assertIn("GitLab", out)
+        self.assertIn("--no-proxy", out)
+        self.assertNotIn("не поддерживает", out)
 
 
 if __name__ == "__main__":

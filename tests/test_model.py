@@ -3,7 +3,7 @@ import _pathfix  # noqa: F401
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from jira_metrics import model
+from team_metrics import model
 
 from helpers import dt, make_cfg, make_issue, make_timeline
 

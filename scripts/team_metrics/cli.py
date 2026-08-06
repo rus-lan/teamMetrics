@@ -1,15 +1,15 @@
-"""Command surface for the `jira-metrics` tool: init / check / run / report /
+"""Command surface for the `team-metrics` tool: init / check / run / report /
 doctor, plus a top-level --version/-v.
 
 Two ways to reach this dispatcher — pick either, both call `main()` below:
 
-    <skill-dir>/scripts/jira-metrics <command> ...        # executable script
-    python3 -m jira_metrics <command> ...                 # from <skill-dir>/scripts
+    <skill-dir>/scripts/team-metrics <command> ...        # executable script
+    python3 -m team_metrics <command> ...                 # from <skill-dir>/scripts
 
 report_data.py and render_html.py keep working exactly as before (unchanged
 flags, unchanged behavior) — this module only adds a layer on top:
 
-    init    write .jira-metrics.json into the current directory
+    init    write .team-metrics.json into the current directory
     check   verify Jira/GitLab reachability + config, no report built
     run     fetch + compute + write BOTH the JSON data file and the HTML report
     report  render HTML from an existing JSON data file — zero network calls
@@ -30,6 +30,7 @@ import json
 import os
 import shutil
 import sys
+import urllib.parse
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -40,15 +41,15 @@ from . import metrics as metrics_mod
 from . import render_html as render_html_mod
 from . import report_data
 
-# scripts/jira_metrics/cli.py -> scripts/jira_metrics -> scripts -> <skill-dir>
+# scripts/team_metrics/cli.py -> scripts/team_metrics -> scripts -> <skill-dir>
 # Same derivation render_html.py uses for TEMPLATE_PATH — never an absolute,
 # hardcoded path, since this whole tree gets copied into ~/.claude/skills/.
 SKILL_ROOT = Path(__file__).resolve().parents[2]
-EXAMPLE_CONFIG_FILENAME = ".jira-metrics.example.json"
+EXAMPLE_CONFIG_FILENAME = ".team-metrics.example.json"
 EXAMPLE_CONFIG_PATH = SKILL_ROOT / EXAMPLE_CONFIG_FILENAME
 VERSION_FILENAME = "VERSION"
 VERSION_PATH = SKILL_ROOT / VERSION_FILENAME
-GLOBAL_SKILL_DIR = Path.home() / ".claude" / "skills" / "jira-metrics-report"
+GLOBAL_SKILL_DIR = Path.home() / ".claude" / "skills" / "team-metrics"
 
 DEFAULT_RUN_HTML_OUT = "report.html"
 DEFAULT_RUN_JSON_OUT = "report.json"
@@ -104,17 +105,59 @@ def _translate_pipeline_help(parser: argparse.ArgumentParser) -> None:
             action.help = _RU_PIPELINE_ARG_HELP[action.dest]
 
 
+# Both JiraClient and GitLabClient accept trust_env_proxy=False (same
+# semantics/precedence: an explicit opener= wins outright; otherwise True
+# keeps urllib's default ProxyHandler honoring http(s)_proxy/no_proxy, False
+# replaces it with an empty ProxyHandler({}) so requests go direct) — see
+# cmd_check/cmd_run, where this flag is threaded to both client
+# constructions.
+NO_PROXY_HELP = "Игнорировать HTTP_PROXY/HTTPS_PROXY из окружения для запросов к Jira и GitLab — подключаться напрямую"
+
+# gitlab_client.GitLabClient.merge_requests(..., fetch_mr_details=False) skips
+# the per-MR detail+commits fan-out; .pipelines(..., fetch_pipeline_user=False)
+# skips the per-pipeline job-user lookup. Both degrade the affected metrics
+# through existing *_available flags (diff_stats_available,
+# commits_count_available, changes_count_available, user_lookup_available) —
+# «нет данных», never a fabricated 0. Deliberately defined directly on `run`'s
+# own parser, NOT via config.add_pipeline_args() — report_data.py's
+# build_arg_parser() defines its own copy of these two (same flag spelling,
+# English help) rather than sharing, precisely so cli.py owns the Russian
+# wording/--light shorthand here without a double-registration conflict; see
+# config.py's build_arg_parser() for the matching comment on that side.
+# config.build_run_config_from_args() reads these by getattr with a False
+# default either way, so RunConfig.fetch_mr_details/fetch_pipeline_user comes
+# out right regardless of which parser produced the Namespace.
+#
+# Measured audit: ~1660 GitLab requests per `run` on 5 projects/8 people/~150
+# pipelines-per-project at concurrency 8 (up to ~6600 with retries); the two
+# per-MR fan-outs account for ~800 of those, the per-pipeline lookup for
+# ~750 — skipping both cuts roughly 1200.
+NO_MR_DETAILS_HELP = (
+    "Не запрашивать детали и коммиты каждого MR — экономит ~800 запросов к GitLab из ~1660 в среднем run; "
+    "размер diff и число коммитов в персональных метриках станут «нет данных»"
+)
+NO_PIPELINE_USERS_HELP = (
+    "Не определять пользователя для каждого pipeline — экономит ~750 запросов к GitLab из ~1660 в среднем run; "
+    "связанные с пользователем поля пайплайнов станут «нет данных»"
+)
+LIGHT_HELP = (
+    "Отключить оба тяжёлых обхода GitLab разом (детали+коммиты MR, пользователь pipeline) — "
+    "экономит около 1200 запросов из ~1660 в среднем run; связанные метрики станут «нет данных»; "
+    "то же самое, что --no-mr-details --no-pipeline-users вместе"
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="jira-metrics", description="Отчёты по метрикам команды из Jira и GitLab")
+    parser = argparse.ArgumentParser(prog="team-metrics", description="Отчёты по метрикам команды из Jira и GitLab")
     # argparse's `version` action fires and exits immediately when it sees
     # -v/--version, the same way -h/--help does — before the "command is
-    # required" check on the subparsers below, so `jira-metrics --version`
+    # required" check on the subparsers below, so `team-metrics --version`
     # (no subcommand) works.
-    parser.add_argument("-v", "--version", action="version", version=f"jira-metrics {_read_version()}")
+    parser.add_argument("-v", "--version", action="version", version=f"team-metrics {_read_version()}")
     sub = parser.add_subparsers(dest="command", required=True, help="команда")
 
-    p_init = sub.add_parser("init", help="Создать .jira-metrics.json в текущей папке")
-    p_init.add_argument("--force", action="store_true", help="Перезаписать существующий .jira-metrics.json")
+    p_init = sub.add_parser("init", help="Создать .team-metrics.json в текущей папке")
+    p_init.add_argument("--force", action="store_true", help="Перезаписать существующий .team-metrics.json")
 
     p_check = sub.add_parser("check", help="Проверить настройку Jira/GitLab без построения отчёта")
     p_check.add_argument("--sprint-ids", default=None, metavar="ID[,ID...]", help="Список id спринтов через запятую — проверить, что они находятся")
@@ -122,12 +165,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_check.add_argument("--board-id", type=int, default=None, metavar="ID", help="Id доски — проверить, что она находится")
     p_check.add_argument("--config", default=None, metavar="ПУТЬ", help=f"Путь к JSON-файлу настроек (по умолчанию: ./{config_mod.DEFAULT_CONFIG_FILENAME}, если есть)")
     p_check.add_argument("--no-gitlab", action="store_true", help="Пропустить проверки GitLab, даже если заданы GITLAB_URL/GITLAB_TOKEN")
+    p_check.add_argument("--no-proxy", action="store_true", help=NO_PROXY_HELP)
 
     p_run = sub.add_parser("run", help="Собрать данные из Jira/GitLab, посчитать метрики, записать JSON и HTML")
     config_mod.add_pipeline_args(p_run)
     _translate_pipeline_help(p_run)
     p_run.add_argument("--out", default=DEFAULT_RUN_HTML_OUT, metavar="ПУТЬ", help=f"Путь для HTML-отчёта (по умолчанию: {DEFAULT_RUN_HTML_OUT})")
     p_run.add_argument("--json-out", default=DEFAULT_RUN_JSON_OUT, metavar="ПУТЬ", help=f"Путь для JSON-файла с данными (по умолчанию: {DEFAULT_RUN_JSON_OUT})")
+    p_run.add_argument("--no-proxy", action="store_true", help=NO_PROXY_HELP)
+    p_run.add_argument("--no-mr-details", action="store_true", help=NO_MR_DETAILS_HELP)
+    p_run.add_argument("--no-pipeline-users", action="store_true", help=NO_PIPELINE_USERS_HELP)
+    p_run.add_argument("--light", action="store_true", help=LIGHT_HELP)
 
     p_report = sub.add_parser("report", help="Отрисовать HTML из уже полученного JSON-файла — без обращений к сети")
     p_report.add_argument("report_json", nargs="?", default=None, metavar="ПУТЬ", help="Путь к JSON-файлу report_data (по умолчанию: stdin)")
@@ -139,6 +187,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _old_config_hint() -> Optional[str]:
+    """Flags a pre-2.0.0 `.jira-metrics.json` sitting unused in the current
+    directory. Never read or renamed automatically here — silently loading a
+    file the user thinks is unused would be worse than telling them about it
+    and letting them rename it themselves."""
+    old_path = Path(config_mod.OLD_CONFIG_FILENAME)
+    new_path = Path(config_mod.DEFAULT_CONFIG_FILENAME)
+    if old_path.exists() and not new_path.exists():
+        return f"найден {old_path} (имя файла настроек до переименования в team-metrics); переименуйте его: mv {old_path} {new_path}"
+    return None
+
+
 # --------------------------------------------------------------------------
 # init
 # --------------------------------------------------------------------------
@@ -146,6 +206,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def cmd_init(args: argparse.Namespace, environ: dict, invocation: str) -> int:
     dest = Path(config_mod.DEFAULT_CONFIG_FILENAME)
+    old_hint = _old_config_hint()
+    if old_hint:
+        print(old_hint)
     if dest.exists() and not args.force:
         print(f"{dest} уже существует; укажите --force для перезаписи", file=sys.stderr)
         return 1
@@ -267,7 +330,7 @@ def cmd_check(
     jira_client_obj = None
     if env is not None:
         try:
-            jira_client_obj = jira_client_cls(env.base_url, env.token)
+            jira_client_obj = jira_client_cls(env.base_url, env.token, trust_env_proxy=not args.no_proxy)
             field_ids = jira_client_obj.field_ids()
             items.append(_CheckItem("подключение к Jira", "PASS", f"видно полей: {len(field_ids)}"))
         except jc.JiraError as e:
@@ -334,7 +397,7 @@ def cmd_check(
         items.append(_CheckItem("подключение к GitLab", "SKIP", "GitLab не настроен"))
     else:
         try:
-            gitlab_client_obj = gitlab_client_cls(gitlab_env.base_url, gitlab_env.token)
+            gitlab_client_obj = gitlab_client_cls(gitlab_env.base_url, gitlab_env.token, trust_env_proxy=not args.no_proxy)
             user = gitlab_client_obj.current_user()
             items.append(_CheckItem("подключение к GitLab", "PASS", f"выполнена аутентификация как {user.get('username', '?')!r}"))
         except glc.GitLabError as e:
@@ -403,10 +466,19 @@ def cmd_run(
         print(f"ошибка настройки: {e}", file=sys.stderr)
         return 2
 
-    client = jira_client_cls(run_cfg.env.base_url, run_cfg.env.token)
+    client = jira_client_cls(run_cfg.env.base_url, run_cfg.env.token, trust_env_proxy=not args.no_proxy)
     gitlab_cli = None
     if run_cfg.gitlab_env is not None and not run_cfg.no_gitlab:
-        gitlab_cli = gitlab_client_cls(run_cfg.gitlab_env.base_url, run_cfg.gitlab_env.token)
+        gitlab_cli = gitlab_client_cls(run_cfg.gitlab_env.base_url, run_cfg.gitlab_env.token, trust_env_proxy=not args.no_proxy)
+
+    # run_cfg.fetch_mr_details/fetch_pipeline_user already fold in
+    # --no-mr-details/--no-pipeline-user (config.build_run_config_from_args()
+    # computes them as `not args.no_mr_details`/`not args.no_pipeline_user`).
+    # --light is this dispatcher's own shorthand on top — ANDed in here rather
+    # than re-parsed, so either the individual flags or --light alone (or
+    # together) turn a fan-out off.
+    fetch_mr_details = run_cfg.fetch_mr_details and not args.light
+    fetch_pipeline_user = run_cfg.fetch_pipeline_user and not args.light
 
     try:
         report = report_data.build_combined_report(
@@ -426,6 +498,8 @@ def cmd_run(
             employees=run_cfg.file_config.employees,
             final_statuses=run_cfg.file_config.final_statuses,
             include_personal=not run_cfg.no_personal,
+            fetch_mr_details=fetch_mr_details,
+            fetch_pipeline_user=fetch_pipeline_user,
         )
     except (report_data.ReportError, jc.JiraError, glc.GitLabError) as e:
         print(f"ошибка: {e}", file=sys.stderr)
@@ -441,6 +515,14 @@ def cmd_run(
 
     print(f"файл с данными JSON записан: {json_path}")
     print(f"HTML-отчёт записан: {html_path}")
+    # report["params"]["gitlab_request_count"] is report_data.py's own count
+    # of actual GitLab HTTP round trips (including retries) for this run —
+    # None when GitLab wasn't used at all. JiraClient has no equivalent
+    # counter yet, so this is labeled as the GitLab number specifically,
+    # never implied to be the run's total.
+    gitlab_request_count = report.get("params", {}).get("gitlab_request_count")
+    if gitlab_request_count is not None:
+        print(f"HTTP-запросов к GitLab: {gitlab_request_count} (без учёта Jira — там счётчик пока не ведётся)")
     return 0
 
 
@@ -489,6 +571,48 @@ def cmd_report(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 
 
+def _detect_proxy(environ: dict) -> tuple:
+    """Checks HTTPS_PROXY before HTTP_PROXY (both case variants — POSIX env
+    vars are case-sensitive, so a shell can legitimately export either), the
+    same precedence urllib.request.getproxies_environment() uses for an
+    https:// request — every Jira/GitLab base URL this tool has ever been
+    documented with is https. Returns (scheme_label, raw_value) or
+    (None, None) if neither is set."""
+    for scheme_label, names in (("HTTPS", ("https_proxy", "HTTPS_PROXY")), ("HTTP", ("http_proxy", "HTTP_PROXY"))):
+        for name in names:
+            value = (environ.get(name) or "").strip()
+            if value:
+                return scheme_label, value
+    return None, None
+
+
+def _proxy_host_only(url: str) -> str:
+    """Extracts just the host from a proxy URL. The url itself may embed
+    credentials (`http://user:pass@host:port`) — never returned or printed
+    whole, only the host, even if parsing the value fails outright."""
+    candidate = url if "://" in url else f"http://{url}"
+    try:
+        host = urllib.parse.urlparse(candidate).hostname
+    except ValueError:
+        host = None
+    return host or "хост не определён"
+
+
+def _host_bypassed_by_no_proxy(host: str, no_proxy_value: str) -> bool:
+    """Minimal no_proxy/NO_PROXY matcher: comma/space-separated hostnames or
+    domain suffixes, `*` bypasses everything. Deliberately re-implemented
+    against the `environ` dict every check/doctor item already threads
+    through (rather than urllib.request.proxy_bypass_environment(), which
+    reads the real os.environ and can't be pointed at a test's fake one)."""
+    if not host or not no_proxy_value:
+        return False
+    entries = [e.strip().lower().lstrip(".") for e in no_proxy_value.replace(" ", ",").split(",") if e.strip()]
+    if "*" in entries:
+        return True
+    host_l = host.lower()
+    return any(host_l == e or host_l.endswith(f".{e}") for e in entries)
+
+
 def cmd_doctor(args: argparse.Namespace, environ: dict, invocation: str) -> int:
     """Checks the ENVIRONMENT and the install, not Jira/GitLab credentials —
     `check` covers connectivity/auth; `doctor` must work with no tokens set
@@ -529,18 +653,18 @@ def cmd_doctor(args: argparse.Namespace, environ: dict, invocation: str) -> int:
                 "установка skill",
                 "WARN",
                 f"режим: локальная копия (git checkout) — {GLOBAL_SKILL_DIR} не найдена; "
-                "это нормально для разработки, но команда jira-metrics не будет доступна из других папок без ./install.sh",
+                "это нормально для разработки, но команда team-metrics не будет доступна из других папок без ./install.sh",
             )
         )
 
-    # 4. `jira-metrics` launcher reachable on PATH
-    launcher = shutil.which("jira-metrics")
+    # 4. `team-metrics` launcher reachable on PATH
+    launcher = shutil.which("team-metrics")
     if launcher:
-        items.append(_CheckItem("команда jira-metrics в PATH", "PASS", launcher))
+        items.append(_CheckItem("команда team-metrics в PATH", "PASS", launcher))
     else:
         items.append(
             _CheckItem(
-                "команда jira-metrics в PATH",
+                "команда team-metrics в PATH",
                 "WARN",
                 'не найдена; добавьте в PATH: export PATH="$HOME/.local/bin:$PATH" (и откройте новый терминал)',
             )
@@ -551,9 +675,13 @@ def cmd_doctor(args: argparse.Namespace, environ: dict, invocation: str) -> int:
     if cfg_path.exists():
         items.append(_CheckItem("файл настроек в текущей папке", "PASS", str(cfg_path)))
     else:
-        items.append(
-            _CheckItem("файл настроек в текущей папке", "WARN", f"{cfg_path} не найден; запустите: {invocation} init")
-        )
+        old_hint = _old_config_hint()
+        if old_hint:
+            items.append(_CheckItem("файл настроек в текущей папке", "WARN", old_hint))
+        else:
+            items.append(
+                _CheckItem("файл настроек в текущей папке", "WARN", f"{cfg_path} не найден; запустите: {invocation} init")
+            )
 
     # 6. env vars — presence only, никогда значение
     def _state(name: str) -> str:
@@ -576,6 +704,44 @@ def cmd_doctor(args: argparse.Namespace, environ: dict, invocation: str) -> int:
     except OSError as e:
         items.append(_CheckItem("самопроверка шаблона отчёта", "FAIL", str(e)))
 
+    # 8. proxy exposure — urllib keeps its default ProxyHandler, so
+    # http(s)_proxy is honored and the "Authorization: Bearer <token>" header
+    # travels through whatever it points at. Often intentional on a
+    # corporate network, so this is a WARN, never a FAIL — but it must be
+    # legible, not silent.
+    proxy_scheme, proxy_value = _detect_proxy(environ)
+    if proxy_value is None:
+        items.append(_CheckItem("прокси", "PASS", "не настроен (HTTP_PROXY/HTTPS_PROXY не заданы)"))
+    else:
+        proxy_host = _proxy_host_only(proxy_value)
+        jira_base_url = (environ.get("JIRA_BASE_URL") or "").strip()
+        jira_host = urllib.parse.urlparse(jira_base_url).hostname if jira_base_url else ""
+        no_proxy_value = (environ.get("no_proxy") or environ.get("NO_PROXY") or "").strip()
+
+        if jira_host and _host_bypassed_by_no_proxy(jira_host, no_proxy_value):
+            items.append(
+                _CheckItem(
+                    "прокси",
+                    "PASS",
+                    f"{proxy_scheme}_PROXY указывает на {proxy_host}, но хост Jira ({jira_host}) исключён через "
+                    "no_proxy — запросы к Jira через этот прокси не идут",
+                )
+            )
+        else:
+            if jira_host:
+                note = f" (хост Jira {jira_host} не входит в no_proxy)"
+            else:
+                note = " (JIRA_BASE_URL не задан — не могу проверить, входит ли он в no_proxy)"
+            items.append(
+                _CheckItem(
+                    "прокси",
+                    "WARN",
+                    f"{proxy_scheme}_PROXY указывает на {proxy_host} — заголовок Authorization: Bearer <токен> "
+                    f"будет проходить через этот прокси" + note +
+                    "; обойти можно флагом --no-proxy у check/run (для запросов и к Jira, и к GitLab)",
+                )
+            )
+
     ok = _print_check_items(items)
     return 0 if ok else 1
 
@@ -585,22 +751,22 @@ def cmd_doctor(args: argparse.Namespace, environ: dict, invocation: str) -> int:
 # --------------------------------------------------------------------------
 
 # A launcher that execs the real script by absolute path (e.g. install.sh's
-# ~/.local/bin/jira-metrics wrapper — needed because a symlink would break
+# ~/.local/bin/team-metrics wrapper — needed because a symlink would break
 # this script's own __file__-based self-location) loses the short name the
 # user actually typed: sys.argv[0] becomes that absolute path. Setting this
 # env var lets such a launcher tell cli.py what name to print in hints
 # instead of trusting argv[0]. See _resolve_invocation_name().
-INVOCATION_NAME_ENV_VAR = "JIRA_METRICS_BIN"
+INVOCATION_NAME_ENV_VAR = "TEAM_METRICS_BIN"
 
 
 def _resolve_invocation_name(candidate: Optional[str], environ: dict) -> str:
     """Never returns an absolute path — a printed hint is something the user
     should be able to retype, not the launcher's internal exec target.
 
-    Priority: an explicit override (JIRA_METRICS_BIN) > a relative candidate
-    (git checkout: `scripts/jira-metrics`, or the friendly `python3 -m
-    jira_metrics` string __main__.py passes) printed as-is > the short
-    conventional name `jira-metrics` for an absolute path or nothing at all.
+    Priority: an explicit override (TEAM_METRICS_BIN) > a relative candidate
+    (git checkout: `scripts/team-metrics`, or the friendly `python3 -m
+    team_metrics` string __main__.py passes) printed as-is > the short
+    conventional name `team-metrics` for an absolute path or nothing at all.
     """
     override = (environ.get(INVOCATION_NAME_ENV_VAR) or "").strip()
     if override:
@@ -614,7 +780,7 @@ def _resolve_invocation_name(candidate: Optional[str], environ: dict) -> str:
         if basename:
             return basename
 
-    return "jira-metrics"
+    return "team-metrics"
 
 
 def main(argv: Optional[list] = None, environ: Optional[dict] = None, invocation: Optional[str] = None) -> int:

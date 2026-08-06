@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the source release bundle for jira-metrics-report into dist/release/:
-#   jira-metrics-report.tar.gz  - runtime files only (what the skill needs to run)
+# Build the source release bundle for team-metrics into dist/release/:
+#   team-metrics.tar.gz  - runtime files only (what the skill needs to run)
 #   install.sh                  - copied in unmodified, downloaded by curl one-liner
 #   checksums-sha256.txt        - sha256 over the two files above
 #
@@ -31,7 +31,7 @@ if [ "$SKILL_VERSION" != "$PKG_VERSION" ]; then
   exit 1
 fi
 
-SKILL_NAME="jira-metrics-report"
+SKILL_NAME="team-metrics"
 OUT_DIR="dist/release"
 STAGE_DIR="dist/stage/${SKILL_NAME}"
 TARBALL_NAME="${SKILL_NAME}.tar.gz"
@@ -41,7 +41,7 @@ INSTALL_SCRIPT="install.sh"
 # same directory is what LOCAL install.sh copies from a checkout and what
 # REMOTE install.sh extracts and installs from. tests/, demo/, .research/,
 # and screenshots/ are deliberately left out: nothing at runtime reads them.
-BUNDLE_ITEMS="SKILL.md README.md scripts templates .jira-metrics.example.json VERSION"
+BUNDLE_ITEMS="SKILL.md README.md scripts templates .team-metrics.example.json VERSION"
 
 if [ ! -f "$INSTALL_SCRIPT" ]; then
   echo "install script not found: $INSTALL_SCRIPT" >&2
@@ -62,11 +62,11 @@ done
 
 find "$STAGE_DIR" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 find "$STAGE_DIR" -type f -name '*.py[co]' -delete 2>/dev/null || true
-# scripts/ is bundled whole for jira-metrics + jira_metrics/, but this
+# scripts/ is bundled whole for team-metrics + team_metrics/, but this
 # release script itself is a build-time tool, not something the skill needs
 # at runtime -- drop it from the staged copy.
 rm -f "$STAGE_DIR/scripts/release.sh"
-chmod +x "$STAGE_DIR/scripts/jira-metrics"
+chmod +x "$STAGE_DIR/scripts/team-metrics"
 
 echo "Packing $TARBALL_NAME..."
 ( cd dist/stage && tar czf "$OLDPWD/$OUT_DIR/$TARBALL_NAME" "$SKILL_NAME" )

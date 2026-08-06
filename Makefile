@@ -1,9 +1,9 @@
 .PHONY: install uninstall init check run report doctor version release test
 
 # Convenience wrapper only — every target below just calls the real entry
-# point, scripts/jira-metrics (or install.sh/scripts/release.sh for
+# point, scripts/team-metrics (or install.sh/scripts/release.sh for
 # install/uninstall/release). Nothing in this project depends on `make`
-# existing; run scripts/jira-metrics, ./install.sh, or scripts/release.sh
+# existing; run scripts/team-metrics, ./install.sh, or scripts/release.sh
 # directly if you don't have it.
 
 install:
@@ -13,19 +13,19 @@ uninstall:
 	./install.sh --uninstall
 
 init:
-	scripts/jira-metrics init
+	scripts/team-metrics init
 
 check:
-	scripts/jira-metrics check
+	scripts/team-metrics check
 
 run:
-	scripts/jira-metrics run $(ARGS)
+	scripts/team-metrics run $(ARGS)
 
 report:
-	scripts/jira-metrics report $(ARGS)
+	scripts/team-metrics report $(ARGS)
 
 doctor:
-	scripts/jira-metrics doctor
+	scripts/team-metrics doctor
 
 version:
 	@cat VERSION

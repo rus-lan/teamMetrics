@@ -2,7 +2,7 @@ import _pathfix  # noqa: F401
 
 import unittest
 
-from jira_metrics import engineering_metrics as em
+from team_metrics import engineering_metrics as em
 
 
 def pipeline(project="group/a", status="success", created_at="2026-01-01T00:00:00Z"):

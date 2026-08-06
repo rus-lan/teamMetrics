@@ -1,12 +1,15 @@
 import _pathfix  # noqa: F401
 
+import email.message
 import json
 import socket
 import unittest
+import unittest.mock
+import urllib.request
 from datetime import timezone
 
-from jira_metrics import jira_client as jc
-from jira_metrics import model
+from team_metrics import jira_client as jc
+from team_metrics import model
 
 
 def _issue_dto(key, issue_type="Story", changelog=None):
@@ -478,6 +481,186 @@ class ResolveFieldsTests(unittest.TestCase):
         self.assertFalse(rf.has_qa_estimation)
         self.assertFalse(rf.has_role)
         self.assertFalse(rf.has_epic_link)
+
+
+class _FakeResp:
+    """Duck-typed opener response — matches the shape _attempt() reads:
+    .status/.headers.get(...)/.read()."""
+
+    def __init__(self, body: bytes, status: int = 200):
+        self._body = body
+        self.status = status
+        self.headers = {}
+
+    def read(self):
+        return self._body
+
+
+class ReadOnlyGuaranteeTests(unittest.TestCase):
+    """There is no `method`/`data` parameter anywhere in this client — every
+    request it can build is a GET by construction (mirrors gitlab_client's
+    ReadOnlyGuaranteeTests, test_gitlab_client.py:622). One method per public
+    JiraClient call that issues a request, not just one representative call —
+    board_sprints/search_issues/suggest_sprints each go through the shared
+    _attempt() plumbing differently and could in principle diverge."""
+
+    def _client_with_recording_opener(self, body: bytes):
+        captured = []
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                captured.append({"method": req.get_method(), "has_data": req.data is not None})
+                return _FakeResp(body)
+
+        client = jc.JiraClient("https://jira.example.com", "tok", opener=FakeOpener(), sleep=lambda _d: None)
+        return client, captured
+
+    def _assert_all_get_no_data(self, captured):
+        self.assertTrue(captured, "expected at least one request to have been made")
+        for c in captured:
+            self.assertEqual(c["method"], "GET")
+            self.assertFalse(c["has_data"])
+
+    def test_sprint(self):
+        client, captured = self._client_with_recording_opener(
+            b'{"id": 1, "name": "S1", "state": "closed", "originBoardId": 1, '
+            b'"startDate": "", "endDate": "", "completeDate": ""}'
+        )
+        client.sprint(1)
+        self._assert_all_get_no_data(captured)
+
+    def test_board(self):
+        client, captured = self._client_with_recording_opener(b'{"id": 1, "name": "B", "type": "scrum"}')
+        client.board(1)
+        self._assert_all_get_no_data(captured)
+
+    def test_board_sprints(self):
+        client, captured = self._client_with_recording_opener(b'{"values": [], "isLast": true}')
+        client.board_sprints(1)
+        self._assert_all_get_no_data(captured)
+
+    def test_field_ids(self):
+        client, captured = self._client_with_recording_opener(b"[]")
+        client.field_ids()
+        self._assert_all_get_no_data(captured)
+
+    def test_list_statuses(self):
+        client, captured = self._client_with_recording_opener(b"[]")
+        client.list_statuses()
+        self._assert_all_get_no_data(captured)
+
+    def test_issue_changelog(self):
+        client, captured = self._client_with_recording_opener(b'{"changelog": {"histories": []}}')
+        client.issue_changelog("P-1")
+        self._assert_all_get_no_data(captured)
+
+    def test_search_issues(self):
+        client, captured = self._client_with_recording_opener(b'{"issues": [], "total": 0}')
+        client.search_issues("sprint in (1)", ["summary"])
+        self._assert_all_get_no_data(captured)
+
+    def test_suggest_sprints(self):
+        client, captured = self._client_with_recording_opener(b'{"suggestions": [], "allMatches": []}')
+        client.suggest_sprints("Sprint 1")
+        self._assert_all_get_no_data(captured)
+
+
+class ProxyOptOutTests(unittest.TestCase):
+    """trust_env_proxy (default True, unchanged behavior): the opener keeps
+    urllib's default ProxyHandler, so http_proxy/https_proxy from the
+    environment are honored — often desired on a corporate network.
+    trust_env_proxy=False builds the opener without a working proxy handler,
+    for a caller that wants every request to go direct regardless of the
+    environment."""
+
+    def _proxy_handler(self, client):
+        return next((h for h in client._opener.handlers if isinstance(h, urllib.request.ProxyHandler)), None)
+
+    def test_default_keeps_the_environment_proxy_handler(self):
+        with unittest.mock.patch.dict("os.environ", {"https_proxy": "http://proxy.example.com:8080"}):
+            client = jc.JiraClient("https://jira.example.com", "tok", sleep=lambda _d: None)
+            handler = self._proxy_handler(client)
+            self.assertIsNotNone(handler)
+            self.assertEqual(handler.proxies.get("https"), "http://proxy.example.com:8080")
+
+    def test_opt_out_ignores_the_environment_proxy(self):
+        with unittest.mock.patch.dict("os.environ", {"https_proxy": "http://proxy.example.com:8080"}):
+            client = jc.JiraClient("https://jira.example.com", "tok", sleep=lambda _d: None, trust_env_proxy=False)
+            handler = self._proxy_handler(client)
+            # No active proxy handler at all -> every request goes direct.
+            self.assertIsNone(handler)
+
+    def test_explicit_opener_bypasses_the_proxy_setting_entirely(self):
+        # A caller-supplied opener (as ReadOnlyGuaranteeTests uses) is used
+        # as-is; trust_env_proxy is irrelevant once `opener` is given.
+        sentinel = object()
+        client = jc.JiraClient("https://jira.example.com", "tok", opener=sentinel, trust_env_proxy=False)
+        self.assertIs(client._opener, sentinel)
+
+
+class NoRedirectAcrossHostsTests(unittest.TestCase):
+    """Confirms _NoRedirect actually stops a cross-host redirect — not just
+    that redirect_request() returns None, but that the property holds
+    end-to-end through the REAL opener chain (urllib.request.build_opener
+    with _NoRedirect, exactly what JiraClient builds by default), by
+    patching urllib's own AbstractHTTPHandler.do_open (the shared low-level
+    method both HTTPHandler and HTTPSHandler delegate to) rather than
+    bypassing the opener with a bespoke fake. A misconfigured/compromised
+    Jira server pointing a 3xx at another host must never make this client
+    silently follow it there with the Authorization: Bearer <PAT> header
+    attached; it must surface as a JiraError instead."""
+
+    @staticmethod
+    def _fake_302_response(location: str):
+        class FakeHTTPResponse:
+            def __init__(self):
+                self.status = 302
+                self.code = 302
+                self.reason = "Found"
+                self.msg = email.message.Message()
+                self.msg["Location"] = location
+                self.headers = self.msg
+                self.version = 11
+                self.length = 0
+                self.will_close = False
+
+            def read(self, *a, **kw):
+                return b""
+
+            def info(self):
+                return self.msg
+
+            def getheader(self, name, default=None):
+                return self.msg.get(name, default)
+
+            def getheaders(self):
+                return list(self.msg.items())
+
+            def close(self):
+                pass
+
+        return FakeHTTPResponse()
+
+    def test_302_to_a_different_host_never_triggers_a_second_request(self):
+        client = jc.JiraClient("https://jira.example.com", "tok", sleep=lambda _d: None)
+        # client._opener is the REAL urllib opener built with _NoRedirect —
+        # not swapped for a test double — so this exercises actual urllib
+        # redirect handling, not a restatement of the claim under test.
+
+        contacted_hosts = []
+
+        def fake_do_open(self_handler, http_class, req, **kwargs):
+            contacted_hosts.append(req.host)
+            return self._fake_302_response("https://evil.example.com/steal")
+
+        with unittest.mock.patch.object(urllib.request.AbstractHTTPHandler, "do_open", fake_do_open):
+            with self.assertRaises(jc.JiraError) as ctx:
+                client._do("Op", "/x")
+
+        self.assertEqual(ctx.exception.status_code, 302)
+        # Only jira.example.com was ever contacted — evil.example.com never
+        # received a request (and therefore never received the PAT).
+        self.assertEqual(contacted_hosts, ["jira.example.com"])
 
 
 if __name__ == "__main__":

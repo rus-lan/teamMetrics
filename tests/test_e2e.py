@@ -1,4 +1,4 @@
-"""Full end-to-end coverage of the `jira-metrics` CLI: init -> check -> run ->
+"""Full end-to-end coverage of the `team-metrics` CLI: init -> check -> run ->
 report, with Jira and GitLab mocked strictly at the HTTP contract level.
 
 ## Seam mocked, and why
@@ -12,7 +12,7 @@ only accept `jira_client_cls`/`gitlab_client_cls` overrides (used by
 tests/test_cli.py's DI-based tests), and `main()` itself calls both with
 neither override. So through a real `cli.main(argv, environ)` invocation —
 which is what this file drives, exactly like a user typing
-`scripts/jira-metrics ...` — there is no reachable seam on either client
+`scripts/team-metrics ...` — there is no reachable seam on either client
 object. The one seam both share is `urllib.request.build_opener` itself:
 every test here patches that name to return a `fixtures.http_fake.FakeOpener`
 serving real API-shaped fixture responses (tests/fixtures/wire.py), so the
@@ -61,7 +61,7 @@ produce different `params.generated_at` — by design, a report legitimately
 stamps when it was built. To honor the "same seed -> byte-identical output"
 requirement (which is really about the seeded Monte-Carlo forecast, not the
 timestamp) without changing product behavior, `_frozen_now()` below patches
-`jira_metrics.report_data.datetime` with a `datetime` subclass whose `.now()`
+`team_metrics.report_data.datetime` with a `datetime` subclass whose `.now()`
 returns a fixed instant — a standard freezegun-style technique, applied only
 inside this test module.
 """
@@ -81,9 +81,9 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 
-from jira_metrics import cli
-from jira_metrics import config as config_mod
-from jira_metrics import metrics as metrics_mod
+from team_metrics import cli
+from team_metrics import config as config_mod
+from team_metrics import metrics as metrics_mod
 
 from fixtures import wire
 from fixtures.http_fake import FakeOpener
@@ -126,7 +126,7 @@ def _run_main(argv, environ):
     """Runs the real cli.main() capturing stdout/stderr; returns (code, out, err)."""
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        code = cli.main(argv, environ=environ, invocation="jira-metrics")
+        code = cli.main(argv, environ=environ, invocation="team-metrics")
     return code, out.getvalue(), err.getvalue()
 
 
@@ -203,7 +203,7 @@ class _FrozenDateTime(datetime, metaclass=_FrozenDateTimeMeta):
 
 @contextlib.contextmanager
 def _frozen_now():
-    with unittest.mock.patch("jira_metrics.report_data.datetime", _FrozenDateTime):
+    with unittest.mock.patch("team_metrics.report_data.datetime", _FrozenDateTime):
         yield
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Установщик jira-metrics-report.
+# Установщик team-metrics.
 #
 # Работает в двух режимах, определяемых автоматически по тому, как скрипт
 # запущен:
@@ -15,43 +15,66 @@
 #   ИЛИ, внутри клона репозитория team-metrics:
 #   ./install.sh
 #
-# Оба режима кладут скилл в ~/.claude/skills/jira-metrics-report/ (общий
-# каталог, который читают и Claude Code, и opencode) и команду jira-metrics
+# Оба режима кладут скилл в ~/.claude/skills/team-metrics/ (общий
+# каталог, который читают и Claude Code, и opencode) и команду team-metrics
 # в ~/.local/bin/.
 #
-# Переменные окружения (действуют только в удалённом режиме):
-#   INSTALL_DIR                Каталог для команды jira-metrics
-#                               (по умолчанию: $HOME/.local/bin)
+# Переменные окружения:
+#   INSTALL_DIR                 Каталог для команды team-metrics -- действует
+#                                и в локальном, и в удалённом режиме
+#                                (по умолчанию: $HOME/.local/bin)
+#
+#   Только в удалённом режиме (на локальную установку из клона не влияют):
 #   TEAMMETRICS_VERSION         Поставить конкретную версию вместо latest,
-#                               например: TEAMMETRICS_VERSION=1.0.0 sh install.sh
+#                                например: TEAMMETRICS_VERSION=2.0.0 sh install.sh
 #   TEAMMETRICS_SKIP_CHECKSUM   1, чтобы пропустить проверку sha256, если её
-#                               в принципе нельзя выполнить (нет sha256sum/
-#                               shasum, не скачался checksums-sha256.txt).
-#                               Настоящее несовпадение checksum всегда
-#                               фатально, этот флаг его не обходит.
+#                                в принципе нельзя выполнить (нет sha256sum/
+#                                shasum, не скачался checksums-sha256.txt).
+#                                Настоящее несовпадение checksum всегда
+#                                фатально, этот флаг его не обходит.
 #
 # Флаги: --uninstall   удалить всё, что поставил этот скрипт
+#        --force       перезаписать команду team-metrics в INSTALL_DIR, даже
+#                       если там уже лежит чужой файл с этим именем (без
+#                       этого флага install.sh отказывается перезаписывать
+#                       файл, который поставил не он)
 #        -h, --help    показать эту справку
 #
 # Написан на POSIX sh (без bash-измов) -- скрипт пайпится в `sh` при
 # удалённой установке и должен работать под sh/dash/bash/zsh одинаково.
+#
+# Миграция с версии 1.x (проект назывался jira-metrics-report /
+# jira-metrics): при каждой установке скрипт сам находит и удаляет старый
+# skill в ~/.claude/skills/jira-metrics-report/ и старую команду
+# jira-metrics в INSTALL_DIR (только если это наш собственный лаунчер, с
+# тем же маркером, что проверяет --uninstall). Конфиг .jira-metrics.json
+# не переименовывается автоматически -- `team-metrics init`/`doctor`
+# только предупредят о нём.
 
 set -eu
 
-SKILL_NAME="jira-metrics-report"
+SKILL_NAME="team-metrics"
 OWNER="rus-lan"
 REPO="teamMetrics"
-ASSET_TARBALL="jira-metrics-report.tar.gz"
+ASSET_TARBALL="team-metrics.tar.gz"
 ASSET_CHECKSUMS="checksums-sha256.txt"
 
 SKILL_DEST="$HOME/.claude/skills/$SKILL_NAME"
 BIN_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-LAUNCHER="$BIN_DIR/jira-metrics"
-LAUNCHER_MARKER="# jira-metrics-report launcher -- installed by install.sh, safe to remove"
+LAUNCHER="$BIN_DIR/team-metrics"
+LAUNCHER_MARKER="# team-metrics launcher -- installed by install.sh, safe to remove"
+FORCE=0
+
+# Pre-2.0.0 names (the project was called jira-metrics-report / jira-metrics
+# before the rename) -- kept here only so a fresh install.sh can find and
+# remove what an old install.sh left behind. See migrate_old_install().
+OLD_SKILL_DEST="$HOME/.claude/skills/jira-metrics-report"
+OLD_LAUNCHER="$BIN_DIR/jira-metrics"
+OLD_LAUNCHER_MARKER="# jira-metrics-report launcher -- installed by install.sh, safe to remove"
 
 # Обязательные файлы -- один и тот же список для локального клона и для
 # распакованного архива релиза (см. scripts/release.sh, BUNDLE_ITEMS).
-BUNDLE_ITEMS="SKILL.md README.md scripts templates .jira-metrics.example.json VERSION"
+BUNDLE_ITEMS="SKILL.md README.md scripts templates .team-metrics.example.json VERSION"
 
 err() { printf 'ошибка: %s\n' "$1" >&2; }
 info() { printf '%s\n' "$1"; }
@@ -64,11 +87,13 @@ usage() {
   ./install.sh --uninstall
   ./install.sh -h|--help
 
-Без флагов -- устанавливает или обновляет skill jira-metrics-report:
-  - копирует его в ~/.claude/skills/jira-metrics-report/
-  - кладёт команду jira-metrics в ~/.local/bin/ (или $INSTALL_DIR)
+Без флагов -- устанавливает или обновляет skill team-metrics:
+  - копирует его в ~/.claude/skills/team-metrics/
+  - кладёт команду team-metrics в ~/.local/bin/ (или $INSTALL_DIR)
 
-  --uninstall   удалить skill и команду jira-metrics, поставленные этим скриптом
+  --uninstall   удалить skill и команду team-metrics, поставленные этим скриптом
+  --force       перезаписать команду team-metrics, даже если по этому пути
+                уже лежит чужой файл (без флага install.sh откажется)
   -h, --help    показать эту справку
 EOF
 }
@@ -99,7 +124,7 @@ check_python() {
 detect_source_dir() {
   if [ -f "$0" ]; then
     candidate="$(cd "$(dirname "$0")" && pwd)"
-    if [ -f "$candidate/SKILL.md" ] && [ -d "$candidate/scripts/jira_metrics" ]; then
+    if [ -f "$candidate/SKILL.md" ] && [ -d "$candidate/scripts/team_metrics" ]; then
       printf '%s' "$candidate"
       return 0
     fi
@@ -145,7 +170,7 @@ install_skill() {
   # scripts/release.sh is a build-time tool, not something the skill needs
   # at runtime -- drop it if present (local installs from a checkout have it).
   rm -f "$SKILL_DEST/scripts/release.sh"
-  chmod +x "$SKILL_DEST/scripts/jira-metrics"
+  chmod +x "$SKILL_DEST/scripts/team-metrics"
 
   if [ "$was_installed" = "1" ]; then
     info "skill обновлён в $SKILL_DEST"
@@ -156,14 +181,29 @@ install_skill() {
 
 install_launcher() {
   mkdir -p "$BIN_DIR"
+
+  # Refuse to clobber a file at $LAUNCHER that this script didn't create --
+  # only a file already carrying our marker (a prior install of ours) is
+  # safe to overwrite silently. Anything else needs an explicit --force.
+  if [ -e "$LAUNCHER" ] && ! grep -qF "$LAUNCHER_MARKER" "$LAUNCHER" 2>/dev/null; then
+    if [ "$FORCE" = "1" ]; then
+      info "$LAUNCHER уже существует и не похож на файл, созданный install.sh -- перезаписываю (--force)"
+    else
+      err "$LAUNCHER уже существует и не похож на файл, созданный install.sh."
+      echo "  install.sh не перезаписывает чужие файлы без --force." >&2
+      echo "  переместите или удалите $LAUNCHER вручную, либо запустите: install.sh --force" >&2
+      exit 1
+    fi
+  fi
+
   cat > "$LAUNCHER" <<EOF
 #!/usr/bin/env bash
 $LAUNCHER_MARKER
-export JIRA_METRICS_BIN="jira-metrics"
-exec python3 "$SKILL_DEST/scripts/jira-metrics" "\$@"
+export TEAM_METRICS_BIN="team-metrics"
+exec python3 "$SKILL_DEST/scripts/team-metrics" "\$@"
 EOF
   chmod +x "$LAUNCHER"
-  info "команда jira-metrics установлена в $LAUNCHER"
+  info "команда team-metrics установлена в $LAUNCHER"
 }
 
 check_path() {
@@ -179,7 +219,7 @@ check_path() {
   esac
 
   echo ""
-  echo "$BIN_DIR ещё не в PATH -- команда jira-metrics сама не найдётся."
+  echo "$BIN_DIR ещё не в PATH -- команда team-metrics сама не найдётся."
   if [ -n "$rc_file" ]; then
     echo "Добавьте эту строку в $rc_file, затем откройте новый терминал (или выполните: . $rc_file):"
   else
@@ -211,7 +251,7 @@ verify_checksum() {
 
   if [ -z "$sha_cmd" ]; then
     if [ "${TEAMMETRICS_SKIP_CHECKSUM:-}" = "1" ]; then
-      echo "jira-metrics: ПРЕДУПРЕЖДЕНИЕ: нет ни sha256sum, ни shasum -- пропускаю проверку целостности." >&2
+      echo "team-metrics: ПРЕДУПРЕЖДЕНИЕ: нет ни sha256sum, ни shasum -- пропускаю проверку целостности." >&2
       return 0
     fi
     err "нет ни sha256sum, ни shasum -- не могу проверить скачанный файл."
@@ -220,11 +260,11 @@ verify_checksum() {
   fi
 
   checksums_url="${base_url}/${ASSET_CHECKSUMS}"
-  tmp_checksums=$(mktemp "${TMPDIR:-/tmp}/jira-metrics-sha.XXXXXX")
+  tmp_checksums=$(mktemp "${TMPDIR:-/tmp}/team-metrics-sha.XXXXXX")
   if ! curl -fsSL -o "$tmp_checksums" "$checksums_url"; then
     rm -f "$tmp_checksums"
     if [ "${TEAMMETRICS_SKIP_CHECKSUM:-}" = "1" ]; then
-      echo "jira-metrics: ПРЕДУПРЕЖДЕНИЕ: не удалось скачать $ASSET_CHECKSUMS -- пропускаю проверку целостности." >&2
+      echo "team-metrics: ПРЕДУПРЕЖДЕНИЕ: не удалось скачать $ASSET_CHECKSUMS -- пропускаю проверку целостности." >&2
       return 0
     fi
     err "не удалось скачать $ASSET_CHECKSUMS -- не могу проверить скачанный файл."
@@ -236,7 +276,7 @@ verify_checksum() {
   rm -f "$tmp_checksums"
   if [ -z "$expected" ]; then
     if [ "${TEAMMETRICS_SKIP_CHECKSUM:-}" = "1" ]; then
-      echo "jira-metrics: ПРЕДУПРЕЖДЕНИЕ: нет записи checksum для '$asset' -- пропускаю проверку целостности." >&2
+      echo "team-metrics: ПРЕДУПРЕЖДЕНИЕ: нет записи checksum для '$asset' -- пропускаю проверку целостности." >&2
       return 0
     fi
     err "нет записи checksum для '$asset' в $ASSET_CHECKSUMS -- не могу проверить скачанный файл."
@@ -259,11 +299,11 @@ verify_checksum() {
 # его checksum скачиваются из этого же releases/download/<tag>/ пути. Так
 # архив и его checksum никогда не могут прийти из двух разных релизов.
 run_remote_install() {
-  info "jira-metrics: удалённая установка -- ищу релиз на GitHub..."
+  info "team-metrics: удалённая установка -- ищу релиз на GitHub..."
 
   if [ -n "${TEAMMETRICS_VERSION:-}" ]; then
     resolved_tag="v${TEAMMETRICS_VERSION#v}"
-    info "jira-metrics: ставлю зафиксированную версию ${resolved_tag}..."
+    info "team-metrics: ставлю зафиксированную версию ${resolved_tag}..."
   else
     probe_url="https://github.com/${OWNER}/${REPO}/releases/latest/download/${ASSET_CHECKSUMS}"
     if ! redirect_url=$(curl -fsS --no-location -o /dev/null -w '%{redirect_url}' "$probe_url"); then
@@ -282,12 +322,12 @@ run_remote_install() {
       echo "  адрес редиректа: $redirect_url" >&2
       exit 1
     fi
-    info "jira-metrics: последний релиз -- ${resolved_tag}."
+    info "team-metrics: последний релиз -- ${resolved_tag}."
   fi
 
   base_url="https://github.com/${OWNER}/${REPO}/releases/download/${resolved_tag}"
 
-  work_dir=$(mktemp -d "${TMPDIR:-/tmp}/jira-metrics-install.XXXXXX")
+  work_dir=$(mktemp -d "${TMPDIR:-/tmp}/team-metrics-install.XXXXXX")
   cleanup() { rm -rf "$work_dir" 2>/dev/null; }
   trap cleanup EXIT
   trap 'cleanup; exit 129' HUP
@@ -297,7 +337,7 @@ run_remote_install() {
 
   download_url="${base_url}/${ASSET_TARBALL}"
   tmp_file=$(mktemp "$work_dir/.dl.XXXXXX")
-  info "jira-metrics: скачиваю ${ASSET_TARBALL}..."
+  info "team-metrics: скачиваю ${ASSET_TARBALL}..."
   if ! curl -fsSL -o "$tmp_file" "$download_url"; then
     err "не удалось скачать $ASSET_TARBALL с $download_url"
     if [ -n "${TEAMMETRICS_VERSION:-}" ]; then
@@ -346,7 +386,31 @@ do_uninstall() {
   else
     info "$LAUNCHER не найден, пропускаю"
   fi
+
+  # Also sweep any pre-2.0.0 (jira-metrics-report) leftovers -- --uninstall
+  # should not leave a stale 1.x install behind just because it never went
+  # through a normal (re)install first.
+  migrate_old_install
+
   exit 0
+}
+
+# Cleans up a pre-2.0.0 install (skill dir + launcher under the old
+# jira-metrics-report/jira-metrics names) left behind by the rename, so a
+# fresh install.sh run doesn't strand the user with a stale, shadowing copy
+# alongside the new one. Same safety rule as do_uninstall()'s launcher check
+# -- only a launcher carrying our own marker is removed, never a foreign
+# file that just happens to sit at that path.
+migrate_old_install() {
+  if [ -d "$OLD_SKILL_DEST" ]; then
+    rm -rf "$OLD_SKILL_DEST"
+    info "миграция: удалён старый skill $OLD_SKILL_DEST (переименован в $SKILL_NAME)"
+  fi
+
+  if [ -f "$OLD_LAUNCHER" ] && grep -qF "$OLD_LAUNCHER_MARKER" "$OLD_LAUNCHER" 2>/dev/null; then
+    rm -f "$OLD_LAUNCHER"
+    info "миграция: удалена старая команда $OLD_LAUNCHER (переименована в $LAUNCHER)"
+  fi
 }
 
 finish() {
@@ -356,30 +420,37 @@ finish() {
 
   echo ""
   echo "Дальше выполните по порядку:"
-  echo "  1. jira-metrics init"
+  echo "  1. team-metrics init"
   echo "  2. export JIRA_BASE_URL=\"https://jira.example.com\" JIRA_TOKEN=\"<ваш Jira PAT>\""
-  echo "  3. jira-metrics check --sprint-names \"Sprint 42\""
+  echo "  3. team-metrics check --sprint-names \"Sprint 42\""
   echo ""
   echo "Или сразу проверьте окружение одной командой:"
-  echo "  jira-metrics doctor"
+  echo "  team-metrics doctor"
 }
 
 main() {
-  case "${1:-}" in
-    --uninstall) do_uninstall ;;
-    -h|--help) usage; exit 0 ;;
-    "") ;;
-    *)
-      err "неизвестный флаг: $1"
-      usage
-      exit 2
-      ;;
-  esac
+  action=""
+  for arg in "$@"; do
+    case "$arg" in
+      --uninstall) action="uninstall" ;;
+      --force) FORCE=1 ;;
+      -h|--help) usage; exit 0 ;;
+      *)
+        err "неизвестный флаг: $arg"
+        usage
+        exit 2
+        ;;
+    esac
+  done
+
+  if [ "$action" = "uninstall" ]; then
+    do_uninstall
+  fi
 
   check_python
 
   if source_dir=$(detect_source_dir); then
-    info "jira-metrics: локальная установка из $source_dir"
+    info "team-metrics: локальная установка из $source_dir"
     check_source "$source_dir" "Запускайте install.sh из корня репозитория team-metrics."
     install_skill "$source_dir"
     install_launcher
@@ -387,6 +458,7 @@ main() {
     run_remote_install
   fi
 
+  migrate_old_install
   finish
 }
 

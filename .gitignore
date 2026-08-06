@@ -1,7 +1,7 @@
 screenshots/
 .playwright-mcp/
 .research/
-.jira-metrics.json
+.team-metrics.json
 __pycache__/
 *.py[cod]
 dist/
