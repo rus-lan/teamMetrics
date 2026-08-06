@@ -207,6 +207,21 @@ class Status:
 
 
 @dataclass
+class ServerInfo:
+    """GET /rest/api/2/serverInfo, the fields cli.py's `check` uses to name
+    which Jira it reached and whether this tool can talk to it at all
+    (deploymentType, PAT/Bearer support by version). Every field defaults to
+    its zero value — the endpoint's exact response shape isn't assumed, only
+    read defensively (see JiraClient.server_info())."""
+
+    version: str = ""
+    version_numbers: list[int] = field(default_factory=list)
+    deployment_type: str = ""
+    build_number: int = 0
+    server_title: str = ""
+
+
+@dataclass
 class SprintSuggestion:
     sprint_id: int
     name: str
@@ -760,6 +775,33 @@ class JiraClient:
             Status(id=s.get("id", ""), name=s.get("name", ""), category_key=(s.get("statusCategory") or {}).get("key", ""))
             for s in dto
         ]
+
+    def server_info(self) -> ServerInfo:
+        """Plain read, no parameters. Some instances restrict this endpoint
+        (403/404) or answer with a shape this method doesn't expect — every
+        field is read with .get() and defensively coerced, never assumed
+        present, so an odd or truncated response degrades to zero values
+        instead of raising. Callers (cli.py's `check`) treat a JiraError from
+        this call as "version unknown", not a hard failure."""
+        dto = self._get_json("ServerInfo", "/rest/api/2/serverInfo")
+        if not isinstance(dto, dict):
+            dto = {}
+
+        raw_numbers = dto.get("versionNumbers")
+        version_numbers: list[int] = []
+        if isinstance(raw_numbers, list):
+            for n in raw_numbers:
+                parsed = _flexible_int(n)
+                if parsed is not None:
+                    version_numbers.append(parsed)
+
+        return ServerInfo(
+            version=str(dto.get("version") or ""),
+            version_numbers=version_numbers,
+            deployment_type=str(dto.get("deploymentType") or ""),
+            build_number=_flexible_int(dto.get("buildNumber")) or 0,
+            server_title=str(dto.get("serverTitle") or ""),
+        )
 
     # -- issue search + changelog ----------------------------------------
 

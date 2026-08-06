@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import urllib.parse
@@ -286,6 +287,29 @@ def _print_check_items(items: list[_CheckItem]) -> bool:
     return ok
 
 
+# jira_client.JiraClient authenticates with Authorization: Bearer <PAT> —
+# Personal Access Tokens with that header only work on Jira Server/Data
+# Center from version 8.14.0 onward (confirmed: .research/jira-912-compat/
+# FINDINGS.md source 7). Below it, auth cannot work at all regardless of
+# what else is configured correctly.
+MIN_JIRA_VERSION_FOR_BEARER_AUTH = (8, 14)
+
+
+def _parse_jira_major_minor(info: "jc.ServerInfo") -> Optional[tuple]:
+    """(major, minor) from ServerInfo, preferring the structured
+    versionNumbers list (e.g. [9, 12, 28]) and falling back to parsing the
+    leading "N.N" off the version string when that list is missing or too
+    short. None when neither yields a confident answer — the caller must
+    WARN rather than guess at that point, never assume a version is fine."""
+    if len(info.version_numbers) >= 2:
+        return (info.version_numbers[0], info.version_numbers[1])
+    if info.version:
+        m = re.match(r"^\s*(\d+)\.(\d+)", info.version)
+        if m:
+            return (int(m.group(1)), int(m.group(2)))
+    return None
+
+
 def cmd_check(
     args: argparse.Namespace,
     environ: dict,
@@ -338,7 +362,49 @@ def cmd_check(
     else:
         items.append(_CheckItem("подключение к Jira", "SKIP", "переменные окружения Jira не заданы"))
 
-    # 5. story-point field discoverable
+    # 5. Jira server version + deployment type — knowing WHICH server was
+    # reached is more useful before the field/sprint items than after, since
+    # a version/deployment mismatch explains failures those items would
+    # otherwise report with no obvious cause.
+    if jira_client_obj is None:
+        items.append(_CheckItem("версия Jira", "SKIP", "проверка подключения к Jira не пройдена"))
+    else:
+        try:
+            info = jira_client_obj.server_info()
+        except jc.JiraError as e:
+            # Some instances restrict this endpoint — being unable to READ
+            # the version is not a reason to block a run that would
+            # otherwise work.
+            items.append(_CheckItem("версия Jira", "WARN", f"не удалось определить версию Jira: {e}"))
+        else:
+            deployment_type = info.deployment_type or ""
+            version_label = info.version or "?"
+            detail = f"Jira {deployment_type or '?'} {version_label} (deploymentType: {deployment_type or '?'})"
+
+            concerns: list[str] = []
+            if deployment_type.strip().lower() == "cloud":
+                concerns.append(
+                    "обнаружен Jira Cloud — инструмент рассчитан на Server/Data Center: Cloud использует другую "
+                    "схему авторизации (email + API-токен через Basic) и частично другой API (в частности, "
+                    "/rest/api/2/search на Cloud устарел в пользу /search/jql, которого здесь нет)"
+                )
+
+            major_minor = _parse_jira_major_minor(info)
+            if major_minor is None:
+                concerns.append(f"не удалось разобрать версию {version_label!r} — не могу проверить совместимость")
+            elif major_minor < MIN_JIRA_VERSION_FOR_BEARER_AUTH:
+                min_major, min_minor = MIN_JIRA_VERSION_FOR_BEARER_AUTH
+                concerns.append(
+                    f"версия {version_label} старше {min_major}.{min_minor} — Personal Access Token с заголовком "
+                    "Authorization: Bearer появились только в 8.14.0, авторизация работать не будет"
+                )
+
+            if concerns:
+                items.append(_CheckItem("версия Jira", "WARN", f"{detail}; " + "; ".join(concerns)))
+            else:
+                items.append(_CheckItem("версия Jira", "PASS", detail))
+
+    # 6. story-point field discoverable
     if field_ids is not None and file_config is not None:
         override = file_config.story_points_field_id
         if override:
@@ -357,7 +423,7 @@ def cmd_check(
     else:
         items.append(_CheckItem("поле Story Points", "SKIP", "проверка подключения к Jira/файла настроек не пройдена"))
 
-    # 6. named sprints / board resolvable (only if the user asked to check one)
+    # 7. named sprints / board resolvable (only if the user asked to check one)
     sprint_ids_raw = (args.sprint_ids or "").strip()
     sprint_names_raw = (args.sprint_names or "").strip()
     if sprint_ids_raw or sprint_names_raw or args.board_id is not None:
@@ -389,7 +455,7 @@ def cmd_check(
     else:
         items.append(_CheckItem("поиск спринта/доски", "SKIP", "не заданы --sprint-ids/--sprint-names/--board-id"))
 
-    # 7. GitLab connectivity + auth
+    # 8. GitLab connectivity + auth
     gitlab_client_obj = None
     if args.no_gitlab:
         items.append(_CheckItem("подключение к GitLab", "SKIP", "--no-gitlab"))
@@ -404,7 +470,7 @@ def cmd_check(
             items.append(_CheckItem("подключение к GitLab", "FAIL", str(e)))
             gitlab_client_obj = None
 
-    # 8. configured GitLab projects resolvable
+    # 9. configured GitLab projects resolvable
     if args.no_gitlab:
         items.append(_CheckItem("проекты GitLab", "SKIP", "--no-gitlab"))
     elif gitlab_client_obj is None:

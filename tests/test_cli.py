@@ -35,6 +35,7 @@ ITEM_JIRA_ENV = "переменные окружения Jira"
 ITEM_GITLAB_ENV = "переменные окружения GitLab"
 ITEM_CONFIG_FILE = "файл настроек"
 ITEM_JIRA_CONN = "подключение к Jira"
+ITEM_JIRA_VERSION = "версия Jira"
 ITEM_STORY_POINT = "поле Story Points"
 ITEM_SPRINT_BOARD = "поиск спринта/доски"
 ITEM_GITLAB_CONN = "подключение к GitLab"
@@ -172,12 +173,18 @@ class InitCommandTests(unittest.TestCase):
 # --------------------------------------------------------------------------
 
 
+_DEFAULT_SERVER_INFO = jc.ServerInfo(
+    version="9.12.28", version_numbers=[9, 12, 28], deployment_type="Server", build_number=912000, server_title="Jira"
+)
+
+
 class _OKJiraClient:
-    def __init__(self, field_ids=None, sprints=None, board=None, suggestions=None):
+    def __init__(self, field_ids=None, sprints=None, board=None, suggestions=None, server_info=None):
         self._field_ids = field_ids if field_ids is not None else {"Story Points": "customfield_10016"}
         self._sprints = sprints or {}
         self._board = board
         self._suggestions = suggestions or {}
+        self._server_info = server_info if server_info is not None else _DEFAULT_SERVER_INFO
 
     def field_ids(self):
         return dict(self._field_ids)
@@ -193,10 +200,16 @@ class _OKJiraClient:
     def suggest_sprints(self, query):
         return self._suggestions.get(query, [])
 
+    def server_info(self):
+        return self._server_info
+
 
 class _FailingJiraClient:
     def field_ids(self):
         raise jc.JiraError("FieldIDs", "connection refused", code=jc.CODE_JIRA_UNREACHABLE)
+
+    def server_info(self):
+        raise jc.JiraError("ServerInfo", "connection refused", code=jc.CODE_JIRA_UNREACHABLE)
 
 
 class _OKGitLabClient:
@@ -272,6 +285,67 @@ class CheckCommandTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn(f"{FAIL} {ITEM_JIRA_CONN}", out)
         self.assertIn(f"{SKIP} {ITEM_STORY_POINT}", out)
+
+    # -- Jira server version item ------------------------------------------
+
+    def test_well_formed_server_version_passes(self):
+        code, out, _err = self._check([], _jira_env())
+        self.assertEqual(code, 0)
+        self.assertIn(f"{PASS} {ITEM_JIRA_VERSION}", out)
+        self.assertIn("9.12.28", out)
+        self.assertIn("Server", out)
+
+    def test_cloud_deployment_warns(self):
+        info = jc.ServerInfo(version="1001.0.0", version_numbers=[1001, 0, 0], deployment_type="Cloud")
+        code, out, _err = self._check([], _jira_env(), jira_cls=lambda: _OKJiraClient(server_info=info))
+        self.assertEqual(code, 0, "a Cloud instance is a WARN, never a FAIL")
+        self.assertIn(f"{WARN} {ITEM_JIRA_VERSION}", out)
+        self.assertIn("Cloud", out)
+        self.assertIn("/search/jql", out)
+
+    def test_pre_8_14_version_warns(self):
+        info = jc.ServerInfo(version="8.5.0", version_numbers=[8, 5, 0], deployment_type="Server")
+        code, out, _err = self._check([], _jira_env(), jira_cls=lambda: _OKJiraClient(server_info=info))
+        self.assertEqual(code, 0, "an old version is a WARN, never a FAIL")
+        self.assertIn(f"{WARN} {ITEM_JIRA_VERSION}", out)
+        self.assertIn("8.14", out)
+        self.assertIn("Bearer", out)
+
+    def test_version_exactly_at_the_8_14_threshold_passes(self):
+        info = jc.ServerInfo(version="8.14.0", version_numbers=[8, 14, 0], deployment_type="Server")
+        code, out, _err = self._check([], _jira_env(), jira_cls=lambda: _OKJiraClient(server_info=info))
+        self.assertEqual(code, 0)
+        self.assertIn(f"{PASS} {ITEM_JIRA_VERSION}", out)
+
+    def test_server_info_endpoint_unreachable_warns_not_fails(self):
+        info_error = jc.JiraError("ServerInfo", "restricted", code="", status_code=403)
+
+        class _RestrictedJiraClient(_OKJiraClient):
+            def server_info(self):
+                raise info_error
+
+        code, out, _err = self._check([], _jira_env(), jira_cls=_RestrictedJiraClient)
+        self.assertEqual(code, 0, "being unable to read the version must not block an otherwise-working run")
+        self.assertIn(f"{WARN} {ITEM_JIRA_VERSION}", out)
+
+    def test_unparseable_version_warns_rather_than_guessing(self):
+        info = jc.ServerInfo(version="", version_numbers=[], deployment_type="Server")
+        code, out, _err = self._check([], _jira_env(), jira_cls=lambda: _OKJiraClient(server_info=info))
+        self.assertEqual(code, 0)
+        self.assertIn(f"{WARN} {ITEM_JIRA_VERSION}", out)
+
+    def test_version_numbers_list_too_short_falls_back_to_the_version_string(self):
+        info = jc.ServerInfo(version="9.12.28", version_numbers=[9], deployment_type="Server")
+        code, out, _err = self._check([], _jira_env(), jira_cls=lambda: _OKJiraClient(server_info=info))
+        self.assertEqual(code, 0)
+        self.assertIn(f"{PASS} {ITEM_JIRA_VERSION}", out)
+
+    def test_never_prints_a_token_alongside_the_version_item(self):
+        environ = {**_jira_env(), **_gitlab_env()}
+        code, out, err = self._check([], environ)
+        self.assertIn(f"{PASS} {ITEM_JIRA_VERSION}", out)
+        self.assertNotIn(environ["JIRA_TOKEN"], out)
+        self.assertNotIn(environ["JIRA_TOKEN"], err)
 
     def test_gitlab_auth_failed_fails(self):
         code, out, _err = self._check([], {**_jira_env(), **_gitlab_env()}, gitlab_cls=_FailingGitLabClient)

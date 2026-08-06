@@ -83,6 +83,18 @@ SPRINTS_BY_ID = {SPRINT_BASE1_ID: SPRINT_BASE1, SPRINT_BASE2_ID: SPRINT_BASE2, S
 
 BOARD_DTO = {"id": BOARD_ID, "self": f"https://jira.example.com/rest/agile/1.0/board/{BOARD_ID}", "name": BOARD_NAME, "type": "scrum"}
 
+# GET /rest/api/2/serverInfo — real Jira Server/DC shape (a handful of extra
+# fields like buildDate/serverTime/scmInfo exist on the wire too, omitted
+# here since jira_client.ServerInfo only reads the five it needs).
+JIRA_SERVER_INFO = {
+    "baseUrl": "https://jira.example.com",
+    "version": "9.12.28",
+    "versionNumbers": [9, 12, 28],
+    "deploymentType": "Server",
+    "buildNumber": 912000,
+    "serverTitle": "Jira",
+}
+
 # --------------------------------------------------------------------------
 # Field / status catalogs (SPEC §2.1, §2.4)
 # --------------------------------------------------------------------------
@@ -397,6 +409,11 @@ def build_opener(
             return 200, PROJ3_FULL_CHANGELOG_DTO, {}
         return 404, {"errorMessages": [f"issue {key} not found"]}, {}
 
+    def server_info(_m, _q, request):
+        if not _jira_auth_ok(request, jira_token):
+            return _jira_401()
+        return 200, JIRA_SERVER_INFO, {}
+
     opener.route(r"/rest/api/2/field", field_catalog)
     opener.route(r"/rest/api/2/status", status_catalog)
     opener.route(r"/rest/agile/1\.0/board/(?P<board_id>\d+)", board)
@@ -404,6 +421,7 @@ def build_opener(
     opener.route(r"/rest/agile/1\.0/sprint/(?P<sprint_id>\d+)", sprint_by_id)
     opener.route(r"/rest/api/2/search", search)
     opener.route(r"/rest/api/2/issue/(?P<key>[^/]+)", issue_changelog)
+    opener.route(r"/rest/api/2/serverInfo", server_info)
 
     # -- GitLab ----------------------------------------------------------
 

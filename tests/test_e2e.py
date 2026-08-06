@@ -97,6 +97,7 @@ ITEM_JIRA_ENV = "переменные окружения Jira"
 ITEM_GITLAB_ENV = "переменные окружения GitLab"
 ITEM_CONFIG_FILE = "файл настроек"
 ITEM_JIRA_CONN = "подключение к Jira"
+ITEM_JIRA_VERSION = "версия Jira"
 ITEM_STORY_POINT = "поле Story Points"
 ITEM_SPRINT_BOARD = "поиск спринта/доски"
 ITEM_GITLAB_CONN = "подключение к GitLab"
@@ -323,10 +324,12 @@ class CheckE2ETests(unittest.TestCase):
             )
             self.assertEqual(code, 0, out + err)
             for name in (
-                ITEM_JIRA_ENV, ITEM_GITLAB_ENV, ITEM_CONFIG_FILE, ITEM_JIRA_CONN,
+                ITEM_JIRA_ENV, ITEM_GITLAB_ENV, ITEM_CONFIG_FILE, ITEM_JIRA_CONN, ITEM_JIRA_VERSION,
                 ITEM_STORY_POINT, ITEM_SPRINT_BOARD, ITEM_GITLAB_CONN, ITEM_GITLAB_PROJECTS,
             ):
                 self.assertIn(f"{PASS} {name}", out, out)
+            self.assertIn("9.12.28", out)
+            self.assertIn("Server", out)
             self.assertNotIn(wire.JIRA_VALID_TOKEN, out + err)
             self.assertNotIn(wire.GITLAB_VALID_TOKEN, out + err)
 

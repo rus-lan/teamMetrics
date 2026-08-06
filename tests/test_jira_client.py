@@ -564,6 +564,81 @@ class ReadOnlyGuaranteeTests(unittest.TestCase):
         client.suggest_sprints("Sprint 1")
         self._assert_all_get_no_data(captured)
 
+    def test_server_info(self):
+        client, captured = self._client_with_recording_opener(
+            b'{"version": "9.12.28", "versionNumbers": [9, 12, 28], '
+            b'"deploymentType": "Server", "buildNumber": 912000, "serverTitle": "Jira"}'
+        )
+        client.server_info()
+        self._assert_all_get_no_data(captured)
+
+
+class ServerInfoTests(unittest.TestCase):
+    """JiraClient.server_info() parsing — cli.py's `check` treats any
+    JiraError from this call as "version unknown" (WARN, never a hard
+    failure), so the method itself must never raise on a missing or
+    oddly-shaped field; it must degrade to zero values instead."""
+
+    def _client_with_response(self, body: bytes, status: int = 200):
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                return _FakeResp(body, status=status)
+
+        return jc.JiraClient("https://jira.example.com", "tok", opener=FakeOpener(), sleep=lambda _d: None)
+
+    def test_well_formed_server_response(self):
+        client = self._client_with_response(
+            b'{"version": "9.12.28", "versionNumbers": [9, 12, 28], '
+            b'"deploymentType": "Server", "buildNumber": 912000, "serverTitle": "Jira"}'
+        )
+        info = client.server_info()
+        self.assertEqual(info.version, "9.12.28")
+        self.assertEqual(info.version_numbers, [9, 12, 28])
+        self.assertEqual(info.deployment_type, "Server")
+        self.assertEqual(info.build_number, 912000)
+        self.assertEqual(info.server_title, "Jira")
+
+    def test_cloud_deployment_type_is_read_as_is(self):
+        client = self._client_with_response(b'{"version": "1001.0.0-SNAPSHOT", "deploymentType": "Cloud"}')
+        info = client.server_info()
+        self.assertEqual(info.deployment_type, "Cloud")
+
+    def test_missing_fields_degrade_to_zero_values(self):
+        client = self._client_with_response(b"{}")
+        info = client.server_info()
+        self.assertEqual(info.version, "")
+        self.assertEqual(info.version_numbers, [])
+        self.assertEqual(info.deployment_type, "")
+        self.assertEqual(info.build_number, 0)
+        self.assertEqual(info.server_title, "")
+
+    def test_oddly_typed_version_numbers_and_build_number_do_not_crash(self):
+        client = self._client_with_response(b'{"versionNumbers": "9.12.28", "buildNumber": "not-a-number"}')
+        info = client.server_info()
+        self.assertEqual(info.version_numbers, [])
+        self.assertEqual(info.build_number, 0)
+
+    def test_version_numbers_keeps_only_the_parseable_entries(self):
+        client = self._client_with_response(b'{"versionNumbers": [9, "12", null, 28.5, "x"]}')
+        info = client.server_info()
+        self.assertEqual(info.version_numbers, [9, 12])
+
+    def test_non_dict_response_body_does_not_crash(self):
+        client = self._client_with_response(b"[1, 2, 3]")
+        info = client.server_info()
+        self.assertEqual(info.version, "")
+        self.assertEqual(info.version_numbers, [])
+
+    def test_403_restricted_endpoint_propagates_as_jira_error(self):
+        client = self._client_with_response(b'{"errorMessages": ["Forbidden"]}', status=403)
+        with self.assertRaises(jc.JiraError):
+            client.server_info()
+
+    def test_404_propagates_as_jira_error(self):
+        client = self._client_with_response(b'{"errorMessages": ["not found"]}', status=404)
+        with self.assertRaises(jc.JiraError):
+            client.server_info()
+
 
 class ProxyOptOutTests(unittest.TestCase):
     """trust_env_proxy (default True, unchanged behavior): the opener keeps
