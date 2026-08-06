@@ -1,0 +1,6 @@
+screenshots/
+.playwright-mcp/
+.research/
+.jira-metrics.json
+__pycache__/
+*.py[cod]

@@ -1,0 +1,2484 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<!-- {{REPORT_TITLE}} --><title>{{REPORT_TITLE}}</title>
+<style>
+/* ============================================================
+   Design tokens. Light is the base; dark comes from
+   prefers-color-scheme, and the manual [data-theme] attribute
+   overrides the media query in both directions.
+   ============================================================ */
+:root {
+  --bg:            #f4f6f9;
+  --surface:       #ffffff;
+  --surface-2:     #f0f2f6;
+  --surface-3:     #e7ebf1;
+  --border:        #dfe4ec;
+  --border-strong: #c3cbd8;
+
+  --text:          #15181d;
+  --text-muted:    #57606f;
+  --text-faint:    #767f8d;
+
+  --accent:          #2f52c0;
+  --accent-strong:   #23409b;
+  --accent-soft:     #e7ecfb;
+  --accent-contrast: #ffffff;
+
+  --good:      #12705a;
+  --good-soft: #dff0ea;
+  --warn:      #8a5a00;
+  --warn-soft: #fbeed6;
+  --bad:       #ad2418;
+  --bad-soft:  #fbe3e0;
+  --neutral-soft: #eceff4;
+
+  --chart-grid:      #e5e9f0;
+  --chart-axis:      #b0b9c7;
+  --chart-ideal:     #8b96a6;
+  --chart-actual:    #2f52c0;
+  --chart-fill:      #2f52c0;
+  --chart-fill-op:   0.10;
+  --chart-scope:     #8a5a00;
+  --chart-bar:       #93aee2;
+  --chart-bar-strong:#2f52c0;
+  --chart-weekend:   #f0f2f6;
+
+  /* Heatmap = status CATEGORY, categorical (not a numeric ramp).
+     Values come straight from the source: new | indeterminate | done |
+     cancelled | "" (unmapped). */
+  --cat-new:          #e3e7ee; --cat-new-fg:          #3b434f;
+  --cat-indeterminate:#cfdcf7; --cat-indeterminate-fg:#1b2f66;
+  --cat-done:         #cfe8de; --cat-done-fg:         #0c4c3c;
+  --cat-cancelled:    #ded9ea; --cat-cancelled-fg:    #443a63;
+  --cat-unmapped:     #f7e6c4; --cat-unmapped-fg:     #6b4500;
+  --cat-absent-fg:    #99a2af;
+
+  --radius:      10px;
+  --radius-sm:   6px;
+  --radius-pill: 999px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .05);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:            #0d1117;
+    --surface:       #151b23;
+    --surface-2:     #1b222c;
+    --surface-3:     #222b36;
+    --border:        #2a3441;
+    --border-strong: #3c4756;
+
+    --text:          #e7edf4;
+    --text-muted:    #9aa7b6;
+    --text-faint:    #8792a1;
+
+    --accent:          #7d9bff;
+    --accent-strong:   #a3b8ff;
+    --accent-soft:     #1c2740;
+    --accent-contrast: #0b1017;
+
+    --good:      #4fc9a1;
+    --good-soft: #102b26;
+    --warn:      #e0a33e;
+    --warn-soft: #2e2312;
+    --bad:       #ff7b72;
+    --bad-soft:  #331815;
+    --neutral-soft: #1e2631;
+
+    --chart-grid:      #232c38;
+    --chart-axis:      #4d596c;
+    --chart-ideal:     #8892a2;
+    --chart-actual:    #7d9bff;
+    --chart-fill:      #7d9bff;
+    --chart-fill-op:   0.16;
+    --chart-scope:     #e0a33e;
+    --chart-bar:       #40568e;
+    --chart-bar-strong:#7d9bff;
+    --chart-weekend:   #1a212b;
+
+    --cat-new:          #262e3a; --cat-new-fg:          #b9c3d1;
+    --cat-indeterminate:#22355c; --cat-indeterminate-fg:#c8dbff;
+    --cat-done:         #133d33; --cat-done-fg:         #8fdcc4;
+    --cat-cancelled:    #2f2a44; --cat-cancelled-fg:    #c3b8e6;
+    --cat-unmapped:     #3a2c12; --cat-unmapped-fg:     #f0c274;
+    --cat-absent-fg:    #6b7684;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, .35);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:            #0d1117;
+  --surface:       #151b23;
+  --surface-2:     #1b222c;
+  --surface-3:     #222b36;
+  --border:        #2a3441;
+  --border-strong: #3c4756;
+
+  --text:          #e7edf4;
+  --text-muted:    #9aa7b6;
+  --text-faint:    #8792a1;
+
+  --accent:          #7d9bff;
+  --accent-strong:   #a3b8ff;
+  --accent-soft:     #1c2740;
+  --accent-contrast: #0b1017;
+
+  --good:      #4fc9a1;
+  --good-soft: #102b26;
+  --warn:      #e0a33e;
+  --warn-soft: #2e2312;
+  --bad:       #ff7b72;
+  --bad-soft:  #331815;
+  --neutral-soft: #1e2631;
+
+  --chart-grid:      #232c38;
+  --chart-axis:      #4d596c;
+  --chart-ideal:     #8892a2;
+  --chart-actual:    #7d9bff;
+  --chart-fill:      #7d9bff;
+  --chart-fill-op:   0.16;
+  --chart-scope:     #e0a33e;
+  --chart-bar:       #40568e;
+  --chart-bar-strong:#7d9bff;
+  --chart-weekend:   #1a212b;
+
+  --cat-new:          #262e3a; --cat-new-fg:          #b9c3d1;
+  --cat-indeterminate:#22355c; --cat-indeterminate-fg:#c8dbff;
+  --cat-done:         #133d33; --cat-done-fg:         #8fdcc4;
+  --cat-cancelled:    #2f2a44; --cat-cancelled-fg:    #c3b8e6;
+  --cat-unmapped:     #3a2c12; --cat-unmapped-fg:     #f0c274;
+  --cat-absent-fg:    #6b7684;
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, .35);
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-x: hidden;
+}
+
+h1, h2, h3 { margin: 0; font-weight: 620; letter-spacing: -0.011em; }
+p { margin: 0; }
+a { color: var(--accent); }
+
+.num, table, .kpi-value, .metric-value, .pct-num, .stat-value {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+.mono { font-family: var(--font-mono); font-size: 0.92em; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+
+.skip-link {
+  position: absolute; left: 12px; top: -48px; z-index: 50;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  padding: 8px 14px; transition: top .15s;
+}
+.skip-link:focus { top: 12px; }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+
+.wrap { max-width: 1320px; margin: 0 auto; padding: 0 28px; }
+
+/* ============================================================
+   Report header
+   ============================================================ */
+.report-head {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 26px 0 22px;
+}
+.head-top {
+  display: flex; flex-wrap: wrap; gap: 18px;
+  align-items: flex-start; justify-content: space-between;
+}
+.eyebrow {
+  font-size: 11px; font-weight: 650; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--text-faint);
+}
+.report-title { font-size: 25px; line-height: 1.2; margin-top: 6px; }
+.report-subtitle { margin-top: 6px; color: var(--text-muted); font-size: 14px; }
+.report-subtitle b { color: var(--text); font-weight: 600; }
+
+.head-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+  gap: 2px 26px;
+  margin-top: 20px; padding-top: 16px;
+  border-top: 1px dashed var(--border);
+}
+.meta-item { padding: 4px 0; }
+.meta-label {
+  font-size: 10.5px; font-weight: 640; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--text-faint);
+}
+.meta-value { font-size: 13.5px; color: var(--text); margin-top: 2px; }
+
+.theme-switch {
+  display: none; gap: 2px; padding: 3px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+}
+html.js .theme-switch { display: inline-flex; }
+.theme-switch button {
+  appearance: none; -webkit-appearance: none; border: 1px solid transparent;
+  background: transparent; color: var(--text-muted);
+  font: inherit; font-size: 12.5px; font-weight: 560;
+  padding: 4px 12px; border-radius: var(--radius-pill); cursor: pointer;
+}
+.theme-switch button:hover { color: var(--text); }
+.theme-switch button[aria-pressed="true"] {
+  background: var(--surface); color: var(--text);
+  border-color: var(--border); box-shadow: var(--shadow);
+}
+
+/* ============================================================
+   Tabs — hidden radio + label, no JS
+   ============================================================ */
+.tabs { position: relative; padding-top: 22px; }
+.tab-input {
+  position: absolute; top: 26px; left: 2px;
+  width: 1px; height: 1px; opacity: 0; margin: 0;
+}
+.tablist {
+  display: flex; gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 26px;
+  overflow-x: auto; scrollbar-width: thin;
+}
+.tab {
+  display: inline-block; white-space: nowrap; cursor: pointer;
+  padding: 9px 18px; margin-bottom: -1px;
+  border: 1px solid transparent; border-bottom: 0;
+  border-radius: 9px 9px 0 0;
+  font-size: 13.5px; font-weight: 620; color: var(--text-muted);
+}
+.tab:hover { color: var(--text); background: var(--surface-2); }
+.tab-num {
+  font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+  color: var(--text-faint); margin-right: 7px;
+}
+.tabpanel { display: none; }
+
+#tab-team:checked   ~ #panel-team,
+#tab-person:checked ~ #panel-person,
+#tab-eng:checked    ~ #panel-eng { display: block; }
+
+#tab-team:checked   ~ .tablist .tab[for="tab-team"],
+#tab-person:checked ~ .tablist .tab[for="tab-person"],
+#tab-eng:checked    ~ .tablist .tab[for="tab-eng"] {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+  box-shadow: 0 -2px 0 0 var(--accent) inset;
+}
+#tab-team:checked   ~ .tablist .tab[for="tab-team"] .tab-num,
+#tab-person:checked ~ .tablist .tab[for="tab-person"] .tab-num,
+#tab-eng:checked    ~ .tablist .tab[for="tab-eng"] .tab-num { color: var(--accent); }
+
+#tab-team:focus-visible   ~ .tablist .tab[for="tab-team"],
+#tab-person:focus-visible ~ .tablist .tab[for="tab-person"],
+#tab-eng:focus-visible    ~ .tablist .tab[for="tab-eng"] {
+  outline: 2px solid var(--accent); outline-offset: -2px;
+}
+.panel-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+
+/* ============================================================
+   Sections
+   ============================================================ */
+.section { margin-bottom: 34px; }
+.section-head {
+  display: flex; align-items: baseline; gap: 14px;
+  padding-bottom: 10px; margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.section-index { font-family: var(--font-mono); font-size: 12px; color: var(--text-faint); }
+.section-title { font-size: 16.5px; }
+.section-desc {
+  color: var(--text-muted); font-size: 13px;
+  margin-left: auto; text-align: right; max-width: 52ch;
+}
+.collapse-btn {
+  display: none;
+  appearance: none; -webkit-appearance: none;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text-muted); font: inherit; font-size: 12px; font-weight: 560;
+  padding: 3px 10px; border-radius: var(--radius-pill); cursor: pointer; flex: none;
+}
+html.js .collapse-btn { display: inline-block; }
+.collapse-btn:hover { color: var(--text); border-color: var(--border-strong); }
+.section.is-collapsed .section-body { display: none; }
+.section.is-collapsed .section-head { border-bottom-style: dashed; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+/* ============================================================
+   Warning badges and the board warning strip
+   ============================================================ */
+.warn-badge {
+  display: inline-block; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700;
+  letter-spacing: .02em; padding: 1px 6px;
+  border: 1px solid var(--warn); border-radius: 4px;
+  color: var(--warn); background: var(--warn-soft);
+}
+.warn-list { list-style: none; margin: 0; padding: 14px 16px; display: grid; gap: 9px; }
+.warn-list li { display: flex; gap: 10px; align-items: baseline; font-size: 13px; color: var(--text-muted); }
+.warn-list li b { color: var(--text); font-weight: 600; }
+.warn-strip-title {
+  font-size: 11.5px; font-weight: 660; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--text-faint); padding: 12px 16px 0;
+}
+
+.banner {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 12px 14px; border-radius: var(--radius);
+  border: 1px solid var(--warn); background: var(--warn-soft);
+  margin-bottom: 14px;
+}
+.banner-tag {
+  font-family: var(--font-mono);
+  font-size: 10px; font-weight: 700; letter-spacing: .04em;
+  color: var(--warn); border: 1px solid var(--warn); border-radius: var(--radius-sm);
+  padding: 2px 7px; flex: none; margin-top: 1px; white-space: nowrap;
+}
+.banner-body { font-size: 13px; color: var(--text); }
+.banner-body b { font-weight: 640; }
+.banner-body .detail { display: block; margin-top: 3px; color: var(--text-muted); font-size: 12.5px; }
+
+/* ============================================================
+   KPI tiles
+   ============================================================ */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 14px;
+}
+.kpi { position: relative; padding: 15px 16px 13px; overflow: hidden; }
+.kpi::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--kpi-accent, var(--border-strong));
+}
+.kpi[data-status="good"] { --kpi-accent: var(--good); }
+.kpi[data-status="warn"] { --kpi-accent: var(--warn); }
+.kpi[data-status="bad"]  { --kpi-accent: var(--bad); }
+.kpi[data-status="none"] { --kpi-accent: var(--border-strong); background: var(--surface-2); }
+
+.kpi-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+/* Labels are full metric paths (pipelines.success_rate_pct): no spaces, and
+   `.`/`_` are not break opportunities, so min-content is the whole token.
+   Without min-width:0 + a break rule the label refuses to shrink and pushes
+   the status chip out of the tile, where overflow:hidden eats it silently. */
+.kpi-label {
+  font-size: 11.5px; font-weight: 640; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--text-muted);
+  min-width: 0; overflow-wrap: anywhere; word-break: break-word;
+}
+.kpi-status { flex: 0 0 auto; }
+.kpi-foot > div { min-width: 0; }
+.delta-note { overflow-wrap: anywhere; }
+.kpi-status {
+  font-size: 10.5px; font-weight: 660; letter-spacing: .03em;
+  padding: 2px 7px; border-radius: var(--radius-pill);
+  border: 1px solid transparent; white-space: nowrap;
+}
+.kpi[data-status="good"] .kpi-status { color: var(--good); background: var(--good-soft); border-color: var(--good); }
+.kpi[data-status="warn"] .kpi-status { color: var(--warn); background: var(--warn-soft); border-color: var(--warn); }
+.kpi[data-status="bad"]  .kpi-status { color: var(--bad);  background: var(--bad-soft);  border-color: var(--bad); }
+.kpi[data-status="none"] .kpi-status { color: var(--text-muted); background: var(--neutral-soft); border-color: var(--border-strong); }
+
+.kpi-value {
+  margin-top: 9px; font-size: 30px; font-weight: 640;
+  line-height: 1.05; letter-spacing: -0.022em;
+}
+.kpi[data-status="none"] .kpi-value { color: var(--text-faint); }
+.kpi-unit {
+  display: block; margin-top: 3px;
+  font-size: 12px; font-weight: 520; letter-spacing: 0;
+  color: var(--text-muted);
+}
+.kpi-foot {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 10px; margin-top: 11px;
+}
+.delta { display: inline-flex; align-items: baseline; gap: 4px; font-size: 12.5px; font-weight: 620; }
+.delta .arrow { font-size: 10px; line-height: 1; }
+.delta[data-dir="up-good"], .delta[data-dir="down-good"] { color: var(--good); }
+.delta[data-dir="up-bad"],  .delta[data-dir="down-bad"]  { color: var(--bad); }
+.delta[data-dir="flat"], .delta[data-dir="none"] { color: var(--text-muted); }
+.delta-note { color: var(--text-faint); font-weight: 450; font-size: 11.5px; margin-top: 1px; }
+.kpi-warn { margin-top: 8px; }
+
+.spark { display: block; width: 88px; height: 32px; flex: none; }
+
+/* ============================================================
+   Scalar metric groups
+   ============================================================ */
+.metric-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px;
+}
+.metric-group { padding: 14px 16px 16px; }
+.metric-group h3 {
+  font-size: 11.5px; font-weight: 660; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--text-faint);
+  padding-bottom: 9px; margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.metric-row {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 7px 0; border-bottom: 1px solid var(--border);
+}
+.metric-row:last-child { border-bottom: 0; }
+.metric-name { color: var(--text-muted); font-size: 13px; }
+.metric-name code {
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-faint); display: block; margin-top: 1px;
+}
+.metric-dots {
+  flex: 1 1 auto; min-width: 12px;
+  border-bottom: 1px dotted var(--border-strong);
+  transform: translateY(-3px); opacity: .75;
+}
+.metric-value { font-size: 14px; font-weight: 620; white-space: nowrap; }
+.metric-value .sub { font-weight: 450; color: var(--text-faint); font-size: 12px; margin-left: 5px; }
+.metric-value.is-good { color: var(--good); }
+.metric-value.is-warn { color: var(--warn); }
+.metric-value.is-bad  { color: var(--bad); }
+.metric-value.is-none { color: var(--text-faint); }
+
+.scopebar-block { padding-top: 14px; }
+.scopebar-caption { font-size: 12.5px; color: var(--text-muted); }
+.scopebar-caption b { color: var(--text); font-weight: 620; }
+.scopebar {
+  position: relative; height: 12px; border-radius: var(--radius-pill);
+  background: var(--surface-3); margin: 10px 0 9px; overflow: hidden;
+}
+.scopebar .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--good); }
+.scopebar .mark { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--text); }
+.scopebar-legend {
+  display: flex; flex-wrap: wrap; gap: 4px 16px;
+  font-size: 12.5px; color: var(--text-muted);
+}
+.scopebar-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; border: 1px solid rgba(127,127,127,.35); }
+.swatch.done { background: var(--good); }
+.swatch.rest { background: var(--surface-3); }
+.swatch.mark { background: var(--text); width: 3px; height: 12px; border-radius: 1px; }
+
+/* ============================================================
+   Charts
+   ============================================================ */
+.scroll-x {
+  overflow-x: auto; overflow-y: hidden;
+  -webkit-overflow-scrolling: touch; scrollbar-width: thin;
+}
+.chart-card { padding: 16px 16px 12px; }
+.chart-svg { display: block; width: 100%; min-width: 660px; height: auto; }
+.chart-svg.compact { min-width: 520px; }
+
+/* SVG paint is driven by classes: var() is not reliably substituted
+   inside SVG presentation attributes. */
+.c-grid       { stroke: var(--chart-grid); stroke-width: 1; }
+.c-axis       { stroke: var(--chart-axis); stroke-width: 1.5; }
+.c-tick       { stroke: var(--chart-axis); stroke-width: 1; }
+.c-tick-label { fill: var(--text-faint); font-size: 10.5px; }
+.c-tick-sub   { fill: var(--text-faint); font-size: 9px; }
+.c-unit-label { fill: var(--text-faint); font-size: 11px; }
+.c-axis-title { fill: var(--text-muted); font-size: 11.5px; }
+.c-weekend    { fill: var(--chart-weekend); }
+
+.c-ideal  { fill: none; stroke: var(--chart-ideal);  stroke-width: 2;   stroke-dasharray: 8 6; stroke-linecap: round; }
+.c-actual { fill: none; stroke: var(--chart-actual); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.c-actual-pt { fill: var(--surface); stroke: var(--chart-actual); stroke-width: 2; }
+.c-area   { fill: url(#burndownFill); stroke: none; }
+.c-area-top    { stop-color: var(--chart-fill); stop-opacity: var(--chart-fill-op); }
+.c-area-bottom { stop-color: var(--chart-fill); stop-opacity: 0; }
+
+.c-callout      { stroke: var(--bad); stroke-width: 1.5; stroke-dasharray: 3 3; }
+.c-callout-text { fill: var(--bad); font-size: 11px; font-weight: 620; }
+
+.c-bar        { fill: var(--chart-bar); }
+.c-bar-strong { fill: var(--chart-bar-strong); }
+.c-bar-zero   { fill: var(--border-strong); }
+.c-marker        { stroke: var(--text-muted); stroke-width: 1.4; stroke-dasharray: 4 3; }
+.c-marker-strong { stroke: var(--accent); stroke-width: 1.6; }
+.c-marker-label        { fill: var(--text-muted); font-size: 10.5px; font-weight: 620; }
+.c-marker-label-strong { fill: var(--accent);     font-size: 10.5px; font-weight: 620; }
+
+.sp-line { fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.sp-good { stroke: var(--good); }
+.sp-warn { stroke: var(--warn); }
+.sp-bad  { stroke: var(--bad); }
+.sp-mute { stroke: var(--text-faint); }
+.sp-dot-good { fill: var(--good); }
+.sp-dot-warn { fill: var(--warn); }
+.sp-dot-bad  { fill: var(--bad); }
+.sp-dot-mute { fill: var(--text-faint); }
+
+.legend {
+  display: flex; flex-wrap: wrap; gap: 8px 22px;
+  margin-top: 10px; padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px; color: var(--text-muted);
+}
+.legend-item { display: inline-flex; align-items: center; gap: 8px; }
+.legend-item b { color: var(--text); font-weight: 620; }
+.legend-line { width: 26px; height: 10px; flex: none; }
+.lg-actual { fill: none; stroke: var(--chart-actual); stroke-width: 2.4; }
+.lg-actual-pt { fill: var(--surface); stroke: var(--chart-actual); stroke-width: 2; }
+.lg-ideal { fill: none; stroke: var(--chart-ideal); stroke-width: 2; stroke-dasharray: 6 4; }
+.lg-bar { fill: var(--chart-bar); }
+.lg-bar-strong { fill: var(--chart-bar-strong); }
+.lg-marker { stroke: var(--text-muted); stroke-width: 1.6; stroke-dasharray: 3 2; }
+.lg-weekend { fill: var(--chart-weekend); stroke: var(--border); }
+
+/* ============================================================
+   Heatmap — rows = issues, cols = working days, cell = status
+   ============================================================ */
+.heatmap { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 1000px; }
+.heatmap th, .heatmap td { padding: 0; }
+.heatmap thead th {
+  font-size: 10.5px; font-weight: 620; color: var(--text-muted);
+  text-align: center; padding: 0 0 8px; white-space: nowrap;
+}
+.heatmap thead th .dow { display: block; font-size: 9.5px; font-weight: 500; color: var(--text-faint); }
+.heatmap thead th.hm-corner, .heatmap tbody th {
+  text-align: left; font-size: 12px; font-weight: 560;
+  color: var(--text); white-space: nowrap; padding-right: 14px;
+  position: sticky; left: 0; z-index: 2; background: var(--surface);
+}
+.heatmap thead th.hm-corner { color: var(--text-muted); font-size: 10.5px; z-index: 3; }
+.heatmap tbody th { border-right: 1px solid var(--border); font-family: var(--font-mono); font-size: 11.5px; }
+.hm-cell {
+  height: 30px; text-align: center; vertical-align: middle;
+  font-size: 11px; font-weight: 600;
+  border: 2px solid var(--surface); border-radius: 5px;
+  padding: 0 6px; white-space: nowrap;
+}
+.hm-cell[data-cat="new"]           { background: var(--cat-new);           color: var(--cat-new-fg); font-weight: 500; }
+.hm-cell[data-cat="indeterminate"] { background: var(--cat-indeterminate); color: var(--cat-indeterminate-fg); }
+.hm-cell[data-cat="done"]          { background: var(--cat-done);          color: var(--cat-done-fg); }
+.hm-cell[data-cat="cancelled"]     { background: var(--cat-cancelled);     color: var(--cat-cancelled-fg); text-decoration: line-through; }
+.hm-cell[data-cat="unmapped"]      { background: var(--cat-unmapped);      color: var(--cat-unmapped-fg); }
+.hm-cell[data-cat="absent"] {
+  background: transparent; color: var(--cat-absent-fg); font-weight: 400;
+  border: 2px dashed var(--border); border-radius: 5px;
+}
+
+.cat-scale {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--text-muted);
+}
+.cat-scale .scale-title { margin-right: 6px; font-weight: 620; color: var(--text); }
+.scale-step {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 9px 3px 4px; border-radius: var(--radius-pill);
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+.scale-step code { font-family: var(--font-mono); font-size: 11px; color: var(--text); }
+.scale-chip { width: 16px; height: 16px; border-radius: 4px; flex: none; border: 1px solid rgba(127,127,127,.3); }
+.scale-chip.absent { background: transparent; border: 1px dashed var(--border-strong); }
+
+/* ============================================================
+   Forecast percentile list
+   ============================================================ */
+/* Grid tracks AND grid items both need a zero minimum. A bare `1fr` is
+   minmax(auto,1fr), and a grid item's own min-width:auto is min-content — a
+   card holding .chart-svg{min-width:660px} would otherwise blow the track out
+   past the viewport. The .scroll-x wrapper cannot help: track sizing ignores it. */
+.forecast-grid {
+  display: grid; grid-template-columns: minmax(250px, 330px) minmax(0, 1fr);
+  gap: 14px; align-items: start;
+}
+@media (max-width: 960px) { .forecast-grid { grid-template-columns: minmax(0, 1fr); } }
+
+.forecast-grid > *, .kpi-grid > *, .metric-groups > *, .person-cards > * { min-width: 0; }
+
+.pct-list { padding: 4px 16px 12px; }
+.pct-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 0; border-bottom: 1px solid var(--border);
+}
+.pct-row:last-child { border-bottom: 0; }
+.pct-key {
+  font-family: var(--font-mono); font-size: 12px; font-weight: 620;
+  color: var(--accent-contrast); background: var(--accent);
+  padding: 3px 8px; border-radius: var(--radius-sm);
+  flex: none; min-width: 46px; text-align: center;
+}
+.pct-row[data-tone="soft"] .pct-key    { background: var(--accent-soft); color: var(--accent); }
+.pct-row[data-tone="neutral"] .pct-key { background: var(--neutral-soft); color: var(--text-muted); }
+.pct-num { font-size: 22px; font-weight: 640; letter-spacing: -0.02em; }
+.pct-unit { font-size: 12.5px; font-weight: 450; color: var(--text-muted); margin-left: 5px; letter-spacing: 0; }
+.pct-desc { margin-left: auto; text-align: right; font-size: 12px; color: var(--text-faint); max-width: 24ch; }
+
+/* ============================================================
+   Data tables
+   ============================================================ */
+.table-card { overflow: hidden; }
+.table-wrap {
+  overflow: auto; max-height: 360px;
+  -webkit-overflow-scrolling: touch; scrollbar-width: thin;
+}
+table.data {
+  width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px;
+}
+table.data.xwide { min-width: 2160px; }
+table.data.wide { min-width: 1500px; }
+table.data.mid  { min-width: 1000px; }
+table.data caption {
+  text-align: left; font-size: 12.5px; color: var(--text-muted);
+  padding: 12px 14px; background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+table.data caption b { color: var(--text); font-weight: 640; }
+table.data thead th {
+  position: sticky; top: 0; z-index: 3;
+  background: var(--surface-2); color: var(--text-muted);
+  font-size: 10.5px; font-weight: 660; letter-spacing: .04em;
+  text-align: left; white-space: nowrap; padding: 8px 10px;
+  border-bottom: 1px solid var(--border-strong);
+}
+table.data thead th .dow { display: block; font-weight: 500; color: var(--text-faint); }
+table.data tbody td, table.data tbody th {
+  padding: 7px 10px; border-bottom: 1px solid var(--border);
+  vertical-align: top; text-align: left; font-weight: 450; white-space: nowrap;
+}
+table.data tbody tr:nth-child(even) td,
+table.data tbody tr:nth-child(even) th { background: var(--surface-2); }
+table.data tbody tr:hover td,
+table.data tbody tr:hover th { background: var(--accent-soft); }
+/* The totals row is pinned to the bottom of the scroll box for the same reason
+   the header is pinned to the top: in a table tall enough to scroll, the two
+   rows a reader actually compares are the first and the last. This also means
+   max-height is free to be chosen for reading comfort instead of for keeping
+   the totals above the fold. */
+table.data tfoot td, table.data tfoot th {
+  position: sticky; bottom: 0; z-index: 2;
+  padding: 8px 10px; font-weight: 660; text-align: left; white-space: nowrap;
+  border-top: 1px solid var(--border-strong); background: var(--surface-2);
+}
+.col-num { text-align: right; font-variant-numeric: tabular-nums; }
+table.data thead th.col-num, table.data tfoot td.col-num, table.data tfoot th.col-num { text-align: right; }
+.cell-key { font-family: var(--font-mono); font-size: 11.5px; }
+.cell-muted { color: var(--text-faint); }
+.cell-nodata { color: var(--text-faint); background-image: none; }
+.cell-nodata .warn-badge { margin-left: 6px; }
+
+.pill {
+  display: inline-block; white-space: nowrap;
+  font-size: 11.5px; font-weight: 620; line-height: 1.45;
+  padding: 1px 8px; border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong); background: var(--neutral-soft); color: var(--text-muted);
+}
+.pill.closed { color: var(--text-muted); background: var(--neutral-soft); border-color: var(--border-strong); }
+.pill.active { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+.pill.target { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+.pill.role   { font-family: var(--font-mono); font-size: 11px; font-weight: 560; }
+
+/* Two-row grouped header. `height` on a cell is only a MINIMUM, so padding and
+   the line box decide the used height — a hard-coded `top` for row 2 drifts the
+   moment either changes. Row 1 therefore gets zero vertical padding and a line
+   box pinned to the same custom property that offsets row 2, which makes its
+   used height exactly --thead-h1 and keeps the two numbers unable to disagree. */
+table.data.grouped { --thead-h1: 28px; }
+table.data.grouped thead tr:first-child th {
+  top: 0;
+  height: var(--thead-h1);
+  line-height: var(--thead-h1);
+  padding-top: 0; padding-bottom: 0;
+  vertical-align: middle;
+  /* A real border-bottom would add its 1px to the used height and put it back
+     out of step with row 2's offset. An inset shadow paints the same rule
+     without joining the box model, so --thead-h1 stays the only number. */
+  border-bottom: 0;
+  box-shadow: inset 0 -1px 0 var(--border-strong);
+}
+table.data.grouped thead tr:nth-child(2) th { top: var(--thead-h1); }
+table.data thead th.group {
+  text-align: center; letter-spacing: .07em;
+  background: var(--surface-3); color: var(--text);
+}
+table.data th.gsep, table.data td.gsep { border-left: 2px solid var(--border-strong); }
+table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
+
+/* three distinct empty-value states — see the legend under the person table */
+.cell-nodata   { color: var(--text-faint); }   /* 0 because the denominator was 0 */
+.cell-unavail  { color: var(--text-faint); }   /* source returned no statistic at all */
+.cell-null     { color: var(--text-faint); }   /* null by contract */
+.cell-nosample { color: var(--text-faint); }   /* average over an empty sample */
+/* the last two render identically on purpose — the legend and the title attribute
+   carry the difference, a fourth glyph would cost more than it explains */
+.badge-na {
+  display: inline-block; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 10px; font-weight: 620;
+  padding: 0 5px; border-radius: 4px; margin-left: 5px;
+  color: var(--text-muted); background: var(--neutral-soft);
+  border: 1px dashed var(--border-strong);
+}
+.denom {
+  font-size: 10.5px; font-weight: 450; color: var(--text-faint);
+  margin-left: 4px; white-space: nowrap;
+}
+.row-warnings { display: flex; flex-wrap: wrap; gap: 3px; }
+.wbadge {
+  font-family: var(--font-mono); font-size: 9.5px; font-weight: 660;
+  padding: 1px 5px; border-radius: 4px; white-space: nowrap;
+  color: var(--warn); background: var(--warn-soft); border: 1px solid var(--warn);
+}
+
+/* legend of empty-value states */
+.state-legend {
+  display: flex; flex-wrap: wrap; gap: 8px 18px;
+  padding: 12px 16px; border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--text-muted); background: var(--surface);
+}
+.state-legend b { color: var(--text); font-weight: 620; }
+.state-legend > span { display: inline-flex; align-items: baseline; gap: 6px; }
+.state-legend .legend-note { flex-basis: 100%; color: var(--text-faint); }
+.cell-nosample[title], .cell-null[title] { cursor: help; }
+
+/* caveat marker on a tile whose value ignores the report window */
+.caveat {
+  display: inline-block; margin-top: 9px;
+  font-size: 10px; font-weight: 620; white-space: nowrap;
+  padding: 1px 6px; border-radius: 4px;
+  color: var(--text-muted); background: var(--neutral-soft);
+  border: 1px dashed var(--border-strong);
+}
+
+/* info variant of the banner — semantics note, not a warning */
+.banner.info { border-color: var(--accent); background: var(--accent-soft); }
+.banner.info .banner-tag { color: var(--accent); border-color: var(--accent); }
+
+/* threshold disclosure — good/warn/bad bands per tile. Collapsed by default,
+   the summary line names the heuristic disclaimer so it is never hidden. */
+.thresholds { margin-top: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.thresholds summary {
+  cursor: pointer; padding: 8px 12px; font-size: 12.5px; font-weight: 620;
+  color: var(--text-muted); list-style: none;
+}
+.thresholds summary::-webkit-details-marker { display: none; }
+.thresholds summary::before { content: "▸ "; color: var(--text-faint); }
+.thresholds[open] summary::before { content: "▾ "; }
+.thresholds summary .heuristic-flag { color: var(--warn); font-weight: 660; }
+.thresholds .state-legend { border-top: 1px solid var(--border); }
+@media print {
+  /* print expands everything else in this file (§2) — disclosures follow */
+  .thresholds summary::before { content: ""; }
+  details:not([open]) > *:not(summary) { display: block !important; }
+}
+
+/* per-sprint breakdown nested in a person card */
+/* nowrap makes min-content 369px, wider than a 358px card on a 390px phone;
+   width:100% cannot go below min-content and the card has no scroll wrapper,
+   so the last column used to sit outside the card border. Same treatment as
+   every other table in the file: give it its own overflow container. */
+.mini-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
+.sprint-mini { width: 100%; min-width: 300px; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+.sprint-mini th, .sprint-mini td {
+  padding: 4px 6px; border-bottom: 1px solid var(--border);
+  text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.sprint-mini thead th {
+  font-size: 10px; font-weight: 620; letter-spacing: .03em; text-transform: uppercase;
+  color: var(--text-faint); border-bottom: 1px solid var(--border-strong);
+}
+.sprint-mini th:first-child, .sprint-mini td:first-child { text-align: left; font-weight: 500; }
+.sprint-mini tbody tr:last-child td { border-bottom: 0; }
+.sprint-mini tfoot td, .sprint-mini tfoot th {
+  font-weight: 660; border-top: 1px solid var(--border-strong); border-bottom: 0;
+}
+
+/* ============================================================
+   Person tab
+   ============================================================ */
+.person-cards {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px;
+}
+.person-card { padding: 15px 16px 14px; }
+.person-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.person-name { font-size: 15px; font-weight: 640; }
+.person-sub { font-size: 12px; color: var(--text-faint); margin-top: 2px; }
+.person-stats {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+  margin: 14px 0 12px;
+}
+.stat { padding: 8px 10px; border-radius: var(--radius-sm); background: var(--surface-2); border: 1px solid var(--border); }
+.stat[data-status="none"] { border-style: dashed; }
+.stat-label { font-size: 10.5px; font-weight: 620; letter-spacing: .04em; text-transform: uppercase; color: var(--text-faint); }
+.stat-value { font-size: 18px; font-weight: 640; margin-top: 3px; letter-spacing: -0.02em; }
+.stat-value .u { font-size: 11px; font-weight: 450; color: var(--text-muted); margin-left: 3px; }
+.stat[data-status="good"] .stat-value { color: var(--good); }
+.stat[data-status="warn"] .stat-value { color: var(--warn); }
+.stat[data-status="bad"]  .stat-value { color: var(--bad); }
+.stat[data-status="none"] .stat-value { color: var(--text-faint); }
+.person-chart-title {
+  font-size: 11px; font-weight: 620; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--text-faint); margin-bottom: 4px;
+}
+.person-chart { display: block; width: 100%; max-width: 280px; height: auto; }
+
+/* ============================================================
+   Footer
+   ============================================================ */
+.report-foot {
+  margin-top: 40px; padding: 24px 0 40px;
+  border-top: 1px solid var(--border); background: var(--surface);
+}
+.foot-top {
+  display: flex; flex-wrap: wrap; gap: 10px 18px;
+  align-items: baseline; justify-content: space-between; margin-bottom: 18px;
+}
+.tool-name { font-size: 14px; font-weight: 640; }
+.tool-version {
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 1px 7px; margin-left: 8px;
+}
+.foot-note { color: var(--text-faint); font-size: 12.5px; }
+.params { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 0 32px; margin: 0; }
+.param { display: flex; gap: 12px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.param dt { flex: none; width: 168px; font-size: 12px; color: var(--text-muted); }
+.param dd { margin: 0; font-size: 12.5px; font-family: var(--font-mono); word-break: break-word; }
+
+/* ============================================================
+   Responsive
+   ============================================================ */
+@media (max-width: 760px) {
+  .wrap { padding: 0 16px; }
+  .report-title { font-size: 21px; }
+  .section-head { flex-wrap: wrap; }
+  .section-desc { margin-left: 0; text-align: left; max-width: none; width: 100%; }
+  .kpi-value { font-size: 26px; }
+  .head-meta { gap: 2px 18px; }
+  .param dt { width: 130px; }
+  .pct-desc { display: none; }
+  .person-stats { grid-template-columns: repeat(2, 1fr); }
+  .tab { padding: 9px 13px; font-size: 13px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+/* ============================================================
+   Print — flatten to A4, force the light palette, expand all tabs
+   ============================================================ */
+@media print {
+  /* Landscape for the whole document, deliberately. The widest table needs
+     26 columns on one sheet: portrait A4 gives ~703px of content, landscape
+     ~1047px. Named @page + `page:` would let only the wide tables rotate, but
+     its support is not something this file can depend on offline, and silently
+     losing columns is the one outcome that is not allowed. */
+  @page { size: A4 landscape; margin: 10mm; }
+
+  :root,
+  :root[data-theme="dark"],
+  :root:not([data-theme="light"]) {
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --surface-2: #f5f6f8;
+    --surface-3: #ebeef2;
+    --border: #d4d9e0;
+    --border-strong: #a9b2bf;
+    --text: #000000;
+    --text-muted: #3f4650;
+    --text-faint: #5d646e;
+    --accent: #1e3a8a;
+    --accent-strong: #16296b;
+    --accent-soft: #edf1fb;
+    --accent-contrast: #ffffff;
+    --good: #0a5c48;
+    --good-soft: #e9f4f0;
+    --warn: #7a4e00;
+    --warn-soft: #fbf1de;
+    --bad: #96190f;
+    --bad-soft: #fbe6e3;
+    --neutral-soft: #f0f2f5;
+    --chart-grid: #e2e6ec;
+    --chart-axis: #98a1ae;
+    --chart-ideal: #7e8896;
+    --chart-actual: #1e3a8a;
+    --chart-fill: #1e3a8a;
+    --chart-fill-op: 0.08;
+    --chart-scope: #7a4e00;
+    --chart-bar: #b3c3e4;
+    --chart-bar-strong: #1e3a8a;
+    --chart-weekend: #f1f3f6;
+    --cat-new: #eaedf2;          --cat-new-fg: #333a45;
+    --cat-indeterminate: #d8e3f8; --cat-indeterminate-fg: #16264f;
+    --cat-done: #d6ebe2;          --cat-done-fg: #08402f;
+    --cat-cancelled: #e4dfef;     --cat-cancelled-fg: #3a3157;
+    --cat-unmapped: #f8ecd2;      --cat-unmapped-fg: #5d3c00;
+    --cat-absent-fg: #8b939f;
+    --shadow: none;
+  }
+
+  body { background: #fff; font-size: 9.5pt; overflow: visible; }
+  .wrap { max-width: none; padding: 0; }
+  .no-print, .theme-switch, .collapse-btn, .skip-link, .tablist { display: none !important; }
+
+  /* every tab panel prints, in order, with its own heading */
+  .tabs { padding-top: 0; }
+  .tab-input { display: none !important; }
+  .tabpanel { display: block !important; }
+  .tabpanel + .tabpanel { break-before: page; page-break-before: always; }
+  .panel-title {
+    position: static; width: auto; height: auto; overflow: visible; clip-path: none;
+    display: block; font-size: 15pt; font-weight: 700;
+    margin: 0 0 14px; padding-bottom: 6px; border-bottom: 2px solid #000;
+  }
+
+  .scroll-x, .table-wrap, .mini-wrap, .table-card {
+    overflow: visible !important; max-height: none !important;
+  }
+  .chart-svg, .heatmap, table.data, .sprint-mini {
+    min-width: 0 !important; width: 100% !important;
+  }
+  .hm-cell { font-size: 7.5pt; padding: 0 3px; }
+
+  /* min-width alone was not enough: white-space:nowrap kept min-content at
+     1437-2634px, so the excess ran off the right page edge and .table-card's
+     overflow:hidden clipped it without any marker. Headers may now break
+     anywhere (they are unbreakable identifiers like mr_cycle_time_median_hours);
+     data cells only unwrap, so numbers are never split mid-digit. */
+  table.data thead th {
+    position: static; white-space: normal;
+    overflow-wrap: anywhere; word-break: break-word;
+    font-size: 7pt; padding: 4px 5px; vertical-align: bottom;
+  }
+  table.data tbody td, table.data tbody th,
+  table.data tfoot td, table.data tfoot th {
+    white-space: normal; padding: 4px 5px;
+  }
+  table.data { font-size: 8pt; }
+  table.data.wide, table.data.mid { font-size: 7pt; }
+  table.data.xwide { font-size: 6pt; }
+  table.data.xwide thead th { font-size: 5.5pt; padding: 3px 4px; }
+  table.data.xwide tbody td, table.data.xwide tbody th,
+  table.data.xwide tfoot td, table.data.xwide tfoot th { padding: 3px 4px; }
+
+  /* the sticky-header sizing contract is screen-only */
+  table.data.grouped thead tr:first-child th {
+    height: auto; line-height: normal; padding: 4px 5px; vertical-align: bottom;
+    box-shadow: none; border-bottom: 1px solid var(--border-strong);
+  }
+
+  /* Inline chips and keys carry fixed px sizes that ignore the table font-size
+     shrink, so they would set the column min-width on paper. The warnings
+     column is the worst offender: MR_DIFF_STATS_MISSING is one nowrap token. */
+  /* Only the long identifier badges need to break — MR_DIFF_STATS_MISSING and
+     WARN_DIVISION_BY_ZERO are single tokens that would otherwise set the
+     column min-width. Status pills are 6-7 letters and never need it, so they
+     stay nowrap: breaking them produced "clos ed" inside the pill shape. */
+  .wbadge, .warn-badge, .badge-na, .caveat {
+    font-size: 5.5pt; padding: 0 3px;
+    white-space: normal; overflow-wrap: anywhere; word-break: break-word;
+  }
+  .pill { font-size: 5.5pt; padding: 0 3px; white-space: nowrap; }
+  .row-warnings { gap: 2px; }
+  .cell-key, .rowkey, .denom, .mono { font-size: inherit; }
+  table.data tfoot td, table.data tfoot th { position: static; }
+
+  .card { box-shadow: none; border-color: #c9cfd8; }
+  .section { margin-bottom: 16px; break-inside: avoid; page-break-inside: avoid; }
+  .section-head { break-after: avoid; page-break-after: avoid; }
+  .section.is-collapsed .section-body { display: block !important; }
+
+  .kpi-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+  .kpi { padding: 9px 10px; }
+  .kpi-value { font-size: 15pt; }
+  .spark { width: 56px; height: 22px; }
+  .metric-groups { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .forecast-grid { grid-template-columns: 36% minmax(0, 1fr); }
+  .person-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+  table.data thead { display: table-header-group; }
+  table.data tr { break-inside: avoid; page-break-inside: avoid; }
+  .heatmap thead th.hm-corner, .heatmap tbody th { position: static; }
+
+  .report-foot { break-before: page; page-break-before: always; padding: 0; border: 0; }
+  .params { grid-template-columns: repeat(2, 1fr); }
+
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+</style>
+</head>
+<body>
+
+<a class="skip-link" href="#main">Перейти к содержимому отчёта</a>
+
+<!-- ================================================================
+     HEADER
+     ================================================================ -->
+<header class="report-head">
+  <div class="wrap">
+    <div class="head-top">
+      <div>
+        <div class="eyebrow">Jira team metrics</div>
+        <!-- {{HEADER_TITLE}} -->
+        <h1 class="report-title">{{HEADER_TITLE}}</h1>
+        <p class="report-subtitle">
+          доска <!-- {{HEADER_BOARD_NAME}} --><b>{{HEADER_BOARD_NAME}}</b>
+          &middot; проект <!-- {{HEADER_PROJECT_KEY}} --><b>{{HEADER_PROJECT_KEY}}</b>
+          &middot; целевой спринт <!-- {{HEADER_SPRINT_NAME}} --><b>{{HEADER_SPRINT_NAME}}</b>
+        </p>
+      </div>
+      <div class="theme-switch no-print" role="group" aria-label="Цветовая тема">
+        <button type="button" data-theme-set="auto" aria-pressed="true">Авто</button>
+        <button type="button" data-theme-set="light" aria-pressed="false">Светлая</button>
+        <button type="button" data-theme-set="dark" aria-pressed="false">Тёмная</button>
+      </div>
+    </div>
+
+    <div class="head-meta">
+      <div class="meta-item">
+        <div class="meta-label">Период спринта</div>
+        <!-- {{HEADER_DATE_RANGE}} -->
+        <div class="meta-value num">{{HEADER_DATE_RANGE}}</div>
+      </div>
+      <div class="meta-item">
+        <div class="meta-label">Рабочих дней</div>
+        <!-- {{HEADER_WORKING_DAYS}} -->
+        <div class="meta-value num">{{HEADER_WORKING_DAYS}}</div>
+      </div>
+      <div class="meta-item">
+        <div class="meta-label">Состояние</div>
+        <!-- {{HEADER_SPRINT_STATE}} -->
+        <div class="meta-value">{{HEADER_SPRINT_STATE}}</div>
+      </div>
+      <div class="meta-item">
+        <div class="meta-label">Базовых спринтов</div>
+        <!-- {{HEADER_BASE_SPRINTS}} -->
+        <div class="meta-value num">{{HEADER_BASE_SPRINTS}}</div>
+      </div>
+      <div class="meta-item">
+        <div class="meta-label">Сформирован</div>
+        <!-- {{HEADER_GENERATED_AT}} -->
+        <div class="meta-value num">{{HEADER_GENERATED_AT}}</div>
+      </div>
+      <div class="meta-item">
+        <div class="meta-label">Хост подключения</div>
+        <!-- {{HEADER_JIRA_HOST}} -->
+        <div class="meta-value mono">{{HEADER_JIRA_HOST}}</div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+  <div class="wrap">
+    <div class="tabs">
+
+      <!-- CSS-only tabs: the three radios must stay direct siblings of the
+           panels for the ~ combinator to work. Do not wrap them. -->
+      <input class="tab-input" type="radio" name="report-tab" id="tab-team" checked>
+      <input class="tab-input" type="radio" name="report-tab" id="tab-person">
+      <input class="tab-input" type="radio" name="report-tab" id="tab-eng">
+
+      <div class="tablist" role="group" aria-label="Разделы отчёта">
+        <!-- {{TAB_TEAM_LABEL}} -->
+        <label class="tab" for="tab-team"><span class="tab-num">01</span>{{TAB_TEAM_LABEL}}</label>
+        <!-- {{TAB_PERSON_LABEL}} -->
+        <label class="tab" for="tab-person"><span class="tab-num">02</span>{{TAB_PERSON_LABEL}}</label>
+        <!-- {{TAB_ENG_LABEL}} -->
+        <label class="tab" for="tab-eng"><span class="tab-num">03</span>{{TAB_ENG_LABEL}}</label>
+      </div>
+
+      <!-- ============================================================
+           TAB 1 — КОМАНДА
+           ============================================================ -->
+      <section class="tabpanel" id="panel-team">
+        <h2 class="panel-title">Команда</h2>
+
+        <!-- ---- board warnings ------------------------------------- -->
+        <section class="section" id="sec-warnings">
+          <div class="section-head">
+            <span class="section-index">01</span>
+            <h2 class="section-title">Предупреждения расчёта</h2>
+            <button class="collapse-btn no-print" type="button" data-collapse="sec-warnings"
+                    aria-expanded="true" aria-controls="sec-warnings-body">Скрыть</button>
+            <p class="section-desc">Коды из контракта модуля. Значения при этом посчитаны — предупреждение указывает, чему нельзя доверять как точной величине.</p>
+          </div>
+          <div class="section-body" id="sec-warnings-body">
+            <div class="card">
+              <!-- {{LOOP_BOARD_WARNINGS_START}} -->
+              <ul class="warn-list">
+                <li>
+                  <!-- {{BOARD_WARNING_CODE}} --><span class="warn-badge">{{BOARD_WARNING_CODE}}</span>
+                  <!-- {{BOARD_WARNING_TEXT}} -->
+                  <span>{{BOARD_WARNING_TEXT}}</span>
+                </li>
+              </ul>
+              <!-- {{LOOP_BOARD_WARNINGS_END}} -->
+            </div>
+          </div>
+        </section>
+
+        <!-- ---- KPI row -------------------------------------------- -->
+        <section class="section" id="sec-kpi">
+          <div class="section-head">
+            <span class="section-index">02</span>
+            <h2 class="section-title">Показатели целевого спринта</h2>
+            <button class="collapse-btn no-print" type="button" data-collapse="sec-kpi"
+                    aria-expanded="true" aria-controls="sec-kpi-body">Скрыть</button>
+            <p class="section-desc">Крупное число — метрика целевого спринта. Подпись снизу — база для сравнения: SMA5 или среднее по базовым спринтам. Спарклайн справа — история значения по показанным спринтам (включая целевой).</p>
+            <details class="thresholds">
+              <summary>Как читать статус тайлов <span class="heuristic-flag">— пороги придуманы нами, не модулем</span></summary>
+              <div class="state-legend">
+                <span class="legend-note">В исходном модуле нет классификации good/warn/bad (SPEC §7) — цвета ниже это эвристика прототипа, а не стандарт; можно не соглашаться с конкретными числами.</span>
+                <span><b>velocity_sp</b> — good &ge; SMA5, warn &ge; 90% SMA5, bad ниже. Рост хорош.</span>
+                <span><b>SMA5</b> — good: база на 5 спринтах, warn: короче (<span class="mono">WARN_BASELINE_SHORT</span>), «нет базы»: истории нет вовсе (реальный div0).</span>
+                <span><b>Performance</b> — good &ge; 95%, warn 80&ndash;95%, bad &lt; 80%. Рост хорош.</span>
+                <span><b>Load</b> — good 85&ndash;110%, warn 70&ndash;85% или 110&ndash;125%, bad вне этого диапазона. Плохо в ОБЕ стороны от 100% — и перегруз, и недогруз.</span>
+                <span><b>Scope change</b> — good &le; 10%, warn 10&ndash;25%, bad &gt; 25%. Рост — ПЛОХО, не хорошо.</span>
+                <span><b>Throughput</b> — good &ge; среднего по базе, warn &ge; 90% среднего, bad ниже. Рост хорош.</span>
+                <span><b>Closure, задачи / SP</b> — good &ge; 85%, warn 70&ndash;85%, bad &lt; 70%. Рост хорош.</span>
+              </div>
+            </details>
+          </div>
+
+          <div class="section-body" id="sec-kpi-body">
+            <div class="kpi-grid">
+
+              <!-- {{LOOP_KPI_TILES_START}} -->
+
+              <!-- {{KPI_VELOCITY_STATUS}} -->
+              <article class="kpi card" data-status="{{KPI_VELOCITY_STATUS}}">
+                <div class="kpi-head">
+                  <span class="kpi-label">Velocity</span>
+                  <!-- {{KPI_VELOCITY_STATUS_LABEL}} -->
+                  <span class="kpi-status">{{KPI_VELOCITY_STATUS_LABEL}}</span>
+                </div>
+                <div class="kpi-value">
+                  <!-- {{KPI_VELOCITY_VALUE}} -->{{KPI_VELOCITY_VALUE}}
+                  <!-- {{KPI_VELOCITY_UNIT}} --><span class="kpi-unit">{{KPI_VELOCITY_UNIT}}</span>
+                </div>
+                <div class="kpi-foot">
+                  <div>
+                    <!-- {{KPI_VELOCITY_DELTA_DIR}} -->
+                    <span class="delta" data-dir="{{KPI_VELOCITY_DELTA_DIR}}">
+                      <span class="arrow" aria-hidden="true">{{KPI_VELOCITY_DELTA_ARROW}}</span>
+                      <!-- {{KPI_VELOCITY_DELTA}} -->{{KPI_VELOCITY_DELTA}}
+                    </span>
+                    <!-- {{KPI_VELOCITY_DELTA_NOTE}} -->
+                    <div class="delta-note">{{KPI_VELOCITY_DELTA_NOTE}}</div>
+                  </div>
+                  <!-- {{KPI_VELOCITY_SPARK_POINTS}} -->{{KPI_VELOCITY_SPARK_POINTS}}
+                </div>
+              </article>
+
+              <!-- {{KPI_SMA5_STATUS}} -->
+              <article class="kpi card" data-status="{{KPI_SMA5_STATUS}}">
+                <div class="kpi-head">
+                  <span class="kpi-label">Velocity SMA5</span>
+                  <!-- {{KPI_SMA5_STATUS_LABEL}} -->
+                  <span class="kpi-status">{{KPI_SMA5_STATUS_LABEL}}</span>
+                </div>
+                <div class="kpi-value">
+                  <!-- {{KPI_SMA5_VALUE}} -->{{KPI_SMA5_VALUE}}
+                  <!-- {{KPI_SMA5_UNIT}} --><span class="kpi-unit">{{KPI_SMA5_UNIT}}</span>
+                </div>
+                <div class="kpi-foot">
+                  <div>
+                    <!-- {{KPI_SMA5_DELTA_DIR}} -->
+                    <span class="delta" data-dir="{{KPI_SMA5_DELTA_DIR}}">
+                      <span class="arrow" aria-hidden="true">{{KPI_SMA5_DELTA_ARROW}}</span>
+                      <!-- {{KPI_SMA5_DELTA}} -->{{KPI_SMA5_DELTA}}
+                    </span>
+                    <!-- {{KPI_SMA5_DELTA_NOTE}} -->
+                    <div class="delta-note">{{KPI_SMA5_DELTA_NOTE}}</div>
+                  </div>
+                  <!-- {{KPI_SMA5_SPARK_POINTS}} -->{{KPI_SMA5_SPARK_POINTS}}
+                </div>
+                <!-- {{KPI_SMA5_WARN}} -->{{KPI_SMA5_WARN}}
+              </article>
+
+              <!-- {{KPI_PERFORMANCE_STATUS}} -->
+              <article class="kpi card" data-status="{{KPI_PERFORMANCE_STATUS}}">
+                <div class="kpi-head">
+                  <span class="kpi-label">Performance</span>
+                  <!-- {{KPI_PERFORMANCE_STATUS_LABEL}} -->
+                  <span class="kpi-status">{{KPI_PERFORMANCE_STATUS_LABEL}}</span>
+                </div>
+                <div class="kpi-value">
+                  <!-- {{KPI_PERFORMANCE_VALUE}} -->{{KPI_PERFORMANCE_VALUE}}
+                  <!-- {{KPI_PERFORMANCE_UNIT}} --><span class="kpi-unit">{{KPI_PERFORMANCE_UNIT}}</span>
+                </div>
+                <div class="kpi-foot">
+                  <div>
+                    <!-- {{KPI_PERFORMANCE_DELTA_DIR}} -->
+                    <span class="delta" data-dir="{{KPI_PERFORMANCE_DELTA_DIR}}">
+                      <span class="arrow" aria-hidden="true">{{KPI_PERFORMANCE_DELTA_ARROW}}</span>
+                      <!-- {{KPI_PERFORMANCE_DELTA}} -->{{KPI_PERFORMANCE_DELTA}}
+                    </span>
+                    <!-- {{KPI_PERFORMANCE_DELTA_NOTE}} -->
+                    <div class="delta-note">{{KPI_PERFORMANCE_DELTA_NOTE}}</div>
+                  </div>
+                  <!-- {{KPI_PERFORMANCE_SPARK_POINTS}} -->{{KPI_PERFORMANCE_SPARK_POINTS}}
+                </div>
+              </article>
+
+              <!-- {{KPI_LOAD_STATUS}} -->
+              <article class="kpi card" data-status="{{KPI_LOAD_STATUS}}">
+                <div class="kpi-head">
+                  <span class="kpi-label">Load</span>
+                  <!-- {{KPI_LOAD_STATUS_LABEL}} -->
+                  <span class="kpi-status">{{KPI_LOAD_STATUS_LABEL}}</span>
+                </div>
+                <div class="kpi-value">
+                  <!-- {{KPI_LOAD_VALUE}} -->{{KPI_LOAD_VALUE}}
+                  <!-- {{KPI_LOAD_UNIT}} --><span class="kpi-unit">{{KPI_LOAD_UNIT}}</span>
+                </div>
+                <div class="kpi-foot">
+                  <div>
+                    <!-- {{KPI_LOAD_DELTA_DIR}} -->
+                    <span class="delta" data-dir="{{KPI_LOAD_DELTA_DIR}}">
+                      <span class="arrow" aria-hidden="true">{{KPI_LOAD_DELTA_ARROW}}</span>
+                      <!-- {{KPI_LOAD_DELTA}} -->{{KPI_LOAD_DELTA}}
+                    </span>
+                    <!-- {{KPI_LOAD_DELTA_NOTE}} -->
+                    <div class="delta-note">{{KPI_LOAD_DELTA_NOTE}}</div>
+                  </div>
+                  <!-- {{KPI_LOAD_SPARK_POINTS}} -->{{KPI_LOAD_SPARK_POINTS}}
+                </div>
+              </article>
+
+              <!-- {{KPI_SCOPE_CHANGE_STATUS}} -->
+              <article class="kpi card" data-status="{{KPI_SCOPE_CHANGE_STATUS}}">
+                <div class="kpi-head">
+                  <span class="kpi-label">Scope change</span>
+                  <!-- {{KPI_SCOPE_CHANGE_STATUS_LABEL}} -->
+                  <span class="kpi-status">{{KPI_SCOPE_CHANGE_STATUS_LABEL}}</span>
+                </div>
+                <div class="kpi-value">
+                  <!-- {{KPI_SCOPE_CHANGE_VALUE}} -->{{KPI_SCOPE_CHANGE_VALUE}}
+                  <!-- {{KPI_SCOPE_CHANGE_UNIT}} --><span class="kpi-unit">{{KPI_SCOPE_CHANGE_UNIT}}</span>
+                </div>
+                <div class="kpi-foot">
+                  <div>
+                    <!-- {{KPI_SCOPE_CHANGE_DELTA_DIR}} -->
+                    <span class="delta" data-dir="{{KPI_SCOPE_CHANGE_DELTA_DIR}}">
+                      <span class="arrow" aria-hidden="true">{{KPI_SCOPE_CHANGE_DELTA_ARROW}}</span>
+                      <!-- {{KPI_SCOPE_CHANGE_DELTA}} -->{{KPI_SCOPE_CHANGE_DELTA}}
+                    </span>
+                    <!-- {{KPI_SCOPE_CHANGE_DELTA_NOTE}} -->
+                    <div class="delta-note">{{KPI_SCOPE_CHANGE_DELTA_NOTE}}</div>
+                  </div>
+                  <!-- {{KPI_SCOPE_CHANGE_SPARK_POINTS}} -->{{KPI_SCOPE_CHANGE_SPARK_POINTS}}
+                </div>
+              </article>
+
+              <!-- {{KPI_THROUGHPUT_STATUS}} -->
+              <article class="kpi card" data-status="{{KPI_THROUGHPUT_STATUS}}">
+                <div class="kpi-head">
+                  <span class="kpi-label">Throughput</span>
+                  <!-- {{KPI_THROUGHPUT_STATUS_LABEL}} -->
+                  <span class="kpi-status">{{KPI_THROUGHPUT_STATUS_LABEL}}</span>
+                </div>
+                <div class="kpi-value">
+                  <!-- {{KPI_THROUGHPUT_VALUE}} -->{{KPI_THROUGHPUT_VALUE}}
+                  <!-- {{KPI_THROUGHPUT_UNIT}} --><span class="kpi-unit">{{KPI_THROUGHPUT_UNIT}}</span>
+                </div>
+                <div class="kpi-foot">
+                  <div>
+                    <!-- {{KPI_THROUGHPUT_DELTA_DIR}} -->
+                    <span class="delta" data-dir="{{KPI_THROUGHPUT_DELTA_DIR}}">
+                      <span class="arrow" aria-hidden="true">{{KPI_THROUGHPUT_DELTA_ARROW}}</span>
+                      <!-- {{KPI_THROUGHPUT_DELTA}} -->{{KPI_THROUGHPUT_DELTA}}
+                    </span>
+                    <!-- {{KPI_THROUGHPUT_DELTA_NOTE}} -->
+                    <div class="delta-note">{{KPI_THROUGHPUT_DELTA_NOTE}}</div>
+                  </div>
+                  <!-- {{KPI_THROUGHPUT_SPARK_POINTS}} -->{{KPI_THROUGHPUT_SPARK_POINTS}}
+                </div>
+              </article>
+
+              <!-- {{KPI_CLOSURE_ITEMS_STATUS}} -->
+              <article class="kpi card" data-status="{{KPI_CLOSURE_ITEMS_STATUS}}">
+                <div class="kpi-head">
+                  <span class="kpi-label">Closure, задачи</span>
+                  <!-- {{KPI_CLOSURE_ITEMS_STATUS_LABEL}} -->
+                  <span class="kpi-status">{{KPI_CLOSURE_ITEMS_STATUS_LABEL}}</span>
+                </div>
+                <div class="kpi-value">
+                  <!-- {{KPI_CLOSURE_ITEMS_VALUE}} -->{{KPI_CLOSURE_ITEMS_VALUE}}
+                  <!-- {{KPI_CLOSURE_ITEMS_UNIT}} --><span class="kpi-unit">{{KPI_CLOSURE_ITEMS_UNIT}}</span>
+                </div>
+                <div class="kpi-foot">
+                  <div>
+                    <!-- {{KPI_CLOSURE_ITEMS_DELTA_DIR}} -->
+                    <span class="delta" data-dir="{{KPI_CLOSURE_ITEMS_DELTA_DIR}}">
+                      <span class="arrow" aria-hidden="true">{{KPI_CLOSURE_ITEMS_DELTA_ARROW}}</span>
+                      <!-- {{KPI_CLOSURE_ITEMS_DELTA}} -->{{KPI_CLOSURE_ITEMS_DELTA}}
+                    </span>
+                    <!-- {{KPI_CLOSURE_ITEMS_DELTA_NOTE}} -->
+                    <div class="delta-note">{{KPI_CLOSURE_ITEMS_DELTA_NOTE}}</div>
+                  </div>
+                  <!-- {{KPI_CLOSURE_ITEMS_SPARK_POINTS}} -->{{KPI_CLOSURE_ITEMS_SPARK_POINTS}}
+                </div>
+              </article>
+
+              <!-- {{KPI_CLOSURE_SP_STATUS}} -->
+              <article class="kpi card" data-status="{{KPI_CLOSURE_SP_STATUS}}">
+                <div class="kpi-head">
+                  <span class="kpi-label">Closure, SP</span>
+                  <!-- {{KPI_CLOSURE_SP_STATUS_LABEL}} -->
+                  <span class="kpi-status">{{KPI_CLOSURE_SP_STATUS_LABEL}}</span>
+                </div>
+                <div class="kpi-value">
+                  <!-- {{KPI_CLOSURE_SP_VALUE}} -->{{KPI_CLOSURE_SP_VALUE}}
+                  <!-- {{KPI_CLOSURE_SP_UNIT}} --><span class="kpi-unit">{{KPI_CLOSURE_SP_UNIT}}</span>
+                </div>
+                <div class="kpi-foot">
+                  <div>
+                    <!-- {{KPI_CLOSURE_SP_DELTA_DIR}} -->
+                    <span class="delta" data-dir="{{KPI_CLOSURE_SP_DELTA_DIR}}">
+                      <span class="arrow" aria-hidden="true">{{KPI_CLOSURE_SP_DELTA_ARROW}}</span>
+                      <!-- {{KPI_CLOSURE_SP_DELTA}} -->{{KPI_CLOSURE_SP_DELTA}}
+                    </span>
+                    <!-- {{KPI_CLOSURE_SP_DELTA_NOTE}} -->
+                    <div class="delta-note">{{KPI_CLOSURE_SP_DELTA_NOTE}}</div>
+                  </div>
+                  <!-- {{KPI_CLOSURE_SP_SPARK_POINTS}} -->{{KPI_CLOSURE_SP_SPARK_POINTS}}
+                </div>
+              </article>
+
+              <!-- {{LOOP_KPI_TILES_END}} -->
+
+            </div>
+          </div>
+        </section>
+
+        <!-- ---- sprint scalars ------------------------------------- -->
+        <section class="section" id="sec-metrics">
+          <div class="section-head">
+            <span class="section-index">03</span>
+            <h2 class="section-title">Метрики спринта</h2>
+            <button class="collapse-btn no-print" type="button" data-collapse="sec-metrics"
+                    aria-expanded="true" aria-controls="sec-metrics-body">Скрыть</button>
+            <p class="section-desc">Значения без округления, как их отдаёт модуль. SP задачи берётся на момент конца её участия в спринте.</p>
+          </div>
+
+          <div class="section-body" id="sec-metrics-body">
+            <div class="metric-groups">
+
+              <div class="metric-group card">
+                <h3>Обязательства и поставка</h3>
+                <div class="metric-row">
+                  <span class="metric-name">Взято в спринт<code>committed_sp</code></span>
+                  <span class="metric-dots"></span>
+                  <!-- {{METRIC_COMMITTED_SP}} --><span class="metric-value">{{METRIC_COMMITTED_SP}}<span class="sub">SP</span></span>
+                </div>
+                <div class="metric-row">
+                  <span class="metric-name">Взято в спринт<code>committed_items</code></span>
+                  <span class="metric-dots"></span>
+                  <!-- {{METRIC_COMMITTED_ITEMS}} --><span class="metric-value">{{METRIC_COMMITTED_ITEMS}}<span class="sub">задачи</span></span>
+                </div>
+                <div class="metric-row">
+                  <span class="metric-name">Поставлено<code>delivered_sp</code></span>
+                  <span class="metric-dots"></span>
+                  <!-- {{METRIC_DELIVERED_SP}} --><span class="metric-value is-good">{{METRIC_DELIVERED_SP}}<span class="sub">SP</span></span>
+                </div>
+                <div class="metric-row">
+                  <span class="metric-name">Поставлено<code>delivered_items</code></span>
+                  <span class="metric-dots"></span>
+                  <!-- {{METRIC_DELIVERED_ITEMS}} --><span class="metric-value is-good">{{METRIC_DELIVERED_ITEMS}}<span class="sub">задач</span></span>
+                </div>
+
+                <div class="scopebar-block">
+                  <div class="scopebar-caption">
+                    Поставлено от итогового объёма
+                    <!-- {{METRIC_SCOPEBAR_CAPTION}} --><b class="num">{{METRIC_SCOPEBAR_CAPTION}}</b>
+                  </div>
+                  <!-- {{METRIC_SCOPEBAR_GEOMETRY}} -->{{METRIC_SCOPEBAR_GEOMETRY}}
+                  <div class="scopebar-legend num">
+                    <span><i class="swatch done"></i>delivered_sp {{METRIC_DELIVERED_SP}}</span>
+                    <span><i class="swatch rest"></i>итог {{METRIC_SCOPEBAR_TOTAL}}</span>
+                    <span><i class="swatch mark"></i>committed_sp {{METRIC_COMMITTED_SP}}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="metric-group card">
+                <h3>Изменение объёма</h3>
+                <div class="metric-row">
+                  <span class="metric-name">Добавлено<code>scope_added_sp</code></span>
+                  <span class="metric-dots"></span>
+                  <!-- {{METRIC_SCOPE_ADDED_SP}} --><span class="metric-value is-bad">+{{METRIC_SCOPE_ADDED_SP}}<span class="sub">SP</span></span>
+                </div>
+                <div class="metric-row">
+                  <span class="metric-name">Добавлено<code>scope_added_items</code></span>
+                  <span class="metric-dots"></span>
+                  <!-- {{METRIC_SCOPE_ADDED_ITEMS}} --><span class="metric-value">{{METRIC_SCOPE_ADDED_ITEMS}}<span class="sub">задачи</span></span>
+                </div>
+                <div class="metric-row">
+                  <span class="metric-name">Убрано<code>scope_removed_sp</code></span>
+                  <span class="metric-dots"></span>
+                  <!-- {{METRIC_SCOPE_REMOVED_SP}} --><span class="metric-value">{{METRIC_SCOPE_REMOVED_SP}}<span class="sub">SP</span></span>
+                </div>
+                <div class="metric-row">
+                  <span class="metric-name">Убрано<code>scope_removed_items</code></span>
+                  <span class="metric-dots"></span>
+                  <!-- {{METRIC_SCOPE_REMOVED_ITEMS}} --><span class="metric-value">{{METRIC_SCOPE_REMOVED_ITEMS}}<span class="sub">задача</span></span>
+                </div>
+                <div class="metric-row">
+                  <span class="metric-name">Переоценка внутри спринта<code>scope_estimation_change_sp</code></span>
+                  <span class="metric-dots"></span>
+                  <!-- {{METRIC_SCOPE_ESTIMATION_CHANGE_SP}} --><span class="metric-value is-warn">{{METRIC_SCOPE_ESTIMATION_CHANGE_SP}}<span class="sub">SP</span></span>
+                </div>
+                <div class="metric-row">
+                  <span class="metric-name">Итого изменение объёма<code>scope_change_pct</code></span>
+                  <span class="metric-dots"></span>
+                  <!-- {{METRIC_SCOPE_CHANGE_PCT}} --><span class="metric-value {{METRIC_SCOPE_CHANGE_PCT_CLASS}}">{{METRIC_SCOPE_CHANGE_PCT}}<span class="sub">%</span></span>
+                </div>
+              </div>
+
+              <div class="metric-group card">
+                <h3>Производные</h3>
+                <div class="metric-row">
+                  <span class="metric-name">Выполнение обязательств<code>performance_pct</code></span>
+                  <span class="metric-dots"></span>
+                  <!-- {{METRIC_PERFORMANCE_PCT}} --><span class="metric-value {{METRIC_PERFORMANCE_PCT_CLASS}}">{{METRIC_PERFORMANCE_PCT}}<span class="sub">%</span></span>
+                </div>
+                <div class="metric-row">
+                  <span class="metric-name">Скорость<code>velocity_sp</code></span>
+                  <span class="metric-dots"></span>
+                  <!-- {{METRIC_VELOCITY_SP}} --><span class="metric-value">{{METRIC_VELOCITY_SP}}<span class="sub">SP</span></span>
+                </div>
+                <div class="metric-row">
+                  <span class="metric-name">Скользящее среднее<code>velocity_sma5_sp</code></span>
+                  <span class="metric-dots"></span>
+                  <!-- {{METRIC_VELOCITY_SMA5_SP}} --><span class="metric-value {{METRIC_VELOCITY_SMA5_SP_CLASS}}">{{METRIC_VELOCITY_SMA5_SP}}<span class="sub">SP</span></span>
+                </div>
+                <div class="metric-row">
+                  <span class="metric-name">Загрузка<code>load_pct</code></span>
+                  <span class="metric-dots"></span>
+                  <!-- {{METRIC_LOAD_PCT}} --><span class="metric-value {{METRIC_LOAD_PCT_CLASS}}">{{METRIC_LOAD_PCT}}<span class="sub">%</span></span>
+                </div>
+                <div class="metric-row">
+                  <span class="metric-name">Пропускная способность<code>throughput_items</code></span>
+                  <span class="metric-dots"></span>
+                  <!-- {{METRIC_THROUGHPUT_ITEMS}} --><span class="metric-value">{{METRIC_THROUGHPUT_ITEMS}}<span class="sub">задач</span></span>
+                </div>
+                <div class="metric-row">
+                  <span class="metric-name">Закрытие по задачам<code>closure_pct_items</code></span>
+                  <span class="metric-dots"></span>
+                  <!-- {{METRIC_CLOSURE_PCT_ITEMS}} --><span class="metric-value {{METRIC_CLOSURE_PCT_ITEMS_CLASS}}">{{METRIC_CLOSURE_PCT_ITEMS}}<span class="sub">%</span></span>
+                </div>
+                <div class="metric-row">
+                  <span class="metric-name">Закрытие по SP<code>closure_pct_sp</code></span>
+                  <span class="metric-dots"></span>
+                  <!-- {{METRIC_CLOSURE_PCT_SP}} --><span class="metric-value {{METRIC_CLOSURE_PCT_SP_CLASS}}">{{METRIC_CLOSURE_PCT_SP}}<span class="sub">%</span></span>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </section>
+
+        <!-- ---- burndown ------------------------------------------- -->
+        <section class="section" id="sec-burndown">
+          <div class="section-head">
+            <span class="section-index">04</span>
+            <h2 class="section-title">Burndown</h2>
+            <button class="collapse-btn no-print" type="button" data-collapse="sec-burndown"
+                    aria-expanded="true" aria-controls="sec-burndown-body">Скрыть</button>
+            <p class="section-desc">Ось X — календарные дни, выходные включены. Статус на субботу и воскресенье наследуется от пятницы, поэтому линия на выходных горизонтальна. Сплошная линия с точками — фактический остаток (<span class="mono">remaining_sp</span>), пунктир — идеальный темп (<span class="mono">ideal_sp</span>). <b>Хорошо</b> — когда фактическая линия идёт на уровне идеальной или ниже; плоский участок фактической линии означает, что в эти дни ничего не закрывалось.</p>
+          </div>
+
+          <div class="section-body" id="sec-burndown-body">
+            <div class="card chart-card">
+              <div class="scroll-x">
+                <!-- {{BURNDOWN_ARIA_SUMMARY}} -->
+                {{BURNDOWN_SVG}}
+              </div>
+
+              <div class="legend">
+                <span class="legend-item">
+                  <svg class="legend-line" viewBox="0 0 26 10" aria-hidden="true" focusable="false">
+                    <path class="lg-actual" d="M0 5 H26"/>
+                    <circle class="lg-actual-pt" cx="13" cy="5" r="3"/>
+                  </svg>
+                  <b>remaining_sp</b> &mdash; сплошная с точками
+                </span>
+                <span class="legend-item">
+                  <svg class="legend-line" viewBox="0 0 26 10" aria-hidden="true" focusable="false">
+                    <path class="lg-ideal" d="M0 5 H26"/>
+                  </svg>
+                  <b>ideal_sp</b> &mdash; длинный штрих
+                </span>
+                <!-- {{BURNDOWN_WEEKEND_LEGEND}} -->{{BURNDOWN_WEEKEND_LEGEND}}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ---- heatmap -------------------------------------------- -->
+        <section class="section" id="sec-heatmap">
+          <div class="section-head">
+            <span class="section-index">05</span>
+            <h2 class="section-title">Хитмап статусов</h2>
+            <button class="collapse-btn no-print" type="button" data-collapse="sec-heatmap"
+                    aria-expanded="true" aria-controls="sec-heatmap-body">Скрыть</button>
+            <p class="section-desc">Строки — задачи спринта, столбцы — рабочие дни (пн&ndash;пт, UTC). В ячейке — статус задачи на конец дня; цвет кодирует категорию статуса. Пустая ячейка означает, что в этот день задачи в спринте не было. Числовой шкалы здесь нет: цвет — это категория статуса (new/indeterminate/done/cancelled), а не оценка. <b>Хорошо</b> — когда строки заметно смещаются к <code>done</code> по ходу спринта; ряд, застывший на одном статусе, стоит проверить отдельно.</p>
+          </div>
+
+          <div class="section-body" id="sec-heatmap-body">
+            <div class="card chart-card">
+              <div class="scroll-x">
+                <table class="heatmap">
+                  <caption class="sr-only">Статус каждой задачи на конец каждого рабочего дня спринта {{HEADER_SPRINT_NAME}}</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col" class="hm-corner">Задача</th>
+                      <!-- {{LOOP_HEATMAP_COLS_START}} -->{{HEATMAP_COLS}}<!-- {{LOOP_HEATMAP_COLS_END}} -->
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <!-- {{LOOP_HEATMAP_ROWS_START}} -->
+                    <tr>
+                      <th scope="row"><!-- {{HEATMAP_ROW_KEY}} -->{{HEATMAP_ROW_KEY}}</th>
+                      <!-- {{HEATMAP_ROW_CELLS}} -->{{HEATMAP_ROW_CELLS}}
+                    </tr>
+                    <!-- {{LOOP_HEATMAP_ROWS_END}} -->
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- {{HEATMAP_CATEGORY_LEGEND}} -->
+              <div class="cat-scale">
+                <span class="scale-title">Категория статуса</span>
+                <span class="scale-step"><i class="scale-chip" style="background:var(--cat-new)"></i><code>new</code> &mdash; не начата</span>
+                <span class="scale-step"><i class="scale-chip" style="background:var(--cat-indeterminate)"></i><code>indeterminate</code> &mdash; в работе</span>
+                <span class="scale-step"><i class="scale-chip" style="background:var(--cat-done)"></i><code>done</code> &mdash; завершена</span>
+                <span class="scale-step"><i class="scale-chip" style="background:var(--cat-cancelled)"></i><code>cancelled</code> &mdash; отменена, зачёркнута</span>
+                <span class="scale-step"><i class="scale-chip" style="background:var(--cat-unmapped)"></i><code>""</code> &mdash; не сопоставлена, WARN_STATUS_UNMAPPED</span>
+                <span class="scale-step"><i class="scale-chip absent"></i>нет в спринте в этот день</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ---- forecast ------------------------------------------- -->
+        <section class="section" id="sec-forecast">
+          <div class="section-head">
+            <span class="section-index">06</span>
+            <h2 class="section-title">Прогноз</h2>
+            <button class="collapse-btn no-print" type="button" data-collapse="sec-forecast"
+                    aria-expanded="true" aria-controls="sec-forecast-body">Скрыть</button>
+            <p class="section-desc">Монте-Карло по дневной пропускной способности закрытых спринтов (выходные входят в выборку нулями). Ось X гистограммы — число календарных дней до закрытия цели; p85 значит «85% прогонов симуляции уложились в это число дней». <b>Хорошо</b> — меньшее число дней; широкий разброс между p50 и p95 говорит о нестабильной пропускной способности. Это единственный раздел, где два порога взяты из исходного модуля, а не придуманы нами: прогноз строится только при ≥10 днях с ненулевой пропускной способностью, а предупреждение о нестабильности — при недельном коэффициенте вариации &gt; 50%.</p>
+          </div>
+
+          <div class="section-body" id="sec-forecast-body">
+
+            <!-- {{FORECAST_WARNING_BLOCK}} -->
+            {{FORECAST_WARNING_BLOCK}}
+
+            <!-- {{FORECAST_UNAVAILABLE_START}} -->{{FORECAST_UNAVAILABLE}}<!-- {{FORECAST_UNAVAILABLE_END}} -->
+            <!-- {{FORECAST_GRID_START}} -->
+            <div class="forecast-grid">
+              <div class="card pct-list">
+                <div class="pct-row" data-tone="neutral">
+                  <span class="pct-key">цель</span>
+                  <span class="pct-num"><!-- {{FORECAST_TARGET_ITEMS}} -->{{FORECAST_TARGET_ITEMS}}<span class="pct-unit">задач</span></span>
+                  <span class="pct-desc">target_items</span>
+                </div>
+                <!-- {{LOOP_FORECAST_PERCENTILES_START}} -->
+                <div class="pct-row">
+                  <span class="pct-key"><!-- {{FORECAST_P50_KEY}} -->{{FORECAST_P50_KEY}}</span>
+                  <span class="pct-num"><!-- {{FORECAST_P50_VALUE}} -->{{FORECAST_P50_VALUE}}<span class="pct-unit">дней</span></span>
+                  <span class="pct-desc">50% прогонов уложились</span>
+                </div>
+                <div class="pct-row" data-tone="soft">
+                  <span class="pct-key"><!-- {{FORECAST_P85_KEY}} -->{{FORECAST_P85_KEY}}</span>
+                  <span class="pct-num"><!-- {{FORECAST_P85_VALUE}} -->{{FORECAST_P85_VALUE}}<span class="pct-unit">дней</span></span>
+                  <span class="pct-desc">рабочее обещание</span>
+                </div>
+                <div class="pct-row" data-tone="soft">
+                  <span class="pct-key"><!-- {{FORECAST_P95_KEY}} -->{{FORECAST_P95_KEY}}</span>
+                  <span class="pct-num"><!-- {{FORECAST_P95_VALUE}} -->{{FORECAST_P95_VALUE}}<span class="pct-unit">дней</span></span>
+                  <span class="pct-desc">безопасный внешний срок</span>
+                </div>
+                <!-- {{LOOP_FORECAST_PERCENTILES_END}} -->
+                <div class="pct-row" data-tone="neutral">
+                  <span class="pct-key">CV</span>
+                  <span class="pct-num"><!-- {{FORECAST_CV_PCT}} -->{{FORECAST_CV_PCT}}<span class="pct-unit">%</span></span>
+                  <span class="pct-desc">throughput_cv_pct, порог 50</span>
+                </div>
+                <div class="pct-row" data-tone="neutral">
+                  <span class="pct-key">база</span>
+                  <span class="pct-num"><!-- {{FORECAST_SAMPLE_SPRINTS}} -->{{FORECAST_SAMPLE_SPRINTS}}<span class="pct-unit">спринтов</span></span>
+                  <span class="pct-desc"><!-- {{FORECAST_SAMPLE_DAYS}} -->{{FORECAST_SAMPLE_DAYS}}</span>
+                </div>
+              </div>
+
+              <div class="card chart-card">
+                <div class="scroll-x">
+                  <!-- {{FORECAST_HISTOGRAM_ARIA}} -->
+                  {{FORECAST_HISTOGRAM_SVG}}
+                </div>
+                <div class="legend">
+                  <span class="legend-item">
+                    <svg class="legend-line" viewBox="0 0 26 10" aria-hidden="true" focusable="false">
+                      <rect class="lg-bar" x="2" y="1" width="22" height="8" rx="2"/>
+                    </svg>
+                    <b>прогонов</b> с такой длительностью
+                  </span>
+                  <span class="legend-item">
+                    <svg class="legend-line" viewBox="0 0 26 10" aria-hidden="true" focusable="false">
+                      <rect class="lg-bar-strong" x="2" y="1" width="22" height="8" rx="2"/>
+                    </svg>
+                    <b>мода</b> распределения
+                  </span>
+                  <span class="legend-item">
+                    <svg class="legend-line" viewBox="0 0 26 10" aria-hidden="true" focusable="false">
+                      <path class="lg-marker" d="M13 0 V10"/>
+                    </svg>
+                    <b>перцентиль</b> по методу nearest-rank
+                  </span>
+                </div>
+              </div>
+            </div>
+            <!-- {{FORECAST_GRID_END}} -->
+
+          </div>
+        </section>
+
+        <!-- ---- export tables -------------------------------------- -->
+        <section class="section" id="sec-tables">
+          <div class="section-head">
+            <span class="section-index">07</span>
+            <h2 class="section-title">Таблицы выгрузки</h2>
+            <button class="collapse-btn no-print" type="button" data-collapse="sec-tables"
+                    aria-expanded="true" aria-controls="sec-tables-body">Скрыть</button>
+            <p class="section-desc">Колонка в колонку повторяют CSV и листы XLSX, включая исходные ru/en заголовки. Шапка закреплена при прокрутке. Таблица A — одна строка на задачу; числовой оценки в статусах по дням нет, <b>Хорошо</b> — когда столбцы слева направо доходят до <span class="mono">Done</span>. Таблица B — одна строка на спринт; <b>Хорошо</b> — те же пороги, что у тайлов на вкладке «Команда» выше (performance_pct, load_pct, scope_change_pct, closure_pct_*).</p>
+          </div>
+
+          <div class="section-body" id="sec-tables-body">
+
+            <div class="card table-card" style="margin-bottom:14px">
+              <div class="table-wrap">
+                <table class="data wide">
+                  <caption>
+                    <!-- {{TABLE_HEATMAP_CAPTION}} -->
+                    {{TABLE_HEATMAP_CAPTION}}
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Epic</th>
+                      <th scope="col">Issue</th>
+                      <th scope="col" class="col-num">Story Points</th>
+                      <th scope="col" class="col-num">QA Estimation</th>
+                      <th scope="col">Роль</th>
+                      <th scope="col">Labels</th>
+                      <th scope="col">Before</th>
+                      <!-- {{LOOP_TABLE_HEATMAP_COLS_START}} -->{{TABLE_HEATMAP_COLS}}<!-- {{LOOP_TABLE_HEATMAP_COLS_END}} -->
+                      <th scope="col">End</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <!-- {{LOOP_TABLE_HEATMAP_ROWS_START}} -->
+                    <tr>
+                      <td class="{{TABLE_HEATMAP_ROW_EPIC_CLASS}}"><!-- {{TABLE_HEATMAP_ROW_EPIC}} -->{{TABLE_HEATMAP_ROW_EPIC}}</td>
+                      <th scope="row" class="cell-key"><!-- {{TABLE_HEATMAP_ROW_ISSUE}} -->{{TABLE_HEATMAP_ROW_ISSUE}}</th>
+                      <td class="col-num"><!-- {{TABLE_HEATMAP_ROW_SP}} -->{{TABLE_HEATMAP_ROW_SP}}</td>
+                      <td class="col-num"><!-- {{TABLE_HEATMAP_ROW_QA}} -->{{TABLE_HEATMAP_ROW_QA}}</td>
+                      <td><!-- {{TABLE_HEATMAP_ROW_ROLE}} -->{{TABLE_HEATMAP_ROW_ROLE}}</td>
+                      <td><!-- {{TABLE_HEATMAP_ROW_LABELS}} -->{{TABLE_HEATMAP_ROW_LABELS}}</td>
+                      <td><!-- {{TABLE_HEATMAP_ROW_BEFORE}} -->{{TABLE_HEATMAP_ROW_BEFORE}}</td>
+                      <!-- {{TABLE_HEATMAP_ROW_DAYS}} -->{{TABLE_HEATMAP_ROW_DAYS}}
+                      <td><!-- {{TABLE_HEATMAP_ROW_END}} -->{{TABLE_HEATMAP_ROW_END}}</td>
+                    </tr>
+                    <!-- {{LOOP_TABLE_HEATMAP_ROWS_END}} -->
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <th scope="row" colspan="2"><!-- {{TABLE_HEATMAP_FOOTER_LABEL}} -->{{TABLE_HEATMAP_FOOTER_LABEL}}</th>
+                      <td class="col-num"><!-- {{TABLE_HEATMAP_TOTAL_SP}} -->{{TABLE_HEATMAP_TOTAL_SP}}</td>
+                      <td class="col-num"><!-- {{TABLE_HEATMAP_TOTAL_QA}} -->{{TABLE_HEATMAP_TOTAL_QA}}</td>
+                      <td colspan="{{TABLE_HEATMAP_FOOTER_COLSPAN}}"><!-- {{TABLE_HEATMAP_FOOTER_NOTE}} -->{{TABLE_HEATMAP_FOOTER_NOTE}}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+
+            <div class="card table-card">
+              <div class="table-wrap">
+                <table class="data mid">
+                  <caption>
+                    <!-- {{TABLE_BOARD_CAPTION}} -->
+                    {{TABLE_BOARD_CAPTION}}
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">sprint</th>
+                      <th scope="col">state</th>
+                      <th scope="col">start</th>
+                      <th scope="col">end</th>
+                      <th scope="col" class="col-num">committed_sp</th>
+                      <th scope="col" class="col-num">delivered_sp</th>
+                      <th scope="col" class="col-num">added_sp</th>
+                      <th scope="col" class="col-num">removed_sp</th>
+                      <th scope="col" class="col-num">estimation_change_sp</th>
+                      <th scope="col" class="col-num">performance_pct</th>
+                      <th scope="col" class="col-num">load_pct</th>
+                      <th scope="col" class="col-num">scope_change_pct</th>
+                      <th scope="col" class="col-num">velocity_sp</th>
+                      <th scope="col" class="col-num">sma5_sp</th>
+                      <th scope="col" class="col-num">throughput_count</th>
+                      <th scope="col" class="col-num">closure_rate_count_pct</th>
+                      <th scope="col" class="col-num">closure_rate_sp_pct</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <!-- {{LOOP_BOARD_ROWS_START}} -->
+                    <tr>
+                      <th scope="row"><!-- {{BOARD_ROW_SPRINT}} -->{{BOARD_ROW_SPRINT}}</th>
+                      <td><!-- {{BOARD_ROW_STATE}} -->{{BOARD_ROW_STATE}}</td>
+                      <td class="num"><!-- {{BOARD_ROW_START}} -->{{BOARD_ROW_START}}</td>
+                      <td class="num"><!-- {{BOARD_ROW_END}} -->{{BOARD_ROW_END}}</td>
+                      <td class="col-num"><!-- {{BOARD_ROW_COMMITTED_SP}} -->{{BOARD_ROW_COMMITTED_SP}}</td>
+                      <td class="col-num"><!-- {{BOARD_ROW_DELIVERED_SP}} -->{{BOARD_ROW_DELIVERED_SP}}</td>
+                      <td class="col-num"><!-- {{BOARD_ROW_ADDED_SP}} -->{{BOARD_ROW_ADDED_SP}}</td>
+                      <td class="col-num"><!-- {{BOARD_ROW_REMOVED_SP}} -->{{BOARD_ROW_REMOVED_SP}}</td>
+                      <td class="col-num"><!-- {{BOARD_ROW_ESTIMATION_CHANGE_SP}} -->{{BOARD_ROW_ESTIMATION_CHANGE_SP}}</td>
+                      <td class="col-num{{BOARD_ROW_PERFORMANCE_PCT_NODATA_CLASS}}"><!-- {{BOARD_ROW_PERFORMANCE_PCT}} -->{{BOARD_ROW_PERFORMANCE_PCT}}</td>
+                      <td class="col-num{{BOARD_ROW_LOAD_PCT_NODATA_CLASS}}"><!-- {{BOARD_ROW_LOAD_PCT}} -->{{BOARD_ROW_LOAD_PCT}}</td>
+                      <td class="col-num{{BOARD_ROW_SCOPE_CHANGE_PCT_NODATA_CLASS}}"><!-- {{BOARD_ROW_SCOPE_CHANGE_PCT}} -->{{BOARD_ROW_SCOPE_CHANGE_PCT}}</td>
+                      <td class="col-num"><!-- {{BOARD_ROW_VELOCITY_SP}} -->{{BOARD_ROW_VELOCITY_SP}}</td>
+                      <td class="col-num{{BOARD_ROW_SMA5_SP_NODATA_CLASS}}"><!-- {{BOARD_ROW_SMA5_SP}} -->{{BOARD_ROW_SMA5_SP}}</td>
+                      <td class="col-num"><!-- {{BOARD_ROW_THROUGHPUT_COUNT}} -->{{BOARD_ROW_THROUGHPUT_COUNT}}</td>
+                      <td class="col-num{{BOARD_ROW_CLOSURE_COUNT_PCT_NODATA_CLASS}}"><!-- {{BOARD_ROW_CLOSURE_COUNT_PCT}} -->{{BOARD_ROW_CLOSURE_COUNT_PCT}}</td>
+                      <td class="col-num{{BOARD_ROW_CLOSURE_SP_PCT_NODATA_CLASS}}"><!-- {{BOARD_ROW_CLOSURE_SP_PCT}} -->{{BOARD_ROW_CLOSURE_SP_PCT}}</td>
+                    </tr>
+                    <!-- {{LOOP_BOARD_ROWS_END}} -->
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <th scope="row" colspan="4"><!-- {{TABLE_BOARD_FOOTER_LABEL}} -->{{TABLE_BOARD_FOOTER_LABEL}}</th>
+                      <td class="col-num"><!-- {{KPI_AVG_COMMITTED_SP}} -->{{KPI_AVG_COMMITTED_SP}}</td>
+                      <td class="col-num"><!-- {{KPI_AVG_DELIVERED_SP}} -->{{KPI_AVG_DELIVERED_SP}}</td>
+                      <td class="col-num">{{BOARD_AVG_ADDED_SP}}</td>
+                      <td class="col-num">{{BOARD_AVG_REMOVED_SP}}</td>
+                      <td class="col-num">{{BOARD_AVG_ESTIMATION_CHANGE_SP}}</td>
+                      <td class="col-num"><!-- {{KPI_AVG_PERFORMANCE_PCT}} -->{{KPI_AVG_PERFORMANCE_PCT}}</td>
+                      <td class="col-num cell-muted">&mdash;</td>
+                      <td class="col-num"><!-- {{KPI_AVG_SCOPE_CHANGE_PCT}} -->{{KPI_AVG_SCOPE_CHANGE_PCT}}</td>
+                      <td class="col-num"><!-- {{KPI_VELOCITY_SMA5_SP}} -->{{KPI_VELOCITY_SMA5_SP}}</td>
+                      <td class="col-num cell-muted">&mdash;</td>
+                      <td class="col-num"><!-- {{KPI_THROUGHPUT_AVG_ITEMS}} -->{{KPI_THROUGHPUT_AVG_ITEMS}}</td>
+                      <td class="col-num"><!-- {{KPI_AVG_CLOSURE_PCT_ITEMS}} -->{{KPI_AVG_CLOSURE_PCT_ITEMS}}</td>
+                      <td class="col-num"><!-- {{KPI_AVG_CLOSURE_PCT_SP}} -->{{KPI_AVG_CLOSURE_PCT_SP}}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+
+          </div>
+        </section>
+
+      </section>
+
+      <!-- ============================================================
+           TAB 2 — ПЕРСОНАЛЬНЫЕ
+           ============================================================ -->
+      <section class="tabpanel" id="panel-person">
+        <h2 class="panel-title">Персональные метрики</h2>
+
+        <section class="section" id="sec-person-note">
+          <div class="section-body">
+            <!-- {{PERSONAL_SEMANTICS_NOTE}} -->
+            {{PERSONAL_SEMANTICS_NOTE}}
+          </div>
+        </section>
+
+        <!-- {{PERSON_SECTIONS_START}} -->
+        <section class="section" id="sec-person-table">
+          <div class="section-head">
+            <span class="section-index">01</span>
+            <h2 class="section-title">Сводка по людям</h2>
+            <button class="collapse-btn no-print" type="button" data-collapse="sec-person-table"
+                    aria-expanded="true" aria-controls="sec-person-table-body">Скрыть</button>
+            <p class="section-desc">Одна строка на человека (ключ — поле <span class="mono">user</span>). Колонки сгруппированы по источнику: GitLab, Jira и связка между ними. Таблица прокручивается по горизонтали внутри своего контейнера, обе строки шапки закреплены. Цветом размечен только <span class="mono">mr_merge_rate_pct</span> — та же эвристика, что на карточках участников (<b>Хорошо</b> &ge; 85%, под наблюдением 65&ndash;85%, плохо &lt; 65%). У остальных колонок порога нет, они справочные.</p>
+          </div>
+
+          <div class="section-body" id="sec-person-table-body">
+            <div class="card table-card">
+              <div class="table-wrap">
+                <table class="data xwide grouped">
+                  <caption>
+                    <!-- {{PERSON_TABLE_CAPTION}} -->
+                    {{PERSON_TABLE_CAPTION}}
+                    <!-- {{PERSON_MR_WINDOW_CAVEAT}} -->{{PERSON_MR_WINDOW_CAVEAT}}
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col" rowspan="2">user</th>
+                      <th scope="col" class="group gsep" colspan="11">GitLab</th>
+                      <th scope="col" class="group gsep" colspan="10">Jira</th>
+                      <th scope="col" class="group gsep" colspan="3">Связка</th>
+                      <th scope="col" class="gsep" rowspan="2">warnings</th>
+                    </tr>
+                    <tr>
+                      <th scope="col" class="col-num gsep">mr_count</th>
+                      <th scope="col" class="col-num">mr_merged_count</th>
+                      <th scope="col" class="col-num">mr_closed_count</th>
+                      <th scope="col" class="col-num">mr_merge_rate_pct</th>
+                      <th scope="col" class="col-num">mr_cycle_time_avg_hours</th>
+                      <th scope="col" class="col-num">mr_cycle_time_median_hours</th>
+                      <th scope="col" class="col-num">mr_diff_size_avg</th>
+                      <th scope="col" class="col-num">mr_commits_avg</th>
+                      <th scope="col" class="col-num">mr_commits_sum</th>
+                      <th scope="col" class="col-num">mr_changes_count_avg</th>
+                      <th scope="col" class="col-num">mr_changes_count_sum</th>
+                      <th scope="col" class="col-num gsep">tasks_done</th>
+                      <th scope="col" class="col-num">bug_count</th>
+                      <th scope="col" class="col-num">defect_rate_pct</th>
+                      <th scope="col" class="col-num">task_cycle_time_avg_hours</th>
+                      <th scope="col" class="col-num">task_cycle_time_median_hours</th>
+                      <th scope="col" class="col-num">rework_total</th>
+                      <th scope="col" class="col-num">story_points_total</th>
+                      <th scope="col" class="col-num">story_points_avg</th>
+                      <th scope="col" class="col-num">qa_estimation_total</th>
+                      <th scope="col" class="col-num">qa_estimation_avg</th>
+                      <th scope="col" class="col-num gsep">linked_tasks</th>
+                      <th scope="col" class="col-num">mr_with_jira_key</th>
+                      <th scope="col" class="col-num">mr_per_task</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <!-- {{PERSON_ROW_START}} -->
+                    <tr>
+                      <th scope="row" class="rowkey"><!-- {{PERSON_USER}} -->{{PERSON_USER}}</th>
+                      <td class="col-num gsep"><!-- {{PERSON_MR_COUNT}} -->{{PERSON_MR_COUNT}}</td>
+                      <td class="col-num"><!-- {{PERSON_MR_MERGED_COUNT}} -->{{PERSON_MR_MERGED_COUNT}}</td>
+                      <td class="col-num"><!-- {{PERSON_MR_CLOSED_COUNT}} -->{{PERSON_MR_CLOSED_COUNT}}</td>
+                      <td class="col-num{{PERSON_MR_MERGE_RATE_PCT_CLASS}}"><!-- {{PERSON_MR_MERGE_RATE_PCT}} -->{{PERSON_MR_MERGE_RATE_PCT}}</td>
+                      <td class="col-num{{PERSON_MR_CYCLE_TIME_AVG_HOURS_CLASS}}"><!-- {{PERSON_MR_CYCLE_TIME_AVG_HOURS}} -->{{PERSON_MR_CYCLE_TIME_AVG_HOURS}}</td>
+                      <td class="col-num{{PERSON_MR_CYCLE_TIME_MEDIAN_HOURS_CLASS}}"><!-- {{PERSON_MR_CYCLE_TIME_MEDIAN_HOURS}} -->{{PERSON_MR_CYCLE_TIME_MEDIAN_HOURS}}</td>
+                      <td class="col-num{{PERSON_MR_DIFF_SIZE_AVG_CLASS}}"><!-- {{PERSON_MR_DIFF_SIZE_AVG}} -->{{PERSON_MR_DIFF_SIZE_AVG}}<!-- {{PERSON_MR_DIFF_SIZE_AVAILABLE_COUNT}} -->{{PERSON_MR_DIFF_SIZE_AVAILABLE_COUNT}}</td>
+                      <td class="col-num{{PERSON_MR_COMMITS_AVG_CLASS}}"><!-- {{PERSON_MR_COMMITS_AVG}} -->{{PERSON_MR_COMMITS_AVG}}</td>
+                      <td class="col-num{{PERSON_MR_COMMITS_SUM_CLASS}}"><!-- {{PERSON_MR_COMMITS_SUM}} -->{{PERSON_MR_COMMITS_SUM}}</td>
+                      <td class="col-num{{PERSON_MR_CHANGES_COUNT_AVG_CLASS}}"><!-- {{PERSON_MR_CHANGES_COUNT_AVG}} -->{{PERSON_MR_CHANGES_COUNT_AVG}}</td>
+                      <td class="col-num{{PERSON_MR_CHANGES_COUNT_SUM_CLASS}}"><!-- {{PERSON_MR_CHANGES_COUNT_SUM}} -->{{PERSON_MR_CHANGES_COUNT_SUM}}</td>
+                      <td class="col-num gsep"><!-- {{PERSON_TASKS_DONE}} -->{{PERSON_TASKS_DONE}}</td>
+                      <td class="col-num"><!-- {{PERSON_BUG_COUNT}} -->{{PERSON_BUG_COUNT}}</td>
+                      <td class="col-num{{PERSON_DEFECT_RATE_PCT_CLASS}}"><!-- {{PERSON_DEFECT_RATE_PCT}} -->{{PERSON_DEFECT_RATE_PCT}}</td>
+                      <td class="col-num{{PERSON_TASK_CYCLE_TIME_AVG_HOURS_CLASS}}"><!-- {{PERSON_TASK_CYCLE_TIME_AVG_HOURS}} -->{{PERSON_TASK_CYCLE_TIME_AVG_HOURS}}</td>
+                      <td class="col-num{{PERSON_TASK_CYCLE_TIME_MEDIAN_HOURS_CLASS}}"><!-- {{PERSON_TASK_CYCLE_TIME_MEDIAN_HOURS}} -->{{PERSON_TASK_CYCLE_TIME_MEDIAN_HOURS}}</td>
+                      <td class="col-num"><!-- {{PERSON_REWORK_TOTAL}} -->{{PERSON_REWORK_TOTAL}}</td>
+                      <td class="col-num{{PERSON_STORY_POINTS_TOTAL_CLASS}}"><!-- {{PERSON_STORY_POINTS_TOTAL}} -->{{PERSON_STORY_POINTS_TOTAL}}</td>
+                      <td class="col-num{{PERSON_STORY_POINTS_AVG_CLASS}}"><!-- {{PERSON_STORY_POINTS_AVG}} -->{{PERSON_STORY_POINTS_AVG}}</td>
+                      <td class="col-num{{PERSON_QA_ESTIMATION_TOTAL_CLASS}}"><!-- {{PERSON_QA_ESTIMATION_TOTAL}} -->{{PERSON_QA_ESTIMATION_TOTAL}}</td>
+                      <td class="col-num{{PERSON_QA_ESTIMATION_AVG_CLASS}}"><!-- {{PERSON_QA_ESTIMATION_AVG}} -->{{PERSON_QA_ESTIMATION_AVG}}</td>
+                      <td class="col-num gsep"><!-- {{PERSON_LINKED_TASKS}} -->{{PERSON_LINKED_TASKS}}</td>
+                      <td class="col-num"><!-- {{PERSON_MR_WITH_JIRA_KEY}} -->{{PERSON_MR_WITH_JIRA_KEY}}</td>
+                      <td class="col-num{{PERSON_MR_PER_TASK_CLASS}}"><!-- {{PERSON_MR_PER_TASK}} -->{{PERSON_MR_PER_TASK}}</td>
+                      <td class="gsep"><!-- {{PERSON_WARNINGS}} -->{{PERSON_WARNINGS}}</td>
+                    </tr>
+                    <!-- {{PERSON_ROW_END}} -->
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <th scope="row"><!-- {{PERSON_TABLE_FOOTER_LABEL}} -->{{PERSON_TABLE_FOOTER_LABEL}}</th>
+                      <td class="col-num gsep"><!-- {{PERSON_TOTAL_MR_COUNT}} -->{{PERSON_TOTAL_MR_COUNT}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_MR_MERGED_COUNT}} -->{{PERSON_TOTAL_MR_MERGED_COUNT}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_MR_CLOSED_COUNT}} -->{{PERSON_TOTAL_MR_CLOSED_COUNT}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_MR_MERGE_RATE_PCT}} -->{{PERSON_TOTAL_MR_MERGE_RATE_PCT}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_MR_CYCLE_TIME_AVG_HOURS}} -->{{PERSON_TOTAL_MR_CYCLE_TIME_AVG_HOURS}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_MR_CYCLE_TIME_MEDIAN_HOURS}} -->{{PERSON_TOTAL_MR_CYCLE_TIME_MEDIAN_HOURS}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_MR_DIFF_SIZE_AVG}} -->{{PERSON_TOTAL_MR_DIFF_SIZE_AVG}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_MR_COMMITS_AVG}} -->{{PERSON_TOTAL_MR_COMMITS_AVG}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_MR_COMMITS_SUM}} -->{{PERSON_TOTAL_MR_COMMITS_SUM}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_MR_CHANGES_COUNT_AVG}} -->{{PERSON_TOTAL_MR_CHANGES_COUNT_AVG}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_MR_CHANGES_COUNT_SUM}} -->{{PERSON_TOTAL_MR_CHANGES_COUNT_SUM}}</td>
+                      <td class="col-num gsep"><!-- {{PERSON_TOTAL_TASKS_DONE}} -->{{PERSON_TOTAL_TASKS_DONE}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_BUG_COUNT}} -->{{PERSON_TOTAL_BUG_COUNT}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_DEFECT_RATE_PCT}} -->{{PERSON_TOTAL_DEFECT_RATE_PCT}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_TASK_CYCLE_TIME_AVG_HOURS}} -->{{PERSON_TOTAL_TASK_CYCLE_TIME_AVG_HOURS}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_TASK_CYCLE_TIME_MEDIAN_HOURS}} -->{{PERSON_TOTAL_TASK_CYCLE_TIME_MEDIAN_HOURS}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_REWORK_TOTAL}} -->{{PERSON_TOTAL_REWORK_TOTAL}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_STORY_POINTS_TOTAL}} -->{{PERSON_TOTAL_STORY_POINTS_TOTAL}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_STORY_POINTS_AVG}} -->{{PERSON_TOTAL_STORY_POINTS_AVG}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_QA_ESTIMATION_TOTAL}} -->{{PERSON_TOTAL_QA_ESTIMATION_TOTAL}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_QA_ESTIMATION_AVG}} -->{{PERSON_TOTAL_QA_ESTIMATION_AVG}}</td>
+                      <td class="col-num gsep"><!-- {{PERSON_TOTAL_LINKED_TASKS}} -->{{PERSON_TOTAL_LINKED_TASKS}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_MR_WITH_JIRA_KEY}} -->{{PERSON_TOTAL_MR_WITH_JIRA_KEY}}</td>
+                      <td class="col-num"><!-- {{PERSON_TOTAL_MR_PER_TASK}} -->{{PERSON_TOTAL_MR_PER_TASK}}</td>
+                      <td class="gsep"><!-- {{PERSON_TOTAL_WARNINGS}} -->{{PERSON_TOTAL_WARNINGS}}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
+              <!-- {{PERSON_STATE_LEGEND}} -->
+              {{PERSON_STATE_LEGEND}}
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="sec-person-cards">
+          <div class="section-head">
+            <span class="section-index">02</span>
+            <h2 class="section-title">Карточки участников</h2>
+            <button class="collapse-btn no-print" type="button" data-collapse="sec-person-cards"
+                    aria-expanded="true" aria-controls="sec-person-cards-body">Скрыть</button>
+            <p class="section-desc">Блок целиком повторяется генератором для каждого пользователя: пять ключевых значений (merge rate, медиана цикла MR, число задач, доля переработок, успешность пайплайнов), столбцы MR по спринтам и разбивка по спринтам. <b>Хорошо</b> — высокий merge rate, короткий цикл MR, низкая доля переработок, высокая успешность пайплайнов. Цветом размечен только merge rate (единственный порог на этой вкладке, эвристика этого отчёта: good &ge; 85%, warn 65&ndash;85%, bad &lt; 65%) — у остальных четырёх значений порога нет, они справочные.</p>
+          </div>
+
+          <div class="section-body" id="sec-person-cards-body">
+            <div class="person-cards">
+
+              <!-- {{PERSON_CARD_START}} -->
+              <article class="person-card card">
+                <div class="person-head">
+                  <div>
+                    <div class="person-name"><!-- {{PERSON_CARD_USER}} -->{{PERSON_CARD_USER}}</div>
+                    <div class="person-sub"><!-- {{PERSON_CARD_SUB}} -->{{PERSON_CARD_SUB}}</div>
+                  </div>
+                  <!-- {{PERSON_CARD_WARNINGS}} -->{{PERSON_CARD_WARNINGS}}
+                </div>
+
+                <div class="person-stats">
+                  <!-- {{PERSON_CARD_STAT_MERGE_RATE}} -->{{PERSON_CARD_STAT_MERGE_RATE}}
+                  <!-- {{PERSON_CARD_STAT_MR_CYCLE}} -->{{PERSON_CARD_STAT_MR_CYCLE}}
+                  <!-- {{PERSON_CARD_STAT_TASKS}} -->{{PERSON_CARD_STAT_TASKS}}
+                  <!-- {{PERSON_CARD_STAT_REWORK_SHARE}} -->{{PERSON_CARD_STAT_REWORK_SHARE}}
+                  <!-- {{PERSON_CARD_STAT_PIPELINE_SUCCESS}} -->{{PERSON_CARD_STAT_PIPELINE_SUCCESS}}
+                </div>
+
+                <div class="person-chart-title">MR по спринтам</div>
+                <!-- {{PERSON_CARD_CHART_BARS}} -->{{PERSON_CARD_CHART_BARS}}
+
+                <div class="person-chart-title" style="margin-top:14px">Разбивка по спринтам</div>
+                <div class="mini-wrap">
+                  <table class="sprint-mini">
+                    <caption class="sr-only">Показатели {{PERSON_CARD_USER}} по спринтам</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">Спринт</th>
+                        <th scope="col">mr_count</th>
+                        <th scope="col">tasks</th>
+                        <th scope="col">SP</th>
+                        <th scope="col">cycle avg, ч</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <!-- {{LOOP_PERSON_SPRINT_ROWS_START}} -->
+                      <tr>
+                        <th scope="row"><!-- {{PERSON_SPRINT_NAME}} -->{{PERSON_SPRINT_NAME}}</th>
+                        <td><!-- {{PERSON_SPRINT_MR_COUNT}} -->{{PERSON_SPRINT_MR_COUNT}}</td>
+                        <td><!-- {{PERSON_SPRINT_TASKS_DONE}} -->{{PERSON_SPRINT_TASKS_DONE}}</td>
+                        <td><!-- {{PERSON_SPRINT_STORY_POINTS_TOTAL}} -->{{PERSON_SPRINT_STORY_POINTS_TOTAL}}</td>
+                        <td{{PERSON_SPRINT_MR_CYCLE_TIME_AVG_HOURS_ATTRS}}><!-- {{PERSON_SPRINT_MR_CYCLE_TIME_AVG_HOURS}} -->{{PERSON_SPRINT_MR_CYCLE_TIME_AVG_HOURS}}</td>
+                      </tr>
+                      <!-- {{LOOP_PERSON_SPRINT_ROWS_END}} -->
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <th scope="row"><!-- {{PERSON_SPRINT_TOTAL_LABEL}} -->{{PERSON_SPRINT_TOTAL_LABEL}}</th>
+                        <td>{{PERSON_SPRINT_TOTAL_MR_COUNT}}</td>
+                        <td>{{PERSON_SPRINT_TOTAL_TASKS_DONE}}</td>
+                        <td>{{PERSON_SPRINT_TOTAL_STORY_POINTS_TOTAL}}</td>
+                        <td class="cell-muted" title="среднее не суммируется по спринтам">&mdash;</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </article>
+              <!-- {{PERSON_CARD_END}} -->
+
+            </div>
+          </div>
+        </section>
+        <!-- {{PERSON_SECTIONS_END}} -->
+
+      </section>
+
+      <!-- ============================================================
+           TAB 3 — ИНЖЕНЕРИЯ (GitLab)
+           ============================================================ -->
+      <section class="tabpanel" id="panel-eng">
+        <h2 class="panel-title">Инженерия</h2>
+
+        <section class="section" id="sec-eng-note">
+          <div class="section-body">
+            <div class="banner info">
+              <span class="banner-tag">window_applied</span>
+              <div class="banner-body">
+                <b>Часть разделов не ограничена периодом отчёта.</b>
+                <!-- {{ENG_WINDOW_APPLIED_NOTE}} -->
+                {{ENG_WINDOW_APPLIED_NOTE}}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- {{ENG_SECTIONS_START}} -->
+        <section class="section" id="sec-eng-kpi">
+          <div class="section-head">
+            <span class="section-index">01</span>
+            <h2 class="section-title">Сводка</h2>
+            <button class="collapse-btn no-print" type="button" data-collapse="sec-eng-kpi"
+                    aria-expanded="true" aria-controls="sec-eng-kpi-body">Скрыть</button>
+            <p class="section-desc">Командный уровень по всем проектам доски. Разреза по людям здесь нет — он на вкладке «Персональные».</p>
+            <details class="thresholds">
+              <summary>Как читать статус тайлов <span class="heuristic-flag">— пороги придуманы нами, не модулем</span></summary>
+              <div class="state-legend">
+                <span class="legend-note">Как и на вкладке «Команда», в исходном модуле нет классификации good/warn/bad — цвета ниже это эвристика прототипа.</span>
+                <span><b>Пайплайны</b> — это count, порога нет: справочная величина, цвет не назначается.</span>
+                <span><b>Успешные пайплайны</b> — good &ge; 90%, warn 80&ndash;90%, bad &lt; 80%.</span>
+                <span><b>Деплои</b> — плитка красит count по <span class="mono">success_rate_pct</span> деплоев: good &ge; 90%, warn 75&ndash;90%, bad &lt; 75%.</span>
+                <span><b>Деплоев в неделю</b> — это частота, порога нет: справочная величина, цвет не назначается.</span>
+                <span><b>Покрытие</b> — good &ge; 80%, warn 65&ndash;80%, bad &lt; 65%.</span>
+              </div>
+            </details>
+          </div>
+
+          <div class="section-body" id="sec-eng-kpi-body">
+            <div class="kpi-grid">
+              <!-- {{LOOP_ENG_TILES_START}} -->
+              <!-- {{ENG_PIPELINES_COUNT_STATUS}} -->
+              <article class="kpi card" data-status="{{ENG_PIPELINES_COUNT_STATUS}}">
+                <div class="kpi-head">
+                  <span class="kpi-label">Пайплайны</span>
+                  <!-- {{ENG_PIPELINES_COUNT_STATUS_LABEL}} --><span class="kpi-status">{{ENG_PIPELINES_COUNT_STATUS_LABEL}}</span>
+                </div>
+                <div class="kpi-value">
+                  <!-- {{ENG_PIPELINES_COUNT_VALUE}} -->{{ENG_PIPELINES_COUNT_VALUE}}
+                  <!-- {{ENG_PIPELINES_COUNT_UNIT}} --><span class="kpi-unit">{{ENG_PIPELINES_COUNT_UNIT}}</span>
+                </div>
+                <!-- {{ENG_PIPELINES_WINDOW_CAVEAT}} -->{{ENG_PIPELINES_WINDOW_CAVEAT}}
+                <div class="kpi-foot">
+                  <div>
+                    <span class="delta" data-dir="{{ENG_PIPELINES_COUNT_DELTA_DIR}}">
+                      <span class="arrow" aria-hidden="true">{{ENG_PIPELINES_COUNT_DELTA_ARROW}}</span>
+                      <!-- {{ENG_PIPELINES_COUNT_DELTA}} -->{{ENG_PIPELINES_COUNT_DELTA}}
+                    </span>
+                    <!-- {{ENG_PIPELINES_PER_WEEK}} -->
+                    <div class="delta-note">{{ENG_PIPELINES_PER_WEEK}}</div>
+                  </div>
+                  <!-- {{ENG_PIPELINES_COUNT_SPARK_POINTS}} -->{{ENG_PIPELINES_COUNT_SPARK_POINTS}}
+                </div>
+              </article>
+
+              <!-- {{ENG_PIPELINES_SUCCESS_RATE_STATUS}} -->
+              <article class="kpi card" data-status="{{ENG_PIPELINES_SUCCESS_RATE_STATUS}}">
+                <div class="kpi-head">
+                  <span class="kpi-label">Успешные пайплайны</span>
+                  <!-- {{ENG_PIPELINES_SUCCESS_RATE_STATUS_LABEL}} --><span class="kpi-status">{{ENG_PIPELINES_SUCCESS_RATE_STATUS_LABEL}}</span>
+                </div>
+                <div class="kpi-value">
+                  <!-- {{ENG_PIPELINES_SUCCESS_RATE_VALUE}} -->{{ENG_PIPELINES_SUCCESS_RATE_VALUE}}
+                  <!-- {{ENG_PIPELINES_SUCCESS_RATE_UNIT}} --><span class="kpi-unit">{{ENG_PIPELINES_SUCCESS_RATE_UNIT}}</span>
+                </div>
+                <div class="kpi-foot">
+                  <div>
+                    <span class="delta" data-dir="{{ENG_PIPELINES_SUCCESS_RATE_DELTA_DIR}}">
+                      <span class="arrow" aria-hidden="true">{{ENG_PIPELINES_SUCCESS_RATE_DELTA_ARROW}}</span>
+                      <!-- {{ENG_PIPELINES_SUCCESS_RATE_DELTA}} -->{{ENG_PIPELINES_SUCCESS_RATE_DELTA}}
+                    </span>
+                    <!-- {{ENG_PIPELINES_SUCCESS_RATE_DELTA_NOTE}} -->
+                    <div class="delta-note">{{ENG_PIPELINES_SUCCESS_RATE_DELTA_NOTE}}</div>
+                  </div>
+                  <!-- {{ENG_PIPELINES_SUCCESS_RATE_SPARK_POINTS}} -->{{ENG_PIPELINES_SUCCESS_RATE_SPARK_POINTS}}
+                </div>
+              </article>
+
+              <!-- {{ENG_DEPLOYMENTS_COUNT_STATUS}} -->
+              <article class="kpi card" data-status="{{ENG_DEPLOYMENTS_COUNT_STATUS}}">
+                <div class="kpi-head">
+                  <span class="kpi-label">Деплои</span>
+                  <!-- {{ENG_DEPLOYMENTS_COUNT_STATUS_LABEL}} --><span class="kpi-status">{{ENG_DEPLOYMENTS_COUNT_STATUS_LABEL}}</span>
+                </div>
+                <div class="kpi-value">
+                  <!-- {{ENG_DEPLOYMENTS_COUNT_VALUE}} -->{{ENG_DEPLOYMENTS_COUNT_VALUE}}
+                  <!-- {{ENG_DEPLOYMENTS_COUNT_UNIT}} --><span class="kpi-unit">{{ENG_DEPLOYMENTS_COUNT_UNIT}}</span>
+                </div>
+                <!-- {{ENG_DEPLOYMENTS_WINDOW_CAVEAT}} -->{{ENG_DEPLOYMENTS_WINDOW_CAVEAT}}
+                <div class="kpi-foot">
+                  <div>
+                    <span class="delta" data-dir="{{ENG_DEPLOYMENTS_COUNT_DELTA_DIR}}">
+                      <span class="arrow" aria-hidden="true">{{ENG_DEPLOYMENTS_COUNT_DELTA_ARROW}}</span>
+                      <!-- {{ENG_DEPLOYMENTS_COUNT_DELTA}} -->{{ENG_DEPLOYMENTS_COUNT_DELTA}}
+                    </span>
+                    <!-- {{ENG_DEPLOYMENTS_COUNT_DELTA_NOTE}} -->
+                    <div class="delta-note">{{ENG_DEPLOYMENTS_COUNT_DELTA_NOTE}}</div>
+                  </div>
+                  <!-- {{ENG_DEPLOYMENTS_COUNT_SPARK_POINTS}} -->{{ENG_DEPLOYMENTS_COUNT_SPARK_POINTS}}
+                </div>
+              </article>
+
+              <!-- {{ENG_DEPLOYMENTS_PER_WEEK_STATUS}} -->
+              <article class="kpi card" data-status="{{ENG_DEPLOYMENTS_PER_WEEK_STATUS}}">
+                <div class="kpi-head">
+                  <span class="kpi-label">Деплоев в неделю</span>
+                  <!-- {{ENG_DEPLOYMENTS_PER_WEEK_STATUS_LABEL}} --><span class="kpi-status">{{ENG_DEPLOYMENTS_PER_WEEK_STATUS_LABEL}}</span>
+                </div>
+                <div class="kpi-value">
+                  <!-- {{ENG_DEPLOYMENTS_PER_WEEK_VALUE}} -->{{ENG_DEPLOYMENTS_PER_WEEK_VALUE}}
+                  <!-- {{ENG_DEPLOYMENTS_PER_WEEK_UNIT}} --><span class="kpi-unit">{{ENG_DEPLOYMENTS_PER_WEEK_UNIT}}</span>
+                </div>
+                <!-- {{ENG_DEPLOYMENTS_PER_WEEK_WINDOW_CAVEAT}} -->{{ENG_DEPLOYMENTS_PER_WEEK_WINDOW_CAVEAT}}
+                <div class="kpi-foot">
+                  <div>
+                    <span class="delta" data-dir="{{ENG_DEPLOYMENTS_PER_WEEK_DELTA_DIR}}">
+                      <span class="arrow" aria-hidden="true">{{ENG_DEPLOYMENTS_PER_WEEK_DELTA_ARROW}}</span>
+                      <!-- {{ENG_DEPLOYMENTS_PER_WEEK_DELTA}} -->{{ENG_DEPLOYMENTS_PER_WEEK_DELTA}}
+                    </span>
+                    <!-- {{ENG_DEPLOYMENTS_PER_WEEK_DELTA_NOTE}} -->
+                    <div class="delta-note">{{ENG_DEPLOYMENTS_PER_WEEK_DELTA_NOTE}}</div>
+                  </div>
+                  <!-- {{ENG_DEPLOYMENTS_PER_WEEK_SPARK_POINTS}} -->{{ENG_DEPLOYMENTS_PER_WEEK_SPARK_POINTS}}
+                </div>
+              </article>
+
+              <!-- {{ENG_COVERAGE_STATUS}} -->
+              <article class="kpi card" data-status="{{ENG_COVERAGE_STATUS}}">
+                <div class="kpi-head">
+                  <span class="kpi-label">Покрытие</span>
+                  <!-- {{ENG_COVERAGE_STATUS_LABEL}} --><span class="kpi-status">{{ENG_COVERAGE_STATUS_LABEL}}</span>
+                </div>
+                <div class="kpi-value">
+                  <!-- {{ENG_COVERAGE_VALUE}} -->{{ENG_COVERAGE_VALUE}}
+                  <!-- {{ENG_COVERAGE_UNIT}} --><span class="kpi-unit">{{ENG_COVERAGE_UNIT}}</span>
+                </div>
+                <!-- {{ENG_COVERAGE_WINDOW_CAVEAT}} -->{{ENG_COVERAGE_WINDOW_CAVEAT}}
+                <div class="kpi-foot">
+                  <div>
+                    <span class="delta" data-dir="{{ENG_COVERAGE_DELTA_DIR}}">
+                      <span class="arrow" aria-hidden="true">{{ENG_COVERAGE_DELTA_ARROW}}</span>
+                      <!-- {{ENG_COVERAGE_DELTA}} -->{{ENG_COVERAGE_DELTA}}
+                    </span>
+                    <!-- {{ENG_COVERAGE_SAMPLE_COUNT}} -->
+                    <div class="delta-note">{{ENG_COVERAGE_SAMPLE_COUNT}}</div>
+                  </div>
+                  <!-- {{ENG_COVERAGE_SPARK_POINTS}} -->{{ENG_COVERAGE_SPARK_POINTS}}
+                </div>
+              </article>
+              <!-- {{LOOP_ENG_TILES_END}} -->
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="sec-eng-chart">
+          <div class="section-head">
+            <span class="section-index">02</span>
+            <h2 class="section-title">Success rate пайплайнов по неделям</h2>
+            <button class="collapse-btn no-print" type="button" data-collapse="sec-eng-chart"
+                    aria-expanded="true" aria-controls="sec-eng-chart-body">Скрыть</button>
+            <p class="section-desc">Раздел pipelines ограничен окном отчёта, поэтому недельный ряд сопоставим с остальными числами. Каждая точка — доля успешных пайплайнов за календарную неделю. <b>Хорошо</b> — линия ближе к 100% и без резких провалов; растущий тренд лучше падающего. Если ниже написано, что понедельная история недоступна — это контракт данных, а не ошибка генератора: раздел pipelines отдаёт только агрегат за всё окно отчёта.</p>
+          </div>
+
+          <div class="section-body" id="sec-eng-chart-body">
+            <div class="card chart-card">
+              <div class="scroll-x">
+                <!-- {{ENG_CHART_ARIA}} -->
+                {{ENG_CHART_SVG}}
+              </div>
+
+              <div class="legend">
+                <span class="legend-item">
+                  <svg class="legend-line" viewBox="0 0 26 10" aria-hidden="true" focusable="false">
+                    <path class="lg-actual" d="M0 5 H26"/>
+                    <circle class="lg-actual-pt" cx="13" cy="5" r="3"/>
+                  </svg>
+                  <b>pipelines.success_rate_pct</b> за неделю
+                </span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="sec-eng-table">
+          <div class="section-head">
+            <span class="section-index">03</span>
+            <h2 class="section-title">Разрез по проектам</h2>
+            <button class="collapse-btn no-print" type="button" data-collapse="sec-eng-table"
+                    aria-expanded="true" aria-controls="sec-eng-table-body">Скрыть</button>
+            <p class="section-desc">Одна строка на проект. Объединяет <span class="mono">per_project</span> трёх разделов. Блоки «Деплои» и «Покрытие» не ограничены окном отчёта. <b>Хорошо</b> — те же пороги, что и у тайлов сводки выше: success_rate_pct ближе к 100%, coverage_avg_pct выше, failed ближе к нулю.</p>
+          </div>
+
+          <div class="section-body" id="sec-eng-table-body">
+            <div class="card table-card">
+              <div class="table-wrap">
+                <table class="data mid grouped">
+                  <caption>
+                    <!-- {{ENG_TABLE_CAPTION}} -->
+                    {{ENG_TABLE_CAPTION}}
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col" rowspan="2">project</th>
+                      <th scope="col" class="group gsep" colspan="3">pipelines</th>
+                      <th scope="col" class="group gsep" colspan="3">deployments {{ENG_DEPLOYMENTS_TABLE_CAVEAT}}</th>
+                      <th scope="col" class="group gsep" colspan="2">coverage {{ENG_COVERAGE_TABLE_CAVEAT}}</th>
+                    </tr>
+                    <tr>
+                      <th scope="col" class="col-num gsep">count</th>
+                      <th scope="col" class="col-num">failed</th>
+                      <th scope="col" class="col-num">success_rate_pct</th>
+                      <th scope="col" class="col-num gsep">count</th>
+                      <th scope="col" class="col-num">failed</th>
+                      <th scope="col" class="col-num">success_rate_pct</th>
+                      <th scope="col" class="col-num gsep">coverage_avg_pct</th>
+                      <th scope="col" class="col-num">sample_count</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <!-- {{ENG_PROJECT_ROW_START}} -->
+                    <tr>
+                      <th scope="row" class="rowkey"><!-- {{ENG_PROJECT_NAME}} -->{{ENG_PROJECT_NAME}}</th>
+                      <td class="col-num gsep"><!-- {{ENG_PROJECT_PIPELINES_COUNT}} -->{{ENG_PROJECT_PIPELINES_COUNT}}</td>
+                      <td class="col-num"><!-- {{ENG_PROJECT_PIPELINES_FAILED}} -->{{ENG_PROJECT_PIPELINES_FAILED}}</td>
+                      <td class="col-num"><!-- {{ENG_PROJECT_PIPELINES_SUCCESS_RATE_PCT}} -->{{ENG_PROJECT_PIPELINES_SUCCESS_RATE_PCT}}</td>
+                      <td class="col-num gsep"><!-- {{ENG_PROJECT_DEPLOYMENTS_COUNT}} -->{{ENG_PROJECT_DEPLOYMENTS_COUNT}}</td>
+                      <td class="col-num"><!-- {{ENG_PROJECT_DEPLOYMENTS_FAILED}} -->{{ENG_PROJECT_DEPLOYMENTS_FAILED}}</td>
+                      <td class="col-num"><!-- {{ENG_PROJECT_DEPLOYMENTS_SUCCESS_RATE_PCT}} -->{{ENG_PROJECT_DEPLOYMENTS_SUCCESS_RATE_PCT}}</td>
+                      <td class="col-num gsep{{ENG_PROJECT_COVERAGE_AVG_PCT_CLASS}}"><!-- {{ENG_PROJECT_COVERAGE_AVG_PCT}} -->{{ENG_PROJECT_COVERAGE_AVG_PCT}}</td>
+                      <td class="col-num"><!-- {{ENG_PROJECT_COVERAGE_SAMPLE_COUNT}} -->{{ENG_PROJECT_COVERAGE_SAMPLE_COUNT}}</td>
+                    </tr>
+                    <!-- {{ENG_PROJECT_ROW_END}} -->
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <th scope="row"><!-- {{ENG_TABLE_FOOTER_LABEL}} -->{{ENG_TABLE_FOOTER_LABEL}}</th>
+                      <td class="col-num gsep"><!-- {{ENG_PIPELINES_COUNT_TOTAL}} -->{{ENG_PIPELINES_COUNT_TOTAL}}</td>
+                      <td class="col-num"><!-- {{ENG_PIPELINES_FAILED_TOTAL}} -->{{ENG_PIPELINES_FAILED_TOTAL}}</td>
+                      <td class="col-num"><!-- {{ENG_PIPELINES_SUCCESS_RATE_TOTAL}} -->{{ENG_PIPELINES_SUCCESS_RATE_TOTAL}}</td>
+                      <td class="col-num gsep"><!-- {{ENG_DEPLOYMENTS_COUNT_TOTAL}} -->{{ENG_DEPLOYMENTS_COUNT_TOTAL}}</td>
+                      <td class="col-num"><!-- {{ENG_DEPLOYMENTS_FAILED_TOTAL}} -->{{ENG_DEPLOYMENTS_FAILED_TOTAL}}</td>
+                      <td class="col-num"><!-- {{ENG_DEPLOYMENTS_SUCCESS_RATE_TOTAL}} -->{{ENG_DEPLOYMENTS_SUCCESS_RATE_TOTAL}}</td>
+                      <td class="col-num gsep"><!-- {{ENG_COVERAGE_AVG_PCT_TOTAL}} -->{{ENG_COVERAGE_AVG_PCT_TOTAL}}</td>
+                      <td class="col-num"><!-- {{ENG_COVERAGE_SAMPLE_COUNT_TOTAL}} -->{{ENG_COVERAGE_SAMPLE_COUNT_TOTAL}}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+        <!-- {{ENG_SECTIONS_END}} -->
+
+      </section>
+
+    </div>
+  </div>
+</main>
+
+<!-- ================================================================
+     FOOTER
+     ================================================================ -->
+<footer class="report-foot">
+  <div class="wrap">
+    <div class="foot-top">
+      <div>
+        <!-- {{FOOTER_TOOL_NAME}} --><span class="tool-name">{{FOOTER_TOOL_NAME}}</span>
+        <!-- {{FOOTER_TOOL_VERSION}} --><span class="tool-version">{{FOOTER_TOOL_VERSION}}</span>
+      </div>
+      <!-- {{FOOTER_NOTE}} -->
+      <p class="foot-note">{{FOOTER_NOTE}}</p>
+    </div>
+
+    <h2 class="eyebrow" style="margin-bottom:8px">Параметры запуска</h2>
+    <dl class="params">
+      <!-- {{LOOP_FOOTER_PARAMS_START}} -->
+      <div class="param">
+        <dt>Хост</dt>
+        <dd><!-- {{PARAM_HOST}} -->{{PARAM_HOST}}</dd>
+      </div>
+      <div class="param">
+        <dt>Авторизация</dt>
+        <dd><!-- {{PARAM_AUTH}} -->{{PARAM_AUTH}}</dd>
+      </div>
+      <div class="param">
+        <dt>connection_id</dt>
+        <dd><!-- {{PARAM_CONNECTION_ID}} -->{{PARAM_CONNECTION_ID}}</dd>
+      </div>
+      <div class="param">
+        <dt>Доска</dt>
+        <dd><!-- {{PARAM_BOARD}} -->{{PARAM_BOARD}}</dd>
+      </div>
+      <div class="param">
+        <dt>sprint_ids</dt>
+        <dd><!-- {{PARAM_SPRINT_IDS}} -->{{PARAM_SPRINT_IDS}}</dd>
+      </div>
+      <div class="param">
+        <dt>JQL выборки</dt>
+        <dd><!-- {{PARAM_JQL}} -->{{PARAM_JQL}}</dd>
+      </div>
+      <div class="param">
+        <dt>history_sprint_count</dt>
+        <dd><!-- {{PARAM_HISTORY_SPRINT_COUNT}} -->{{PARAM_HISTORY_SPRINT_COUNT}}</dd>
+      </div>
+      <div class="param">
+        <dt>force_refresh</dt>
+        <dd><!-- {{PARAM_FORCE_REFRESH}} -->{{PARAM_FORCE_REFRESH}}</dd>
+      </div>
+      <div class="param">
+        <dt>Поле Story Points</dt>
+        <dd><!-- {{PARAM_STORY_POINTS_FIELD}} -->{{PARAM_STORY_POINTS_FIELD}}</dd>
+      </div>
+      <div class="param">
+        <dt>Поле QA Estimation</dt>
+        <dd><!-- {{PARAM_QA_FIELD}} -->{{PARAM_QA_FIELD}}</dd>
+      </div>
+      <div class="param">
+        <dt>Поле Роль</dt>
+        <dd><!-- {{PARAM_ROLE_FIELD}} -->{{PARAM_ROLE_FIELD}}</dd>
+      </div>
+      <div class="param">
+        <dt>cancelled_statuses</dt>
+        <dd><!-- {{PARAM_CANCELLED_STATUSES}} -->{{PARAM_CANCELLED_STATUSES}}</dd>
+      </div>
+      <div class="param">
+        <dt>status_map</dt>
+        <dd><!-- {{PARAM_STATUS_MAP}} -->{{PARAM_STATUS_MAP}}</dd>
+      </div>
+      <div class="param">
+        <dt>Рабочие дни</dt>
+        <dd><!-- {{PARAM_WORKING_DAYS}} -->{{PARAM_WORKING_DAYS}}</dd>
+      </div>
+      <div class="param">
+        <dt>Часовой пояс</dt>
+        <dd><!-- {{PARAM_TIMEZONE}} -->{{PARAM_TIMEZONE}}</dd>
+      </div>
+      <div class="param">
+        <dt>Прогонов Монте-Карло</dt>
+        <dd><!-- {{PARAM_MC_ITERATIONS}} -->{{PARAM_MC_ITERATIONS}}</dd>
+      </div>
+      <div class="param">
+        <dt>target_items</dt>
+        <dd><!-- {{PARAM_MC_TARGET_ITEMS}} -->{{PARAM_MC_TARGET_ITEMS}}</dd>
+      </div>
+      <div class="param">
+        <dt>Источник инженерных метрик</dt>
+        <dd><!-- {{PARAM_ENG_SOURCE}} -->{{PARAM_ENG_SOURCE}}</dd>
+      </div>
+      <div class="param">
+        <dt>Хост GitLab</dt>
+        <dd><!-- {{PARAM_GITLAB_HOST}} -->{{PARAM_GITLAB_HOST}}</dd>
+      </div>
+      <div class="param">
+        <dt>Проекты GitLab</dt>
+        <dd><!-- {{PARAM_GITLAB_PROJECTS}} -->{{PARAM_GITLAB_PROJECTS}}</dd>
+      </div>
+      <div class="param">
+        <dt>Окно деплоев и покрытия</dt>
+        <dd><!-- {{PARAM_ENG_UNFILTERED}} -->{{PARAM_ENG_UNFILTERED}}</dd>
+      </div>
+      <div class="param">
+        <dt>job_id</dt>
+        <dd><!-- {{PARAM_JOB_ID}} -->{{PARAM_JOB_ID}}</dd>
+      </div>
+      <div class="param">
+        <dt>Сформирован</dt>
+        <dd><!-- {{PARAM_GENERATED_AT}} -->{{PARAM_GENERATED_AT}}</dd>
+      </div>
+      <div class="param">
+        <dt>Длительность запуска</dt>
+        <dd><!-- {{PARAM_RUN_DURATION}} -->{{PARAM_RUN_DURATION}}</dd>
+      </div>
+      <!-- {{LOOP_FOOTER_PARAMS_END}} -->
+    </dl>
+  </div>
+</footer>
+
+
+<script>
+(function () {
+  "use strict";
+
+  var root = document.documentElement;
+  root.className = root.className ? root.className + " js" : "js";
+
+  /* theme switch: auto | light | dark */
+  var STORE_KEY = "tm-report-theme";
+  var buttons = document.querySelectorAll("[data-theme-set]");
+
+  function readMode() {
+    try { return localStorage.getItem(STORE_KEY); } catch (e) { return null; }
+  }
+
+  function writeMode(mode) {
+    try {
+      if (mode === "auto") { localStorage.removeItem(STORE_KEY); }
+      else { localStorage.setItem(STORE_KEY, mode); }
+    } catch (e) { /* file:// or private mode: keep the choice in memory only */ }
+  }
+
+  function applyMode(mode) {
+    if (mode === "light" || mode === "dark") {
+      root.setAttribute("data-theme", mode);
+    } else {
+      root.removeAttribute("data-theme");
+      mode = "auto";
+    }
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].setAttribute("aria-pressed", String(buttons[i].getAttribute("data-theme-set") === mode));
+    }
+  }
+
+  applyMode(readMode() || "auto");
+
+  for (var i = 0; i < buttons.length; i++) {
+    buttons[i].addEventListener("click", function () {
+      var mode = this.getAttribute("data-theme-set");
+      applyMode(mode);
+      writeMode(mode);
+    });
+  }
+
+  /* section collapse */
+  var toggles = document.querySelectorAll("[data-collapse]");
+  for (var j = 0; j < toggles.length; j++) {
+    toggles[j].addEventListener("click", function () {
+      var section = document.getElementById(this.getAttribute("data-collapse"));
+      if (!section) { return; }
+      var collapsed = section.classList.toggle("is-collapsed");
+      this.setAttribute("aria-expanded", String(!collapsed));
+      this.textContent = collapsed ? "Показать" : "Скрыть";
+    });
+  }
+})();
+</script>
+
+</body>
+</html>
