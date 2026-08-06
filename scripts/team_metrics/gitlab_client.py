@@ -92,15 +92,23 @@ _RETRYABLE_STATUSES = (429, 500, 502, 503)
 
 
 class GitLabError(Exception):
-    """code: '' | 'AUTH_FAILED' | 'NOT_FOUND' | 'UNREACHABLE'."""
+    """code: '' | 'AUTH_FAILED' | 'NOT_FOUND' | 'UNREACHABLE' | 'PAGINATION_LIMIT'.
 
-    def __init__(self, op: str, message: str, code: str = "", status_code: int = 0):
+    `partial_items` is set only for PAGINATION_LIMIT (the page cap / wall-
+    clock deadline in `_get_paginated` tripping) — whatever pages were
+    already collected before the guard fired, so a caller that wants to
+    degrade gracefully instead of losing everything can recover them."""
+
+    def __init__(
+        self, op: str, message: str, code: str = "", status_code: int = 0, partial_items: Optional[list] = None
+    ):
         text = f"gitlab: {op}: HTTP {status_code}: {message}" if status_code else f"gitlab: {op}: {message}"
         super().__init__(text)
         self.op = op
         self.code = code
         self.status_code = status_code
         self.message = message
+        self.partial_items = partial_items
 
 
 # --------------------------------------------------------------------------
@@ -239,9 +247,12 @@ class Window:
     start: datetime
     end: datetime
 
+    @property
+    def end_of_day(self) -> datetime:
+        return self.end.astimezone(UTC).replace(hour=23, minute=59, second=59, microsecond=0)
+
     def params(self, after_key: str, before_key: str) -> dict:
-        end_of_day = self.end.astimezone(UTC).replace(hour=23, minute=59, second=59, microsecond=0)
-        return {after_key: _format_window_bound(self.start), before_key: _format_window_bound(end_of_day)}
+        return {after_key: _format_window_bound(self.start), before_key: _format_window_bound(self.end_of_day)}
 
 
 # --------------------------------------------------------------------------
@@ -309,6 +320,14 @@ class GitLabClient:
         # run; the lock guards concurrent increments from the thread pools.
         self.request_count = 0
         self._request_count_lock = threading.Lock()
+        # deployments()'s volume-guard / filter-fallback events (patch
+        # release, round 2) — append-only, like request_count; a caller
+        # scopes this to "just this call" the same way (snapshot len()
+        # before, slice off the new entries after). Read via
+        # getattr(client, "deployment_warnings", []) so a duck-typed fake
+        # built before this existed keeps working unchanged.
+        self.deployment_warnings: list = []
+        self._deployment_warnings_lock = threading.Lock()
 
     # -- transport ---------------------------------------------------------
 
@@ -415,7 +434,8 @@ class GitLabClient:
                     op,
                     f"pagination did not finish within {_MAX_PAGINATION_SECONDS:.0f}s fetching {path} "
                     "(server may be slow or ignoring `page`)",
-                    code="UNREACHABLE",
+                    code="PAGINATION_LIMIT",
+                    partial_items=items,
                 )
             page_params = dict(params or {})
             page_params["page"] = page
@@ -428,7 +448,10 @@ class GitLabClient:
             pages_fetched += 1
             if pages_fetched > _MAX_PAGINATION_PAGES:
                 raise GitLabError(
-                    op, f"exceeded {_MAX_PAGINATION_PAGES} pages fetching {path} — a server ignoring `page` could loop forever"
+                    op,
+                    f"exceeded {_MAX_PAGINATION_PAGES} pages fetching {path} — a server ignoring `page` could loop forever",
+                    code="PAGINATION_LIMIT",
+                    partial_items=items,
                 )
 
             next_page = headers.get("x-next-page") or ""
@@ -714,53 +737,99 @@ class GitLabClient:
     # -- deployments -------------------------------------------------------------
 
     def deployments(self, project_path: str, project_id: int, *, window: Optional[Window] = None) -> list:
-        """Filtered on finished_after/finished_before (M5) — GitLab
-        documents these specifically for "a deployment finished in this
-        window", which is what an analysis window is meant to express;
-        updated_after/before would also match a deployment merely edited
-        (e.g. retried) during the window without actually finishing in it.
-        Bug fix vs the source skill: deployments were never window-filtered
-        there at all even though the endpoint supports it.
+        """Bug fix vs the source skill: deployments were never window-
+        filtered there at all even though the endpoint supports it.
 
-        Regression fix (patch release): GitLab's own deployments API docs
-        (https://docs.gitlab.com/api/deployments/, "List project
-        deployments") say "When using finished_before or finished_after,
-        you should specify the order_by to be finished_at and status
-        should be success" — worded as a recommendation, but a live
-        GitLab 19.0 server enforces the ordering half as a hard 400:
-        `{"message":"400 Bad request - \`finished_at\` filter requires
-        \`finished_at\` sort."}`. `order_by=finished_at` (+ an explicit
-        `sort` so both readings of "requires ... sort" are covered) is
-        added whenever the finished_* filter is used; NOT applied
-        unconditionally, since order_by/sort are meaningless (and, per
-        GitLab's own docs, not required) without that filter.
+        Regression fix #2 (patch release): a first fix here filtered
+        server-side on finished_after/finished_before + order_by=finished_at
+        (GitLab's own docs, https://docs.gitlab.com/api/deployments/, "List
+        project deployments": "When using finished_before or finished_after,
+        you should specify the order_by to be finished_at and status should
+        be success" — worded as "should"). A live GitLab 19.0 server then
+        rejected THAT with a second, separate 400 the docs' wording did not
+        prepare us for: {"message":"400 Bad request - finished_at filter
+        must be combined with success status filter."} — on this
+        server BOTH halves of the doc's "should" are hard requirements. That
+        makes server-side finished_at filtering fundamentally incompatible
+        with what this endpoint exists to do: team_deployment_metrics()
+        needs failed deployments to compute deploy_success_rate_pct at all,
+        and status=success would silently discard every one of them.
 
-        Deliberately NOT adding `status=success` despite the docs
-        suggesting it alongside order_by: this endpoint fetches every
-        deployment status on purpose — team_deployment_metrics() needs
-        failed deployments to compute deploy_success_rate_pct at all, and
-        the live 400 only ever complained about sort, never status.
+        Filtering by finished_at is therefore done CLIENT-SIDE instead,
+        against a server-side pre-filter that carries no such coupling
+        (checked against GitLab's docs — no note anywhere on that page ties
+        updated_after/updated_before to order_by/sort/status; the ONE
+        coupling note on the whole page is the finished_at one above) and a
+        confirmed one-directional relationship: GitLab's own Deployment
+        model (https://gitlab.com/gitlab-org/gitlab/-/blob/master/app/models/deployment.rb)
+        sets `finished_at = Time.current` in a `before_transition` block,
+        persisted by the very save that also bumps `updated_at` to that same
+        moment — so `updated_at >= finished_at` always holds, even though
+        async after_transition workers (UpdateEnvironmentWorker,
+        LinkMergeRequestWorker, ...) can touch the record again afterward
+        and push `updated_at` further ahead of `finished_at`, by an amount
+        this client has no way to bound.
 
-        Downstream order-independence checked before adding this: every
-        consumer of these records (team_deployment_metrics(),
-        _weeks_in_span()) aggregates over the full list — counts, an
-        average, a min/max span — none of it depends on record order, so
-        forcing order_by=finished_at/sort=asc changes nothing downstream.
-        (coverage() is the one place in this file that DOES rely on
-        response order — GitLab's default pipeline ordering, to take
-        raw[:1] as "the newest" — but that's the pipelines endpoint, an
-        unrelated code path this change does not touch.)
+        That one-directional guarantee is exactly why the pre-filter is
+        `updated_after=window.start` with NO upper bound (no
+        updated_before, no order_by/sort/status): a deployment whose
+        finished_at truly falls in [window.start, window.end] can never
+        have updated_at before window.start, so it can never be excluded by
+        this filter — an upper bound would require guessing how late an
+        async worker might run, and a wrong guess would silently drop a
+        deployment (worse than the errors this whole fix line has been
+        chasing). The cost is volume scaled to "activity since window.start
+        until now" rather than the exact window — acceptable for the
+        common case (a report run soon after the window it covers); a
+        report run long after an old window against a since-very-active
+        project fetches more than strictly needed, but never fetches the
+        project's entire history the way dropping the filter outright
+        would.
+
+        Resilience (patch release, round 2): we have now been wrong about
+        this endpoint's filter requirements twice, both times based on
+        GitLab's own docs and (the second time) its own open-source model —
+        so this method no longer bets the whole feature on being right a
+        third time. If the server rejects the `updated_after` pre-filter
+        itself with a 400, it retries ONCE with no filter at all — exactly
+        what the original source skill always sent here
+        (gitlab_collector.py:353, `params = {"per_page": 100}`, nothing
+        else) — windowing entirely client-side, same as above. The one gap
+        the original had that this keeps closed: an unfiltered fetch on an
+        old, active project can be large, so both the page cap and the
+        wall-clock deadline in `_get_paginated` still apply; if either
+        trips, whatever pages were already collected are kept and returned
+        (never silently discarded, never a crash of the whole run) and the
+        event is recorded in `self.deployment_warnings` — read via
+        `getattr(client, "deployment_warnings", [])`, the same safe pattern
+        `request_count` uses, so a duck-typed fake built before this
+        existed keeps working unchanged.
         """
         params: dict = {}
         if window is not None:
-            params.update(window.params("finished_after", "finished_before"))
-            params["order_by"] = "finished_at"
-            params["sort"] = "asc"  # GitLab's own default; explicit so both readings of the API's "sort" requirement are satisfied
-        raw = self._get_paginated(
-            "ListDeployments", f"/api/v4/projects/{_qs(project_id)}/deployments", params, per_page=DEPLOYMENT_PAGE_SIZE
-        )
+            params["updated_after"] = _format_window_bound(window.start)
+
+        try:
+            raw = self._fetch_deployments_page(project_path, project_id, params)
+        except GitLabError as e:
+            if params and e.status_code == 400:
+                self._record_deployment_warning(
+                    {
+                        "project": project_path,
+                        "code": "FILTER_REJECTED_FALLBACK",
+                        "message": f"updated_after filter rejected by GitLab (HTTP 400: {e.message}); fell back to an unfiltered fetch",
+                    }
+                )
+                raw = self._fetch_deployments_page(project_path, project_id, {})
+            else:
+                raise
+
         records = []
         for d in raw:
+            if window is not None:
+                finished = _parse_iso(d.get("finished_at"))
+                if finished is None or not (window.start.astimezone(UTC) <= finished <= window.end_of_day):
+                    continue
             user = d.get("user") or {}
             env = d.get("environment") or {}
             records.append(
@@ -780,6 +849,29 @@ class GitLabClient:
                 }
             )
         return records
+
+    def _record_deployment_warning(self, entry: dict) -> None:
+        with self._deployment_warnings_lock:
+            self.deployment_warnings.append(entry)
+
+    def _fetch_deployments_page(self, project_path: str, project_id: int, params: dict) -> list:
+        """Pagination wrapper for deployments() that degrades a tripped
+        volume guard into a recorded warning plus whatever was collected
+        before the guard fired, instead of discarding it all and raising
+        into the caller — "not a silent truncation" cuts both ways: it must
+        not silently drop records AND must not silently crash the run
+        either, it must say so."""
+        try:
+            return self._get_paginated(
+                "ListDeployments", f"/api/v4/projects/{_qs(project_id)}/deployments", params, per_page=DEPLOYMENT_PAGE_SIZE
+            )
+        except GitLabError as e:
+            if e.code == "PAGINATION_LIMIT":
+                self._record_deployment_warning(
+                    {"project": project_path, "code": "PAGINATION_LIMIT", "message": f"deployment fetch stopped early: {e.message}"}
+                )
+                return e.partial_items or []
+            raise
 
     # -- coverage -------------------------------------------------------------
 
@@ -842,6 +934,11 @@ def fetch_team_data(
     `skipped_projects` instead of silently dropping the project, so a report
     layer can disclaim exactly what was skipped and why. Per-MR-author
     fetch failures are collected the same way into `mr_fetch_errors` (m3).
+    `deployment_warnings` is the same idea for deployments()'s volume-guard
+    trips and filter-rejection fallbacks (patch release, round 2) — read
+    off `client.deployment_warnings` (see GitLabClient.__init__) and scoped
+    to just this call via a before/after length snapshot, the same pattern
+    `request_count` uses.
 
     `fetch_mr_details`/`fetch_pipeline_user` (audit finding 2a) pass straight
     through to `merge_requests()`/`pipelines()` — set either to False to
@@ -861,6 +958,7 @@ def fetch_team_data(
     unchanged.
     """
     request_count_before = getattr(client, "request_count", 0)
+    deployment_warnings_before = len(getattr(client, "deployment_warnings", None) or [])
 
     project_ids: dict = {}
     skipped_projects: list = []
@@ -895,6 +993,9 @@ def fetch_team_data(
         deployments.extend(client.deployments(path, pid, window=window))
         coverage.extend(client.coverage(path, pid, window=window))
 
+    all_deployment_warnings = getattr(client, "deployment_warnings", None) or []
+    deployment_warnings = list(all_deployment_warnings[deployment_warnings_before:])
+
     applied = window is not None
     return {
         "merge_requests": merge_requests,
@@ -903,6 +1004,7 @@ def fetch_team_data(
         "coverage": coverage,
         "skipped_projects": skipped_projects,
         "mr_fetch_errors": mr_fetch_errors,
+        "deployment_warnings": deployment_warnings,
         "request_count": getattr(client, "request_count", 0) - request_count_before,
         "window_applied": {
             "merge_requests": applied,

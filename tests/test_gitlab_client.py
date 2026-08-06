@@ -361,8 +361,10 @@ class PaginationTests(unittest.TestCase):
         without a hard cap."""
         client = _client()
         client._do = lambda op, path, params=None: (json.dumps([{"id": 1}, {"id": 2}]).encode(), {})
-        with self.assertRaises(gc.GitLabError):
+        with self.assertRaises(gc.GitLabError) as ctx:
             client._get_paginated("Op", "/x", per_page=2)
+        self.assertEqual(ctx.exception.code, "PAGINATION_LIMIT")
+        self.assertTrue(ctx.exception.partial_items)  # every page fetched before the cap is preserved
 
     def test_deadline_triggers_before_the_first_page_when_already_expired(self):
         """Audit finding 3: the page cap bounds pages, not wall-clock — a
@@ -382,7 +384,12 @@ class PaginationTests(unittest.TestCase):
             client._do = fake_do
             with self.assertRaises(gc.GitLabError) as ctx:
                 client._get_paginated("Op", "/x", per_page=100)
-            self.assertEqual(ctx.exception.code, "UNREACHABLE")
+            # PAGINATION_LIMIT (not UNREACHABLE): this is a volume/time
+            # guard tripping, not a transport failure — deployments()'s
+            # graceful-degradation path (round 2 of the deployments patch)
+            # keys off this exact code.
+            self.assertEqual(ctx.exception.code, "PAGINATION_LIMIT")
+            self.assertEqual(ctx.exception.partial_items, [])
             self.assertEqual(calls["n"], 0)  # never even got to make a request
         finally:
             gc._MAX_PAGINATION_SECONDS = original
@@ -400,7 +407,10 @@ class PaginationTests(unittest.TestCase):
             client._do = fake_do
             with self.assertRaises(gc.GitLabError) as ctx:
                 client._get_paginated("Op", "/x", per_page=2)
-            self.assertEqual(ctx.exception.code, "UNREACHABLE")
+            self.assertEqual(ctx.exception.code, "PAGINATION_LIMIT")
+            # The page fetched before the deadline tripped is preserved on
+            # the exception, not discarded.
+            self.assertEqual([i["id"] for i in ctx.exception.partial_items], [1, 2])
         finally:
             gc._MAX_PAGINATION_SECONDS = original
 
@@ -431,7 +441,13 @@ class WindowFilterTests(unittest.TestCase):
     sprint end in, end-of-day applied internally) rather than truncating the
     final day."""
 
-    def test_deployments_apply_window_as_finished_after_before(self):
+    def test_deployments_apply_window_sends_updated_after_only(self):
+        """Regression fix #2 (patch release): server-side finished_after/
+        finished_before is gone entirely — see
+        DeploymentsStatusCouplingRegressionTests for why. Only
+        updated_after=window.start goes to the server (a one-directional,
+        never-excludes-a-valid-record pre-filter); the exact finished_at
+        window is applied client-side."""
         client = _client()
         captured = {}
 
@@ -442,14 +458,13 @@ class WindowFilterTests(unittest.TestCase):
         client._do = fake_do
         window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
         client.deployments("group/project", 42, window=window)
-        self.assertEqual(captured["params"]["finished_after"], "2026-01-01T00:00:00Z")
-        self.assertEqual(captured["params"]["finished_before"], "2026-01-31T23:59:59Z")
-        self.assertNotIn("updated_after", captured["params"])
+        self.assertEqual(captured["params"]["updated_after"], "2026-01-01T00:00:00Z")
         self.assertNotIn("updated_before", captured["params"])
-        # Regression (patch release): GitLab requires order_by=finished_at
-        # alongside the finished_* filter — see DeploymentsFinishedAtSortRequirementTests.
-        self.assertEqual(captured["params"]["order_by"], "finished_at")
-        self.assertIn("sort", captured["params"])
+        self.assertNotIn("finished_after", captured["params"])
+        self.assertNotIn("finished_before", captured["params"])
+        self.assertNotIn("order_by", captured["params"])
+        self.assertNotIn("sort", captured["params"])
+        self.assertNotIn("status", captured["params"])
 
     def test_deployments_without_window_sends_no_date_params(self):
         client = _client()
@@ -461,12 +476,14 @@ class WindowFilterTests(unittest.TestCase):
 
         client._do = fake_do
         client.deployments("group/project", 42, window=None)
+        self.assertNotIn("updated_after", captured["params"])
+        self.assertNotIn("updated_before", captured["params"])
         self.assertNotIn("finished_after", captured["params"])
         self.assertNotIn("finished_before", captured["params"])
-        # order_by/sort are meaningless (and per GitLab's docs, not
-        # required) without the finished_* filter that demands them.
-        self.assertNotIn("order_by", captured["params"])
-        self.assertNotIn("sort", captured["params"])
+
+    def test_window_end_of_day_property(self):
+        window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+        self.assertEqual(window.end_of_day, datetime(2026, 1, 31, 23, 59, 59, tzinfo=UTC))
 
     def test_coverage_applies_window(self):
         client = _client()
@@ -533,55 +550,336 @@ class WindowFilterTests(unittest.TestCase):
         self.assertTrue(result_windowed["window_applied"]["coverage"])
 
 
-class DeploymentsFinishedAtSortRequirementTests(unittest.TestCase):
+class DeploymentsStatusCouplingRegressionTests(unittest.TestCase):
     """Regression, patch release: a live GitLab 19.0 server rejected our
-    deployments request with
+    deployments request TWICE, on two separate hard requirements the docs
+    word identically as "should":
 
-        {"message":"400 Bad request - `finished_at` filter requires
-        `finished_at` sort."}
+        1st: {"message":"400 Bad request - `finished_at` filter requires
+             `finished_at` sort."}
+        2nd (after fixing the 1st, adding order_by=finished_at):
+             {"message":"400 Bad request - `finished_at` filter must be
+             combined with `success` status filter."}
 
-    GitLab's own docs (https://docs.gitlab.com/api/deployments/, "List
-    project deployments") state: "When using finished_before or
-    finished_after, you should specify the order_by to be finished_at and
-    status should be success" — worded as "should", but the live server
-    enforces the ordering half as a hard requirement. `status=success` is
-    NOT added (see deployments()'s docstring: it would silently drop every
-    failed deployment, breaking deploy_success_rate_pct)."""
+    status=success cannot be sent either (see deployments()'s docstring:
+    team_deployment_metrics() needs failed deployments to compute
+    deploy_success_rate_pct at all) — so server-side finished_at filtering
+    is abandoned entirely in favour of updated_after (no coupling per
+    GitLab's docs) plus an exact client-side finished_at check."""
 
-    def _fake_attempt_enforcing_gitlab_rule(self, url):
-        """Reproduces the exact rejection a real GitLab 19.0 server
-        returned: 400 if a finished_* filter is present without
-        order_by=finished_at."""
-        if ("finished_after=" in url or "finished_before=" in url) and "order_by=finished_at" not in url:
-            body = b'{"message":"400 Bad request - `finished_at` filter requires `finished_at` sort."}'
-            return body, 400, {}, None
+    def _fake_attempt_enforcing_both_gitlab_rules(self, url):
+        """Reproduces BOTH rejections a real GitLab 19.0 server returned, in
+        order: missing order_by=finished_at, then (once that's fixed)
+        missing status=success — whenever a finished_* filter is present."""
+        has_finished_filter = "finished_after=" in url or "finished_before=" in url
+        if has_finished_filter and "order_by=finished_at" not in url:
+            return b'{"message":"400 Bad request - `finished_at` filter requires `finished_at` sort."}', 400, {}, None
+        if has_finished_filter and "status=success" not in url:
+            return (
+                b'{"message":"400 Bad request - `finished_at` filter must be combined with `success` status filter."}',
+                400,
+                {},
+                None,
+            )
         return b"[]", 200, {}, None
 
-    def test_current_client_request_does_not_trip_the_live_400_rule(self):
+    def test_current_client_request_does_not_trip_either_live_400_rule(self):
         client = _client()
-        client._attempt = self._fake_attempt_enforcing_gitlab_rule
+        client._attempt = self._fake_attempt_enforcing_both_gitlab_rules
         window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
-        # Must not raise: deployments() always sends order_by=finished_at
-        # alongside finished_after/finished_before now.
+        # Must not raise: deployments() no longer sends finished_after/
+        # finished_before at all, so neither rule can ever trigger.
         result = client.deployments("group/project", 42, window=window)
         self.assertEqual(result, [])
 
-    def test_fake_transport_is_not_a_tautology_it_really_rejects_the_old_shape(self):
-        """Sanity check on the fake itself: a request carrying the
-        finished_* filter WITHOUT order_by=finished_at (the pre-fix shape)
-        must still be rejected by the same fake, proving the previous test
-        passed because of the fix, not because the fake always accepts."""
+    def test_fake_transport_is_not_a_tautology_it_rejects_both_old_shapes(self):
+        """Sanity check on the fake: the FIRST regression's fixed shape
+        (finished_* + order_by, no status) still trips the SECOND rule —
+        proving the previous test's pass is attributable to dropping
+        finished_* entirely, not to a fake that always accepts."""
         client = _client()
-        client._attempt = self._fake_attempt_enforcing_gitlab_rule
-        with self.assertRaises(gc.GitLabError) as ctx:
+        client._attempt = self._fake_attempt_enforcing_both_gitlab_rules
+
+        # Bare finished_* (the original, first-regression shape) -> rule 1.
+        with self.assertRaises(gc.GitLabError) as ctx1:
             client._get_paginated(
                 "ListDeployments",
                 "/api/v4/projects/42/deployments",
                 {"finished_after": "2026-01-01T00:00:00Z", "finished_before": "2026-01-31T23:59:59Z"},
                 per_page=gc.DEPLOYMENT_PAGE_SIZE,
             )
-        self.assertEqual(ctx.exception.status_code, 400)
-        self.assertIn("finished_at", str(ctx.exception))
+        self.assertEqual(ctx1.exception.status_code, 400)
+        self.assertIn("sort", str(ctx1.exception))
+
+        # finished_* + order_by (the first fix's shape, no status) -> rule 2.
+        with self.assertRaises(gc.GitLabError) as ctx2:
+            client._get_paginated(
+                "ListDeployments",
+                "/api/v4/projects/42/deployments",
+                {
+                    "finished_after": "2026-01-01T00:00:00Z",
+                    "finished_before": "2026-01-31T23:59:59Z",
+                    "order_by": "finished_at",
+                    "sort": "asc",
+                },
+                per_page=gc.DEPLOYMENT_PAGE_SIZE,
+            )
+        self.assertEqual(ctx2.exception.status_code, 400)
+        self.assertIn("status", str(ctx2.exception))
+
+
+class DeploymentsClientSideFinishedAtFilterTests(unittest.TestCase):
+    """The exact finished_at window is now enforced in Python, against the
+    coarser updated_after=window.start server-side pre-filter."""
+
+    def _dep(self, deployment_id, finished_at, status="success"):
+        return {"id": deployment_id, "status": status, "finished_at": finished_at, "user": {}, "environment": {}}
+
+    def test_deployment_finished_inside_window_is_kept(self):
+        client = _client()
+        client._get_paginated = lambda *a, **kw: [self._dep(1, "2026-01-15T00:00:00Z")]
+        window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+        records = client.deployments("g/p", 42, window=window)
+        self.assertEqual([r["deployment_id"] for r in records], [1])
+
+    def test_deployment_finished_after_window_end_is_dropped(self):
+        # This is exactly the record updated_after=window.start (no upper
+        # bound) would over-fetch — finished later than we care about.
+        client = _client()
+        client._get_paginated = lambda *a, **kw: [self._dep(1, "2026-02-15T00:00:00Z")]
+        window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+        records = client.deployments("g/p", 42, window=window)
+        self.assertEqual(records, [])
+
+    def test_deployment_finished_before_window_start_is_dropped(self):
+        client = _client()
+        client._get_paginated = lambda *a, **kw: [self._dep(1, "2025-12-15T00:00:00Z")]
+        window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+        records = client.deployments("g/p", 42, window=window)
+        self.assertEqual(records, [])
+
+    def test_deployment_with_no_finished_at_is_dropped(self):
+        # Still running / not yet terminal -> updated_after could still
+        # match it (recently touched), but it hasn't "finished in this
+        # window" at all.
+        client = _client()
+        client._get_paginated = lambda *a, **kw: [self._dep(1, None, status="running")]
+        window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+        records = client.deployments("g/p", 42, window=window)
+        self.assertEqual(records, [])
+
+    def test_finished_at_exactly_on_window_start_boundary_is_kept(self):
+        client = _client()
+        client._get_paginated = lambda *a, **kw: [self._dep(1, "2026-01-01T00:00:00Z")]
+        window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+        records = client.deployments("g/p", 42, window=window)
+        self.assertEqual([r["deployment_id"] for r in records], [1])
+
+    def test_finished_at_exactly_on_window_end_of_day_boundary_is_kept(self):
+        client = _client()
+        client._get_paginated = lambda *a, **kw: [self._dep(1, "2026-01-31T23:59:59Z")]
+        window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+        records = client.deployments("g/p", 42, window=window)
+        self.assertEqual([r["deployment_id"] for r in records], [1])
+
+    def test_failed_deployments_survive_the_client_side_filter(self):
+        # The whole point of this fix: status is never filtered, server or
+        # client side, so deploy_success_rate_pct stays computable.
+        client = _client()
+        client._get_paginated = lambda *a, **kw: [
+            self._dep(1, "2026-01-15T00:00:00Z", status="success"),
+            self._dep(2, "2026-01-16T00:00:00Z", status="failed"),
+        ]
+        window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+        records = client.deployments("g/p", 42, window=window)
+        self.assertEqual(sorted(r["status"] for r in records), ["failed", "success"])
+
+    def test_without_a_window_nothing_is_filtered(self):
+        client = _client()
+        client._get_paginated = lambda *a, **kw: [self._dep(1, None, status="running"), self._dep(2, "2020-01-01T00:00:00Z")]
+        records = client.deployments("g/p", 42, window=None)
+        self.assertEqual(sorted(r["deployment_id"] for r in records), [1, 2])
+
+
+class DeploymentsResilienceTests(unittest.TestCase):
+    """Team-lead follow-up, round 3: retry once without any server-side
+    filter if GitLab rejects updated_after with a 400 (we've now been
+    wrong about this endpoint's requirements twice, so the fix must not
+    bet on being right a third time), and never let a tripped volume guard
+    crash the whole run or silently drop what was already collected."""
+
+    def _dep_body(self, deployment_id=1):
+        return json.dumps(
+            [{"id": deployment_id, "status": "success", "finished_at": "2026-01-15T00:00:00Z", "user": {}, "environment": {}}]
+        ).encode()
+
+    def test_400_on_filtered_request_falls_back_to_unfiltered_fetch(self):
+        def fake_attempt(url):
+            if "updated_after=" in url:
+                return b'{"message":"400 rejected for some other reason the docs never mentioned"}', 400, {}, None
+            return self._dep_body(), 200, {}, None
+
+        client = _client()
+        client._attempt = fake_attempt
+        window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+        records = client.deployments("g/p", 42, window=window)
+        self.assertEqual([r["deployment_id"] for r in records], [1])
+
+    def test_fallback_records_a_warning(self):
+        def fake_attempt(url):
+            if "updated_after=" in url:
+                return b'{"message":"400 rejected"}', 400, {}, None
+            return b"[]", 200, {}, None
+
+        client = _client()
+        client._attempt = fake_attempt
+        window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+        client.deployments("g/p", 42, window=window)
+        self.assertEqual(len(client.deployment_warnings), 1)
+        self.assertEqual(client.deployment_warnings[0]["code"], "FILTER_REJECTED_FALLBACK")
+        self.assertEqual(client.deployment_warnings[0]["project"], "g/p")
+
+    def test_fallback_preserves_failed_deployments_the_metric_contract(self):
+        # The whole point: status is never sent as a filter, so a failed
+        # deployment survives even through the fallback path.
+        def fake_attempt(url):
+            if "updated_after=" in url:
+                return b'{"message":"400 rejected"}', 400, {}, None
+            body = json.dumps(
+                [
+                    {"id": 1, "status": "success", "finished_at": "2026-01-15T00:00:00Z", "user": {}, "environment": {}},
+                    {"id": 2, "status": "failed", "finished_at": "2026-01-16T00:00:00Z", "user": {}, "environment": {}},
+                ]
+            ).encode()
+            return body, 200, {}, None
+
+        client = _client()
+        client._attempt = fake_attempt
+        window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+        records = client.deployments("g/p", 42, window=window)
+        self.assertEqual(sorted(r["status"] for r in records), ["failed", "success"])
+
+    def test_non_400_error_does_not_trigger_fallback(self):
+        # A genuine auth/transport problem must propagate normally, not be
+        # masked by silently retrying without the filter.
+        client = _client()
+        client._attempt = lambda url: (b"unauthorized", 401, {}, None)
+        window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+        with self.assertRaises(gc.GitLabError) as ctx:
+            client.deployments("g/p", 42, window=window)
+        self.assertEqual(ctx.exception.code, "AUTH_FAILED")
+        self.assertEqual(client.deployment_warnings, [])
+
+    def test_no_window_400_does_not_trigger_fallback(self):
+        # Nothing to blame the 400 on (no filter was even sent), so it
+        # must propagate instead of uselessly retrying the identical
+        # unfiltered request.
+        calls = {"n": 0}
+
+        def fake_attempt(url):
+            calls["n"] += 1
+            return b'{"message":"unrelated 400"}', 400, {}, None
+
+        client = _client()
+        client._attempt = fake_attempt
+        with self.assertRaises(gc.GitLabError):
+            client.deployments("g/p", 42, window=None)
+        self.assertEqual(calls["n"], 1)
+
+    def test_pagination_limit_on_primary_fetch_degrades_gracefully(self):
+        original = gc._MAX_PAGINATION_SECONDS
+        gc._MAX_PAGINATION_SECONDS = -1.0
+        try:
+            client = _client()
+            window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+            records = client.deployments("g/p", 42, window=window)  # must not raise
+            self.assertEqual(records, [])
+            self.assertEqual(len(client.deployment_warnings), 1)
+            self.assertEqual(client.deployment_warnings[0]["code"], "PAGINATION_LIMIT")
+            self.assertEqual(client.deployment_warnings[0]["project"], "g/p")
+        finally:
+            gc._MAX_PAGINATION_SECONDS = original
+
+    def test_pagination_limit_on_fallback_fetch_also_degrades_gracefully(self):
+        original = gc._MAX_PAGINATION_SECONDS
+        try:
+
+            def fake_attempt(url):
+                if "updated_after=" in url:
+                    # Expire the deadline as a SIDE EFFECT of the 400 (not
+                    # up front): the primary call's deadline must already
+                    # be captured with the normal budget so it reaches this
+                    # 400 at all; only the FALLBACK's freshly-computed
+                    # deadline should see the expired value.
+                    gc._MAX_PAGINATION_SECONDS = -1.0
+                    return b'{"message":"400 rejected"}', 400, {}, None
+                return b"[]", 200, {}, None  # unreachable: fallback's deadline trips first
+
+            client = _client()
+            client._attempt = fake_attempt
+            window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+            records = client.deployments("g/p", 42, window=window)  # must not raise, even doubly-degraded
+            self.assertEqual(records, [])
+            codes = [w["code"] for w in client.deployment_warnings]
+            self.assertEqual(codes, ["FILTER_REJECTED_FALLBACK", "PAGINATION_LIMIT"])
+        finally:
+            gc._MAX_PAGINATION_SECONDS = original
+
+    def test_pagination_limit_preserves_partial_records_end_to_end(self):
+        """Not just at _get_paginated's exception boundary (covered by
+        PaginationTests) — proves survival all the way through
+        deployments()'s final output."""
+        original = gc._MAX_PAGINATION_SECONDS
+        gc._MAX_PAGINATION_SECONDS = 0.01
+        try:
+            client = _client()
+
+            def fake_do(op, path, params=None):
+                time.sleep(0.02)  # slower than the deadline -> trips right after this page
+                dep = {"id": 1, "status": "success", "finished_at": "2026-01-15T00:00:00Z", "user": {}, "environment": {}}
+                # A FULL page (== DEPLOYMENT_PAGE_SIZE) so pagination would
+                # continue to a 2nd page — a short page would just stop
+                # cleanly on its own, never reaching the deadline check.
+                return json.dumps([dep] * gc.DEPLOYMENT_PAGE_SIZE).encode(), {}
+
+            client._do = fake_do
+            window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+            records = client.deployments("g/p", 42, window=window)
+            self.assertEqual(len(records), gc.DEPLOYMENT_PAGE_SIZE)  # the one page fetched before the deadline tripped
+            self.assertEqual(client.deployment_warnings[0]["code"], "PAGINATION_LIMIT")
+        finally:
+            gc._MAX_PAGINATION_SECONDS = original
+
+    def test_fetch_team_data_scopes_deployment_warnings_to_one_call(self):
+        original = gc._MAX_PAGINATION_SECONDS
+        gc._MAX_PAGINATION_SECONDS = -1.0
+        try:
+            client = _client()
+            client.project_id = lambda path: 1
+            client.merge_requests = lambda *a, **kw: []
+            client.pipelines = lambda *a, **kw: []
+            client.coverage = lambda path, pid, window=None: []
+            window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+
+            first = gc.fetch_team_data(client, projects=["g/p"], employees=["alice"], window=window)
+            second = gc.fetch_team_data(client, projects=["g/p"], employees=["alice"], window=window)
+
+            self.assertEqual(len(first["deployment_warnings"]), 1)
+            self.assertEqual(len(second["deployment_warnings"]), 1)  # not doubled by the 2nd run
+            self.assertEqual(len(client.deployment_warnings), 2)  # cumulative on the client itself
+        finally:
+            gc._MAX_PAGINATION_SECONDS = original
+
+    def test_fetch_team_data_deployment_warnings_defaults_to_empty_for_duck_typed_clients(self):
+        client = _client()
+        client.project_id = lambda path: 1
+        client.merge_requests = lambda *a, **kw: []
+        client.pipelines = lambda *a, **kw: []
+        client.deployments = lambda path, pid, window=None: []  # no deployment_warnings attribute at all
+        client.coverage = lambda path, pid, window=None: []
+        del client.deployment_warnings
+        result = gc.fetch_team_data(client, projects=["g/p"], employees=["alice"])
+        self.assertEqual(result["deployment_warnings"], [])
 
 
 class MissingDiffStatsTests(unittest.TestCase):
