@@ -830,15 +830,15 @@ class PersonCardExtraStatsTests(unittest.TestCase):
 
     def test_rework_share_and_pipeline_success_render_as_percentages(self):
         html = self._card_html({"rework_share": 0.25, "pipeline_success_rate": 0.875})
-        self.assertIn("rework share", html)
+        self.assertIn("доля переработок", html)
         self.assertIn("25", html)
-        self.assertIn("pipeline success", html)
+        self.assertIn("успешность пайплайнов", html)
         self.assertIn("87.5", html)
 
     def test_both_show_none_state_when_null(self):
         html = self._card_html({"rework_share": None, "pipeline_success_rate": None})
-        self.assertIn('data-status="none"><div class="stat-label">rework share', html)
-        self.assertIn('data-status="none"><div class="stat-label">pipeline success', html)
+        self.assertIn('data-status="none"><div class="stat-label">доля переработок', html)
+        self.assertIn('data-status="none"><div class="stat-label">успешность пайплайнов', html)
 
 
 # --------------------------------------------------------------------------
@@ -1119,7 +1119,7 @@ class ChartExplanationTests(unittest.TestCase):
                 self.assertIsNotNone(m, f"{section_id}: no thresholds block")
                 block = m.group(1)
                 self.assertIn("эвристика", block)
-                self.assertIn("нет классификации good/warn/bad", block)
+                self.assertIn("нет классификации «норма / под наблюдением / критично»", block)
 
     def test_forecast_marks_its_two_real_module_constants(self):
         # The one section where actual source-module constants exist
@@ -1134,6 +1134,166 @@ class ChartExplanationTests(unittest.TestCase):
         report = build_multi_sprint_report(with_gitlab=False)
         out = rh.render_html(report)
         self.assertIn("thresholds", out)
+
+
+class RussianOnlyProseTests(unittest.TestCase):
+    """The report must read in Russian: every label/status word/badge we
+    author is Russian. Column headers and warning/error CODES keep their
+    contract field names on purpose (documented, grep-able against the
+    source) — this test only guards the prose we write ourselves."""
+
+    def test_no_bare_english_good_warn_bad_in_our_own_prose(self):
+        report = build_multi_sprint_report(with_gitlab=True)
+        out = rh.render_html(report)
+        for section_id in ("sec-kpi", "sec-eng-kpi", "sec-metrics", "sec-person-table", "sec-person-cards"):
+            with self.subTest(section=section_id):
+                section = _section_slice(out, section_id)
+                # status WORDS, not the "warn-badge"/"cell-nodata" CSS classes
+                self.assertNotRegex(section, r"[^-\"]\bgood\b")
+                self.assertNotRegex(section, r"[^-\"]\bwarn\b(?!-)")
+                self.assertNotRegex(section, r"[^-\"]\bbad\b")
+
+    def test_kpi_tile_labels_are_russian(self):
+        report = build_multi_sprint_report(with_gitlab=True)
+        out = rh.render_html(report)
+        for label in ("Скорость", "Скользящее среднее", "Выполнение обязательств", "Загрузка",
+                      "Изменение объёма", "Пропускная способность", "Закрытие, задачи", "Закрытие, SP"):
+            with self.subTest(label=label):
+                self.assertIn(f'kpi-label">{label}<', out)
+        for stale in ("Velocity", "Performance</span>", ">Load<", "Scope change", "Throughput</span>"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(f'kpi-label">{stale}', out)
+
+    def test_person_card_stat_labels_are_russian(self):
+        report = build_multi_sprint_report(with_gitlab=True)
+        out = rh.render_html(report)
+        for label in ("доля смерженных", "медиана цикла MR", "задач закрыто", "доля переработок", "успешность пайплайнов"):
+            with self.subTest(label=label):
+                self.assertIn(label, out)
+
+
+# --------------------------------------------------------------------------
+# Closing recommendations — every item derived from a measured value
+# --------------------------------------------------------------------------
+
+
+class RecommendationsBlockTests(unittest.TestCase):
+    @staticmethod
+    def _healthy_report():
+        metrics = {
+            "committed_sp": 40.0, "committed_items": 10, "scope_added_items": 1, "scope_removed_items": 0,
+            "scope_added_sp": 2.0, "scope_removed_sp": 1.0, "scope_change_pct": 7.5,
+            "performance_pct": 95.0, "load_pct": 100.0, "velocity_sp": 38.0, "velocity_sma5_sp": 40.0,
+            "throughput_items": 8, "closure_pct_items": 90.0, "closure_pct_sp": 90.0,
+            "scope_estimation_change_sp": 0.0, "delivered_sp": 38.0, "delivered_items": 9,
+        }
+        return {
+            "sprints": [
+                {"target": False, "payload": {"metrics": dict(metrics)}},
+                {"target": True, "payload": {"metrics": dict(metrics)}},
+            ],
+            "kpi": {},
+            "forecast": {
+                "warnings": [], "throughput_cv_pct": 10.0, "percentiles": [],
+                "target_items": 5, "sample_sprints": 5, "sample_days": 50, "histogram": [],
+            },
+            "forecast_error": None,
+            "engineering": {"available": False},
+            "personal": {"available": False},
+        }
+
+    def test_healthy_fixture_says_no_obvious_problems(self):
+        ctx: dict = {}
+        rh.build_recommendations(self._healthy_report(), ctx)
+        block = ctx["RECOMMENDATIONS_BLOCK"]
+        self.assertIn("явных проблем не видно", block)
+        self.assertIn('class="reco-none"', block)
+        self.assertNotIn('class="reco-list"', block)
+
+    def test_unhealthy_fixture_names_the_triggering_metric_and_value(self):
+        # build_multi_sprint_report(with_gitlab=True) genuinely has
+        # load_pct=26.67% (under-committed vs SMA5) and a 50% pipeline
+        # success rate — verified triggers, not invented.
+        report = build_multi_sprint_report(with_gitlab=True)
+        ctx: dict = {}
+        rh.build_recommendations(report, ctx)
+        block = ctx["RECOMMENDATIONS_BLOCK"]
+        self.assertIn('class="reco-list"', block)
+        self.assertIn("Загрузка (load_pct) = 26.67%", block)
+        self.assertIn("Успешность пайплайнов (pipelines.success_rate_pct) = 50", block)
+        self.assertIn("<b>Действие:</b>", block)
+        # ranked by severity: load_pct (75) must appear before pipelines (65)
+        self.assertLess(block.index("Загрузка (load_pct)"), block.index("Успешность пайплайнов"))
+
+    def test_forecast_unavailable_is_the_highest_severity_trigger(self):
+        report = self._healthy_report()
+        report["forecast"] = None
+        report["forecast_error"] = "ERR_FORECAST_NOT_ENOUGH_DATA"
+        ctx: dict = {}
+        rh.build_recommendations(report, ctx)
+        block = ctx["RECOMMENDATIONS_BLOCK"]
+        self.assertIn("Прогноз не построен", block)
+        self.assertIn("ERR_FORECAST_NOT_ENOUGH_DATA", block)
+        # highest severity (90) — must be the first item when others also fire
+        first_item = block.index('<li class="reco-item')
+        self.assertEqual(block.index("Прогноз не построен"), block.index("reco-metric", first_item) + len('reco-metric">'))
+
+    def test_rework_share_trigger_names_no_individual(self):
+        report = self._healthy_report()
+        report["personal"] = {
+            "available": True,
+            "data": {"people": [
+                {"user": "alice", "rework_share": 0.5},
+                {"user": "bob", "rework_share": 0.1},
+                {"user": "carol", "rework_share": None},
+            ]},
+        }
+        ctx: dict = {}
+        rh.build_recommendations(report, ctx)
+        block = ctx["RECOMMENDATIONS_BLOCK"]
+        self.assertIn("Доля переработок", block)
+        self.assertIn("1 из 3 участников", block)
+        self.assertNotIn("alice", block)
+        self.assertNotIn("bob", block)
+        self.assertNotIn("carol", block)
+
+    def test_recommendations_are_capped_at_seven(self):
+        # Fire every trigger at once and confirm the list never exceeds the
+        # documented cap, even though 8 conditions are true here.
+        report = self._healthy_report()
+        report["forecast"] = None
+        report["forecast_error"] = "ERR_FORECAST_NOT_ENOUGH_DATA"
+        m = report["sprints"][1]["payload"]["metrics"]
+        m.update(performance_pct=50.0, load_pct=200.0, scope_change_pct=40.0,
+                  committed_items=10, scope_removed_items=5)
+        report["engineering"] = {
+            "available": True,
+            "data": {
+                "pipelines": {"count": 10, "failed": 8, "success_rate_pct": 20.0, "per_project": []},
+                "deployments": {"count": 0, "failed": 0, "success_rate_pct": None, "per_project": []},
+                "coverage": {"coverage_avg_pct": None, "sample_count": 0, "per_project": []},
+            },
+        }
+        report["personal"] = {
+            "available": True,
+            "data": {"people": [{"user": "a", "rework_share": 0.9}, {"user": "b", "rework_share": 0.1}]},
+        }
+        ctx: dict = {}
+        rh.build_recommendations(report, ctx)
+        block = ctx["RECOMMENDATIONS_BLOCK"]
+        self.assertEqual(block.count('<li class="reco-item'), rh._RECO_MAX)
+
+    def test_full_render_includes_a_reachable_printing_conclusions_section(self):
+        report = build_multi_sprint_report(with_gitlab=True)
+        out = rh.render_html(report)
+        self.assertIn('id="sec-conclusions"', out)
+        self.assertIn("Что можно улучшить", out)
+        self.assertIn("не вердикт по людям", out)
+        # outside every <div class="tabpanel" ...> gate, so it is visible
+        # regardless of which tab is selected — not a tab-body screen-reader
+        # trick, an unconditional section between </main> and <footer>.
+        self.assertLess(out.index("</main>"), out.index('id="sec-conclusions"'))
+        self.assertLess(out.index('id="sec-conclusions"'), out.index("<footer"))
 
 
 if __name__ == "__main__":

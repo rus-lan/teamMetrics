@@ -59,29 +59,55 @@ class CliError(Exception):
 # --------------------------------------------------------------------------
 
 
+# Russian help text for the flags add_pipeline_args() adds — that function is
+# shared with report_data.py's own (English, unchanged) CLI, so its `help=`
+# strings must stay English there. Overriding `action.help` by dest AFTER the
+# shared call keeps the flags themselves (name/type/default) single-sourced
+# while letting `run --help` read in Russian — see _translate_pipeline_help().
+_RU_PIPELINE_ARG_HELP = {
+    "sprint_ids": "Список id спринтов Jira через запятую (целевые спринты)",
+    "sprint_names": "Список названий спринтов через запятую (целевые спринты)",
+    "board_id": "Id доски — сверяется с доской найденных целевых спринтов",
+    "history": "Сколько предыдущих закрытых спринтов, кроме целевых, учитывать (0 -> по умолчанию 5, максимум 20)",
+    "seed": "Seed для Monte-Carlo прогноза (детерминированный)",
+    "target_items": "Целевое число задач для прогноза; по умолчанию — оставшиеся задачи активного спринта доски",
+    "iterations": "Число итераций Monte-Carlo (0 -> по умолчанию 5000)",
+    "config": f"Путь к JSON-файлу настроек (по умолчанию: ./{config_mod.DEFAULT_CONFIG_FILENAME}, если есть)",
+    "no_gitlab": "Пропустить обе вкладки GitLab, даже если заданы GITLAB_URL/GITLAB_TOKEN",
+    "no_personal": "Пропустить только вкладку персональных метрик; инженерная вкладка продолжит работать",
+}
+
+
+def _translate_pipeline_help(parser: argparse.ArgumentParser) -> None:
+    for action in parser._actions:
+        if action.dest in _RU_PIPELINE_ARG_HELP:
+            action.help = _RU_PIPELINE_ARG_HELP[action.dest]
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="jira-metrics", description="Jira/GitLab team metrics report tool")
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(prog="jira-metrics", description="Отчёты по метрикам команды из Jira и GitLab")
+    sub = parser.add_subparsers(dest="command", required=True, help="команда")
 
-    p_init = sub.add_parser("init", help="Write .jira-metrics.json into the current directory")
-    p_init.add_argument("--force", action="store_true", help="Overwrite an existing .jira-metrics.json")
+    p_init = sub.add_parser("init", help="Создать .jira-metrics.json в текущей папке")
+    p_init.add_argument("--force", action="store_true", help="Перезаписать существующий .jira-metrics.json")
 
-    p_check = sub.add_parser("check", help="Verify Jira/GitLab setup without building a report")
-    p_check.add_argument("--sprint-ids", default=None, help="Comma-separated Jira sprint ids to test resolution for")
-    p_check.add_argument("--sprint-names", default=None, help="Comma-separated Jira sprint names to test resolution for")
-    p_check.add_argument("--board-id", type=int, default=None, help="Board id to test resolution for")
-    p_check.add_argument("--config", default=None, help=f"Path to JSON config file (default: ./{config_mod.DEFAULT_CONFIG_FILENAME} if present)")
-    p_check.add_argument("--no-gitlab", action="store_true", help="Skip the GitLab checks even if GITLAB_URL/GITLAB_TOKEN are set")
+    p_check = sub.add_parser("check", help="Проверить настройку Jira/GitLab без построения отчёта")
+    p_check.add_argument("--sprint-ids", default=None, metavar="ID[,ID...]", help="Список id спринтов через запятую — проверить, что они находятся")
+    p_check.add_argument("--sprint-names", default=None, metavar="NAME[,NAME...]", help="Список названий спринтов через запятую — проверить, что они находятся")
+    p_check.add_argument("--board-id", type=int, default=None, metavar="ID", help="Id доски — проверить, что она находится")
+    p_check.add_argument("--config", default=None, metavar="ПУТЬ", help=f"Путь к JSON-файлу настроек (по умолчанию: ./{config_mod.DEFAULT_CONFIG_FILENAME}, если есть)")
+    p_check.add_argument("--no-gitlab", action="store_true", help="Пропустить проверки GitLab, даже если заданы GITLAB_URL/GITLAB_TOKEN")
 
-    p_run = sub.add_parser("run", help="Fetch from Jira/GitLab, compute metrics, write JSON + HTML")
+    p_run = sub.add_parser("run", help="Собрать данные из Jira/GitLab, посчитать метрики, записать JSON и HTML")
     config_mod.add_pipeline_args(p_run)
-    p_run.add_argument("--out", default=DEFAULT_RUN_HTML_OUT, help=f"HTML report output path (default: {DEFAULT_RUN_HTML_OUT})")
-    p_run.add_argument("--json-out", default=DEFAULT_RUN_JSON_OUT, help=f"JSON data output path (default: {DEFAULT_RUN_JSON_OUT})")
+    _translate_pipeline_help(p_run)
+    p_run.add_argument("--out", default=DEFAULT_RUN_HTML_OUT, metavar="ПУТЬ", help=f"Путь для HTML-отчёта (по умолчанию: {DEFAULT_RUN_HTML_OUT})")
+    p_run.add_argument("--json-out", default=DEFAULT_RUN_JSON_OUT, metavar="ПУТЬ", help=f"Путь для JSON-файла с данными (по умолчанию: {DEFAULT_RUN_JSON_OUT})")
 
-    p_report = sub.add_parser("report", help="Render HTML from an existing JSON data file — no network calls")
-    p_report.add_argument("report_json", nargs="?", default=None, help="Path to a report_data JSON file (default: stdin)")
-    p_report.add_argument("-o", "--out", default=None, help="Output HTML path (default: stdout)")
-    p_report.add_argument("--template", default=None, help="Override the template path (default: templates/report.html)")
+    p_report = sub.add_parser("report", help="Отрисовать HTML из уже полученного JSON-файла — без обращений к сети")
+    p_report.add_argument("report_json", nargs="?", default=None, metavar="ПУТЬ", help="Путь к JSON-файлу report_data (по умолчанию: stdin)")
+    p_report.add_argument("-o", "--out", default=None, metavar="ПУТЬ", help="Путь для HTML-файла (по умолчанию: stdout)")
+    p_report.add_argument("--template", default=None, metavar="ПУТЬ", help="Свой путь к шаблону (по умолчанию: templates/report.html)")
 
     return parser
 
@@ -94,7 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
 def cmd_init(args: argparse.Namespace, environ: dict, invocation: str) -> int:
     dest = Path(config_mod.DEFAULT_CONFIG_FILENAME)
     if dest.exists() and not args.force:
-        print(f"{dest} already exists; pass --force to overwrite", file=sys.stderr)
+        print(f"{dest} уже существует; укажите --force для перезаписи", file=sys.stderr)
         return 1
 
     example_text = EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
@@ -104,7 +130,7 @@ def cmd_init(args: argparse.Namespace, environ: dict, invocation: str) -> int:
     config_mod._check_no_token_keys(example_obj)
 
     dest.write_text(example_text, encoding="utf-8")
-    print(f"wrote {dest}")
+    print(f"файл {dest} создан")
 
     required = ["JIRA_BASE_URL", "JIRA_TOKEN"]
     optional = ["GITLAB_URL", "GITLAB_TOKEN"]
@@ -112,28 +138,28 @@ def cmd_init(args: argparse.Namespace, environ: dict, invocation: str) -> int:
     missing_optional = [name for name in optional if not (environ.get(name) or "").strip()]
 
     if missing_required:
-        print("still export (required):")
+        print("нужно ещё задать (обязательно):")
         for name in missing_required:
             print(f"  export {name}=...")
     else:
-        print("JIRA_BASE_URL/JIRA_TOKEN are already set")
+        print("JIRA_BASE_URL/JIRA_TOKEN уже заданы")
 
     if missing_optional and len(missing_optional) < len(optional):
         # Exactly one of GITLAB_URL/GITLAB_TOKEN set is a misconfiguration
         # (config.load_gitlab_env fails fast on it) — flag it now rather than
         # let the user discover it only at `check`/`run` time.
-        print("warning: only one of GITLAB_URL/GITLAB_TOKEN is set — both or neither is required:")
+        print("предупреждение: задан только один из GITLAB_URL/GITLAB_TOKEN — нужны либо оба, либо ни одного:")
         for name in missing_optional:
             print(f"  export {name}=...")
     elif missing_optional:
-        print("still export (optional — enables the Персональные/Инженерия tabs):")
+        print("нужно ещё задать (необязательно — включает вкладки «Персональные»/«Инженерия»):")
         for name in missing_optional:
             print(f"  export {name}=...")
     else:
-        print("GITLAB_URL/GITLAB_TOKEN are already set")
+        print("GITLAB_URL/GITLAB_TOKEN уже заданы")
 
-    print(f"edit {dest} for your team's story-point field, GitLab projects, and employees")
-    print(f"next: {invocation} check")
+    print(f"отредактируйте {dest}: поле story points, проекты GitLab, список сотрудников")
+    print(f"дальше: {invocation} check")
     return 0
 
 
@@ -147,8 +173,12 @@ class _CheckItem:
 
     def __init__(self, name: str, status: str, detail: str = ""):
         self.name = name
-        self.status = status  # "PASS" | "FAIL" | "SKIP"
+        self.status = status  # "PASS" | "FAIL" | "SKIP" (internal only, never printed)
         self.detail = detail
+
+
+# internal status -> printed Russian label
+_STATUS_LABEL_RU = {"PASS": "УСПЕШНО", "FAIL": "ОШИБКА", "SKIP": "ПРОПУЩЕНО"}
 
 
 def cmd_check(
@@ -164,31 +194,31 @@ def cmd_check(
     env = None
     try:
         env = config_mod.load_env(environ)
-        items.append(_CheckItem("jira env vars", "PASS", f"JIRA_BASE_URL={env.base_url}"))
+        items.append(_CheckItem("переменные окружения Jira", "PASS", f"JIRA_BASE_URL={env.base_url}"))
     except config_mod.ConfigError as e:
-        items.append(_CheckItem("jira env vars", "FAIL", str(e)))
+        items.append(_CheckItem("переменные окружения Jira", "FAIL", str(e)))
 
     # 2. GitLab env vars
     gitlab_env = None
     if args.no_gitlab:
-        items.append(_CheckItem("gitlab env vars", "SKIP", "--no-gitlab"))
+        items.append(_CheckItem("переменные окружения GitLab", "SKIP", "--no-gitlab"))
     else:
         try:
             gitlab_env = config_mod.load_gitlab_env(environ)
             if gitlab_env is None:
-                items.append(_CheckItem("gitlab env vars", "SKIP", "GITLAB_URL/GITLAB_TOKEN not set"))
+                items.append(_CheckItem("переменные окружения GitLab", "SKIP", "GITLAB_URL/GITLAB_TOKEN не заданы"))
             else:
-                items.append(_CheckItem("gitlab env vars", "PASS", f"GITLAB_URL={gitlab_env.base_url}"))
+                items.append(_CheckItem("переменные окружения GitLab", "PASS", f"GITLAB_URL={gitlab_env.base_url}"))
         except config_mod.ConfigError as e:
-            items.append(_CheckItem("gitlab env vars", "FAIL", str(e)))
+            items.append(_CheckItem("переменные окружения GitLab", "FAIL", str(e)))
 
     # 3. config file
     file_config = None
     try:
         file_config = config_mod.load_file_config(args.config)
-        items.append(_CheckItem("config file", "PASS", args.config or f"./{config_mod.DEFAULT_CONFIG_FILENAME} (or defaults)"))
+        items.append(_CheckItem("файл настроек", "PASS", args.config or f"./{config_mod.DEFAULT_CONFIG_FILENAME} (или значения по умолчанию)"))
     except config_mod.ConfigError as e:
-        items.append(_CheckItem("config file", "FAIL", str(e)))
+        items.append(_CheckItem("файл настроек", "FAIL", str(e)))
 
     # 4. Jira connectivity + auth
     field_ids: Optional[dict] = None
@@ -197,37 +227,37 @@ def cmd_check(
         try:
             jira_client_obj = jira_client_cls(env.base_url, env.token)
             field_ids = jira_client_obj.field_ids()
-            items.append(_CheckItem("jira connectivity", "PASS", f"{len(field_ids)} fields visible"))
+            items.append(_CheckItem("подключение к Jira", "PASS", f"видно полей: {len(field_ids)}"))
         except jc.JiraError as e:
-            items.append(_CheckItem("jira connectivity", "FAIL", str(e)))
+            items.append(_CheckItem("подключение к Jira", "FAIL", str(e)))
     else:
-        items.append(_CheckItem("jira connectivity", "SKIP", "jira env vars missing"))
+        items.append(_CheckItem("подключение к Jira", "SKIP", "переменные окружения Jira не заданы"))
 
     # 5. story-point field discoverable
     if field_ids is not None and file_config is not None:
         override = file_config.story_points_field_id
         if override:
             if override in field_ids.values():
-                items.append(_CheckItem("story point field", "PASS", f"using configured story_points_field_id {override}"))
+                items.append(_CheckItem("поле Story Points", "PASS", f"используется заданный story_points_field_id {override}"))
             else:
                 items.append(
-                    _CheckItem("story point field", "FAIL", f"configured story_points_field_id {override!r} not found among Jira fields")
+                    _CheckItem("поле Story Points", "FAIL", f"заданный story_points_field_id {override!r} не найден среди полей Jira")
                 )
         else:
             field_id, field_name, found = jc._first_field_id(field_ids, jc.STORY_POINTS_FIELD_NAMES)
             if found:
-                items.append(_CheckItem("story point field", "PASS", f"auto-detected {field_name!r} ({field_id})"))
+                items.append(_CheckItem("поле Story Points", "PASS", f"определено автоматически: {field_name!r} ({field_id})"))
             else:
-                items.append(_CheckItem("story point field", "FAIL", "no Story Points field found; set story_points_field_id in the config file"))
+                items.append(_CheckItem("поле Story Points", "FAIL", "поле Story Points не найдено; укажите story_points_field_id в файле настроек"))
     else:
-        items.append(_CheckItem("story point field", "SKIP", "jira connectivity/config check did not pass"))
+        items.append(_CheckItem("поле Story Points", "SKIP", "проверка подключения к Jira/файла настроек не пройдена"))
 
     # 6. named sprints / board resolvable (only if the user asked to check one)
     sprint_ids_raw = (args.sprint_ids or "").strip()
     sprint_names_raw = (args.sprint_names or "").strip()
     if sprint_ids_raw or sprint_names_raw or args.board_id is not None:
         if jira_client_obj is None:
-            items.append(_CheckItem("sprint/board resolution", "SKIP", "jira connectivity check did not pass"))
+            items.append(_CheckItem("поиск спринта/доски", "SKIP", "проверка подключения к Jira не пройдена"))
         else:
             try:
                 sprint_ids = [int(x.strip()) for x in sprint_ids_raw.split(",") if x.strip()]
@@ -235,49 +265,49 @@ def cmd_check(
                 if sprint_ids or sprint_names:
                     targets = report_data._resolve_target_sprints(jira_client_obj, sprint_ids, sprint_names)
                     resolved_board_id = targets[0].board_id
-                    detail = ", ".join(f"{s.name!r} (#{s.id})" for s in targets) + f", board {resolved_board_id}"
+                    detail = ", ".join(f"{s.name!r} (#{s.id})" for s in targets) + f", доска {resolved_board_id}"
                     if args.board_id is not None and args.board_id != resolved_board_id:
                         items.append(
                             _CheckItem(
-                                "sprint/board resolution",
+                                "поиск спринта/доски",
                                 "FAIL",
-                                f"--board-id {args.board_id} does not match resolved board {resolved_board_id}",
+                                f"--board-id {args.board_id} не совпадает с найденной доской {resolved_board_id}",
                             )
                         )
                     else:
-                        items.append(_CheckItem("sprint/board resolution", "PASS", detail))
+                        items.append(_CheckItem("поиск спринта/доски", "PASS", detail))
                 else:
                     board = jira_client_obj.board(args.board_id)
-                    items.append(_CheckItem("sprint/board resolution", "PASS", f"board {board.id} ({board.name!r})"))
+                    items.append(_CheckItem("поиск спринта/доски", "PASS", f"доска {board.id} ({board.name!r})"))
             except (jc.JiraError, report_data.ReportError) as e:
-                items.append(_CheckItem("sprint/board resolution", "FAIL", str(e)))
+                items.append(_CheckItem("поиск спринта/доски", "FAIL", str(e)))
     else:
-        items.append(_CheckItem("sprint/board resolution", "SKIP", "no --sprint-ids/--sprint-names/--board-id given"))
+        items.append(_CheckItem("поиск спринта/доски", "SKIP", "не заданы --sprint-ids/--sprint-names/--board-id"))
 
     # 7. GitLab connectivity + auth
     gitlab_client_obj = None
     if args.no_gitlab:
-        items.append(_CheckItem("gitlab connectivity", "SKIP", "--no-gitlab"))
+        items.append(_CheckItem("подключение к GitLab", "SKIP", "--no-gitlab"))
     elif gitlab_env is None:
-        items.append(_CheckItem("gitlab connectivity", "SKIP", "GitLab not configured"))
+        items.append(_CheckItem("подключение к GitLab", "SKIP", "GitLab не настроен"))
     else:
         try:
             gitlab_client_obj = gitlab_client_cls(gitlab_env.base_url, gitlab_env.token)
             user = gitlab_client_obj.current_user()
-            items.append(_CheckItem("gitlab connectivity", "PASS", f"authenticated as {user.get('username', '?')!r}"))
+            items.append(_CheckItem("подключение к GitLab", "PASS", f"выполнена аутентификация как {user.get('username', '?')!r}"))
         except glc.GitLabError as e:
-            items.append(_CheckItem("gitlab connectivity", "FAIL", str(e)))
+            items.append(_CheckItem("подключение к GitLab", "FAIL", str(e)))
             gitlab_client_obj = None
 
     # 8. configured GitLab projects resolvable
     if args.no_gitlab:
-        items.append(_CheckItem("gitlab projects", "SKIP", "--no-gitlab"))
+        items.append(_CheckItem("проекты GitLab", "SKIP", "--no-gitlab"))
     elif gitlab_client_obj is None:
-        items.append(_CheckItem("gitlab projects", "SKIP", "gitlab connectivity check did not pass"))
+        items.append(_CheckItem("проекты GitLab", "SKIP", "проверка подключения к GitLab не пройдена"))
     elif file_config is None:
-        items.append(_CheckItem("gitlab projects", "SKIP", "config file check did not pass"))
+        items.append(_CheckItem("проекты GitLab", "SKIP", "проверка файла настроек не пройдена"))
     elif not file_config.gitlab_projects:
-        items.append(_CheckItem("gitlab projects", "SKIP", "no gitlab.projects configured"))
+        items.append(_CheckItem("проекты GitLab", "SKIP", "в gitlab.projects ничего не задано"))
     else:
         # Same per-project shape as gitlab_client.fetch_team_data()'s
         # skipped_projects ({"project","code","message"} dicts) — read the
@@ -295,18 +325,18 @@ def cmd_check(
                     skipped.append({"project": proj_path, "code": "NOT_FOUND", "message": "project id not returned"})
             if skipped:
                 detail = "; ".join(f"{s['project']} [{s['code'] or 'ERR'}]: {s['message']}" for s in skipped)
-                items.append(_CheckItem("gitlab projects", "FAIL", detail))
+                items.append(_CheckItem("проекты GitLab", "FAIL", detail))
             else:
-                items.append(_CheckItem("gitlab projects", "PASS", f"{len(file_config.gitlab_projects)}/{len(file_config.gitlab_projects)} resolve"))
+                items.append(_CheckItem("проекты GitLab", "PASS", f"найдено проектов: {len(file_config.gitlab_projects)}/{len(file_config.gitlab_projects)}"))
         except glc.GitLabError as e:
             # AUTH_FAILED mid-loop (token revoked between item 7 and here) —
             # mirrors fetch_team_data(), which lets AUTH_FAILED propagate
             # rather than folding it into skipped_projects.
-            items.append(_CheckItem("gitlab projects", "FAIL", str(e)))
+            items.append(_CheckItem("проекты GitLab", "FAIL", str(e)))
 
     ok = True
     for item in items:
-        line = f"[{item.status}] {item.name}"
+        line = f"[{_STATUS_LABEL_RU[item.status]}] {item.name}"
         if item.detail:
             line += f" — {item.detail}"
         print(line)
@@ -335,7 +365,7 @@ def cmd_run(
     try:
         run_cfg = config_mod.build_run_config_from_args(pipeline_ns, environ)
     except config_mod.ConfigError as e:
-        print(f"config error: {e}", file=sys.stderr)
+        print(f"ошибка настройки: {e}", file=sys.stderr)
         return 2
 
     client = jira_client_cls(run_cfg.env.base_url, run_cfg.env.token)
@@ -363,7 +393,7 @@ def cmd_run(
             include_personal=not run_cfg.no_personal,
         )
     except (report_data.ReportError, jc.JiraError, glc.GitLabError) as e:
-        print(f"error: {e}", file=sys.stderr)
+        print(f"ошибка: {e}", file=sys.stderr)
         return 1
 
     json_text = json.dumps(report, ensure_ascii=False, indent=2)
@@ -374,8 +404,8 @@ def cmd_run(
     html_path = Path(args.out)
     html_path.write_text(html_text, encoding="utf-8")
 
-    print(f"JSON data written to {json_path}")
-    print(f"HTML report written to {html_path}")
+    print(f"файл с данными JSON записан: {json_path}")
+    print(f"HTML-отчёт записан: {html_path}")
     return 0
 
 
@@ -388,8 +418,8 @@ def _check_schema_version(report: dict) -> None:
     got = report.get("schema_version")
     if got not in SUPPORTED_SCHEMA_VERSIONS:
         raise CliError(
-            f"report JSON schema_version {got!r} is not supported by this tool "
-            f"(supported: {sorted(SUPPORTED_SCHEMA_VERSIONS)}); regenerate the JSON with `run` or report_data.py"
+            f"schema_version {got!r} в JSON-файле не поддерживается этой версией инструмента "
+            f"(поддерживается: {sorted(SUPPORTED_SCHEMA_VERSIONS)}); пересоздайте JSON командой `run` или report_data.py"
         )
 
 
@@ -405,7 +435,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     try:
         _check_schema_version(report)
     except CliError as e:
-        print(f"error: {e}", file=sys.stderr)
+        print(f"ошибка: {e}", file=sys.stderr)
         return 1
 
     template_path = Path(args.template) if args.template else None
@@ -413,7 +443,7 @@ def cmd_report(args: argparse.Namespace) -> int:
 
     if args.out:
         Path(args.out).write_text(html_text, encoding="utf-8")
-        print(f"HTML report written to {args.out}")
+        print(f"HTML-отчёт записан: {args.out}")
     else:
         sys.stdout.write(html_text)
     return 0
@@ -423,10 +453,42 @@ def cmd_report(args: argparse.Namespace) -> int:
 # top-level dispatch
 # --------------------------------------------------------------------------
 
+# A launcher that execs the real script by absolute path (e.g. install.sh's
+# ~/.local/bin/jira-metrics wrapper — needed because a symlink would break
+# this script's own __file__-based self-location) loses the short name the
+# user actually typed: sys.argv[0] becomes that absolute path. Setting this
+# env var lets such a launcher tell cli.py what name to print in hints
+# instead of trusting argv[0]. See _resolve_invocation_name().
+INVOCATION_NAME_ENV_VAR = "JIRA_METRICS_BIN"
+
+
+def _resolve_invocation_name(candidate: Optional[str], environ: dict) -> str:
+    """Never returns an absolute path — a printed hint is something the user
+    should be able to retype, not the launcher's internal exec target.
+
+    Priority: an explicit override (JIRA_METRICS_BIN) > a relative candidate
+    (git checkout: `scripts/jira-metrics`, or the friendly `python3 -m
+    jira_metrics` string __main__.py passes) printed as-is > the short
+    conventional name `jira-metrics` for an absolute path or nothing at all.
+    """
+    override = (environ.get(INVOCATION_NAME_ENV_VAR) or "").strip()
+    if override:
+        return override
+
+    if candidate and not os.path.isabs(candidate):
+        return candidate
+
+    if candidate:
+        basename = os.path.basename(candidate)
+        if basename:
+            return basename
+
+    return "jira-metrics"
+
 
 def main(argv: Optional[list] = None, environ: Optional[dict] = None, invocation: Optional[str] = None) -> int:
     environ = environ if environ is not None else os.environ
-    invocation = invocation or (sys.argv[0] if sys.argv else "jira-metrics")
+    invocation = _resolve_invocation_name(invocation or (sys.argv[0] if sys.argv else None), environ)
 
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -439,7 +501,7 @@ def main(argv: Optional[list] = None, environ: Optional[dict] = None, invocation
         return cmd_run(args, environ)
     if args.command == "report":
         return cmd_report(args)
-    parser.error(f"unknown command {args.command!r}")
+    parser.error(f"неизвестная команда {args.command!r}")
     return 2  # pragma: no cover - argparse.error() already exits
 
 

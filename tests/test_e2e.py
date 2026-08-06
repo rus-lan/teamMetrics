@@ -90,6 +90,22 @@ from fixtures.http_fake import FakeOpener
 
 UTC = timezone.utc
 
+# Russian check-item names/status labels cli.py prints — mirrors the same
+# constants in test_cli.py; kept local here too since these two test modules
+# don't import each other (each is a standalone `unittest discover` module).
+ITEM_JIRA_ENV = "переменные окружения Jira"
+ITEM_GITLAB_ENV = "переменные окружения GitLab"
+ITEM_CONFIG_FILE = "файл настроек"
+ITEM_JIRA_CONN = "подключение к Jira"
+ITEM_STORY_POINT = "поле Story Points"
+ITEM_SPRINT_BOARD = "поиск спринта/доски"
+ITEM_GITLAB_CONN = "подключение к GitLab"
+ITEM_GITLAB_PROJECTS = "проекты GitLab"
+
+PASS = "[УСПЕШНО]"
+FAIL = "[ОШИБКА]"
+SKIP = "[ПРОПУЩЕНО]"
+
 # --------------------------------------------------------------------------
 # Environment / config / process helpers
 # --------------------------------------------------------------------------
@@ -307,10 +323,10 @@ class CheckE2ETests(unittest.TestCase):
             )
             self.assertEqual(code, 0, out + err)
             for name in (
-                "jira env vars", "gitlab env vars", "config file", "jira connectivity",
-                "story point field", "sprint/board resolution", "gitlab connectivity", "gitlab projects",
+                ITEM_JIRA_ENV, ITEM_GITLAB_ENV, ITEM_CONFIG_FILE, ITEM_JIRA_CONN,
+                ITEM_STORY_POINT, ITEM_SPRINT_BOARD, ITEM_GITLAB_CONN, ITEM_GITLAB_PROJECTS,
             ):
-                self.assertIn(f"[PASS] {name}", out, out)
+                self.assertIn(f"{PASS} {name}", out, out)
             self.assertNotIn(wire.JIRA_VALID_TOKEN, out + err)
             self.assertNotIn(wire.GITLAB_VALID_TOKEN, out + err)
 
@@ -320,7 +336,7 @@ class CheckE2ETests(unittest.TestCase):
             environ = _good_environ(JIRA_TOKEN="totally-wrong-jira-token")
             code, out, err = _run_main(["check"], environ=environ)
             self.assertNotEqual(code, 0)
-            self.assertIn("[FAIL] jira connectivity", out)
+            self.assertIn(f"{FAIL} {ITEM_JIRA_CONN}", out)
             self.assertNotIn("totally-wrong-jira-token", out + err)
             self.assertNotIn(wire.JIRA_VALID_TOKEN, out + err)
 
@@ -330,7 +346,7 @@ class CheckE2ETests(unittest.TestCase):
             environ = _good_environ(GITLAB_TOKEN="totally-wrong-gitlab-token")
             code, out, err = _run_main(["check"], environ=environ)
             self.assertNotEqual(code, 0)
-            self.assertIn("[FAIL] gitlab connectivity", out)
+            self.assertIn(f"{FAIL} {ITEM_GITLAB_CONN}", out)
             self.assertNotIn("totally-wrong-gitlab-token", out + err)
             self.assertNotIn(wire.GITLAB_VALID_TOKEN, out + err)
 
@@ -340,7 +356,7 @@ class CheckE2ETests(unittest.TestCase):
             _write_config(tmp, gitlab_projects=["team/this-project-does-not-exist"])
             code, out, err = _run_main(["check"], environ=_good_environ())
             self.assertNotEqual(code, 0)
-            self.assertIn("[FAIL] gitlab projects", out)
+            self.assertIn(f"{FAIL} {ITEM_GITLAB_PROJECTS}", out)
             self.assertIn("team/this-project-does-not-exist", out)
             self.assertIn("NOT_FOUND", out)
             self.assertNotIn(wire.JIRA_VALID_TOKEN, out + err)
@@ -350,7 +366,7 @@ class CheckE2ETests(unittest.TestCase):
         with _tempdir(), _forbidden_opener():
             code, out, err = _run_main(["check"], environ={})
             self.assertNotEqual(code, 0)
-            self.assertIn("[FAIL] jira env vars", out)
+            self.assertIn(f"{FAIL} {ITEM_JIRA_ENV}", out)
             self.assertNotIn(wire.JIRA_VALID_TOKEN, out + err)
             self.assertNotIn(wire.GITLAB_VALID_TOKEN, out + err)
 
@@ -480,7 +496,7 @@ class RunAndReportE2ETests(unittest.TestCase):
             environ = _good_environ(GITLAB_TOKEN="revoked-gitlab-token")
             code, out, err = _do_run(tmp, opener, environ=environ)
             self.assertNotEqual(code, 0, "a revoked GitLab token must fail the whole run, not degrade silently")
-            self.assertIn("error", (out + err).lower())
+            self.assertIn("ошибка", (out + err).lower())
             self.assertFalse((tmp / cli.DEFAULT_RUN_JSON_OUT).exists(), "must not write a report on a genuine GitLab fault")
             self.assertFalse((tmp / cli.DEFAULT_RUN_HTML_OUT).exists())
             self.assertNotIn("revoked-gitlab-token", out + err)

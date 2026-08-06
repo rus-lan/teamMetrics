@@ -1658,16 +1658,16 @@ def build_person_card(inner: str, person: dict) -> str:
     merge_val = EM_DASH if person["mr_count"] == 0 else f'{fmt_num(person["mr_merge_rate_pct"], 2)}<span class="u">%</span>'
     merge_extra = '<span class="warn-badge">WARN_DIVISION_BY_ZERO</span>' if person["mr_count"] == 0 else ""
     stat_merge = (
-        f'<div class="stat" data-status="{merge_status}"><div class="stat-label">merge rate</div>'
+        f'<div class="stat" data-status="{merge_status}"><div class="stat-label">доля смерженных</div>'
         f'<div class="stat-value">{merge_val}</div>{f"<div style=margin-top:5px>{merge_extra}</div>" if merge_extra else ""}</div>'
     )
 
     cycle_val = person.get("mr_cycle_time_median_hours")
     cycle_status = "none" if cycle_val is None else ""
     cycle_display = f'{fmt_num(cycle_val, 1)}<span class="u">ч</span>' if cycle_val is not None else EM_DASH
-    stat_cycle = f'<div class="stat" data-status="{cycle_status}"><div class="stat-label">MR cycle med</div><div class="stat-value">{cycle_display}</div></div>'
+    stat_cycle = f'<div class="stat" data-status="{cycle_status}"><div class="stat-label">медиана цикла MR</div><div class="stat-value">{cycle_display}</div></div>'
 
-    stat_tasks = f'<div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">{fmt_int(person["tasks_done"])}</div></div>'
+    stat_tasks = f'<div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">{fmt_int(person["tasks_done"])}</div></div>'
 
     # m8 — rework_share and pipeline_success_rate reach no token on the
     # person table (its column budget is already tuned for print fit), but
@@ -1677,12 +1677,12 @@ def build_person_card(inner: str, person: dict) -> str:
     rework_share = person.get("rework_share")
     rework_status = "none" if rework_share is None else ""
     rework_display = f'{fmt_num(rework_share * 100, 1)}<span class="u">%</span>' if rework_share is not None else EM_DASH
-    stat_rework = f'<div class="stat" data-status="{rework_status}"><div class="stat-label">rework share</div><div class="stat-value">{rework_display}</div></div>'
+    stat_rework = f'<div class="stat" data-status="{rework_status}"><div class="stat-label">доля переработок</div><div class="stat-value">{rework_display}</div></div>'
 
     pipeline_rate = person.get("pipeline_success_rate")
     pipeline_status = "none" if pipeline_rate is None else ""
     pipeline_display = f'{fmt_num(pipeline_rate * 100, 1)}<span class="u">%</span>' if pipeline_rate is not None else EM_DASH
-    stat_pipeline = f'<div class="stat" data-status="{pipeline_status}"><div class="stat-label">pipeline success</div><div class="stat-value">{pipeline_display}</div></div>'
+    stat_pipeline = f'<div class="stat" data-status="{pipeline_status}"><div class="stat-label">успешность пайплайнов</div><div class="stat-value">{pipeline_display}</div></div>'
 
     sprints = person.get("sprints") or []
     bars_svg = build_person_bar_svg(sprints)
@@ -1851,6 +1851,169 @@ def build_footer(report: dict, ctx: dict) -> None:
 
 
 # ==========================================================================
+# Closing recommendations — every item derived from a measured value
+# ==========================================================================
+
+# (severity, css_class) — higher severity sorts first; capped to _RECO_MAX.
+_RECO_MAX = 7
+
+
+def _reco_item(severity: int, css_class: str, metric_line: str, signal_line: str, action_line: str) -> tuple:
+    return (severity, css_class, metric_line, signal_line, action_line)
+
+
+def build_recommendations(report: dict, ctx: dict) -> None:
+    """Every recommendation names the metric and the value that triggered
+    it — no generic advice. Ranked by severity, capped at _RECO_MAX. Per-
+    person triggers (rework_share) are reported as a team-level count, never
+    naming an individual — this block is read by managers about named
+    people and must not become a stick."""
+    idx, primary = primary_target(report)
+    m = primary["payload"]["metrics"]
+    sprints = report["sprints"]
+    flags = div0_flags(sprints, idx)
+    items: list = []
+
+    # -- forecast unavailable (real module constant: needs >=10 non-zero
+    #    daily throughput points, not our heuristic) --------------------
+    if report.get("forecast") is None:
+        code = report.get("forecast_error")
+        reason = _FORECAST_ERROR_TEXT.get(code, code or "неизвестная причина")
+        items.append(_reco_item(
+            90, "bad",
+            "Прогноз не построен",
+            f"{reason} Порог модуля (ERR_FORECAST_NOT_ENOUGH_DATA) — не наша эвристика.",
+            "Нужно больше закрытых спринтов в истории с ненулевой дневной пропускной способностью; "
+            "пока их меньше 10, честнее явно писать, что прогноза нет, чем строить его на скудных данных.",
+        ))
+
+    # -- throughput CV > 50% (real module constant) --------------------
+    forecast = report.get("forecast")
+    if forecast is not None and "WARN_THROUGHPUT_UNSTABLE" in (forecast.get("warnings") or []):
+        cv = forecast["throughput_cv_pct"]
+        items.append(_reco_item(
+            85, "bad",
+            f"Недельный коэффициент вариации пропускной способности = {fmt_num(cv, 1)}%",
+            "Превышает порог модуля 50% (WARN_THROUGHPUT_UNSTABLE, не наша эвристика) — поток нестабилен от недели к неделе.",
+            "Не приводить p50 как единственное число во внешних обязательствах; смотреть на весь диапазон "
+            "p50–p95 и разбираться, что вызывает скачки пропускной способности.",
+        ))
+
+    # -- performance_pct critical (our heuristic: <80%) -----------------
+    if not flags["performance_pct"] and _status_band(m["performance_pct"], 95, 80, higher_is_better=True) == "bad":
+        items.append(_reco_item(
+            80, "bad",
+            f"Выполнение обязательств (performance_pct) = {fmt_num(m['performance_pct'], 2)}%",
+            "Критично: ниже 80% (эвристика этого отчёта) — в спринт взяли больше, чем смогли поставить.",
+            f"На следующем планировании ориентироваться на SMA5 ({fmt_num(m['velocity_sma5_sp'], 1)} SP), "
+            "а не на оптимистичную оценку объёма.",
+        ))
+
+    # -- load_pct critical, either direction (our heuristic) ------------
+    if not flags["load_pct"] and _load_status(m["load_pct"]) == "bad":
+        direction = "перегружена" if m["load_pct"] > 100.0 else "недогружена"
+        items.append(_reco_item(
+            75, "bad",
+            f"Загрузка (load_pct) = {fmt_num(m['load_pct'], 2)}%",
+            f"Критично: вне диапазона 85–110% (эвристика этого отчёта) — команда {direction} "
+            "относительно своей же скользящей средней.",
+            "Пересмотреть объём при планировании следующего спринта относительно фактической SMA5, "
+            "а не повторять цифру этого спринта.",
+        ))
+
+    # -- scope_change_pct critical (our heuristic: >25%) -----------------
+    if not flags["scope_change_pct"] and _status_band(m["scope_change_pct"], 10, 25, higher_is_better=False) == "bad":
+        items.append(_reco_item(
+            70, "bad",
+            f"Изменение объёма (scope_change_pct) = {fmt_num(m['scope_change_pct'], 2)}%",
+            "Критично: выше 25% (эвристика этого отчёта) — скоуп заметно менялся уже после старта спринта.",
+            "Ужесточить приём изменений в спринт после старта, либо завести отдельный процесс триажа "
+            "для срочных добавлений вместо добавления напрямую в текущий спринт.",
+        ))
+
+    # -- pipeline success rate / coverage (engineering) ------------------
+    eng = report.get("engineering") or {}
+    if eng.get("available"):
+        pipe = eng["data"]["pipelines"]
+        if pipe["count"] > 0 and _status_band(pipe["success_rate_pct"], 90, 80, higher_is_better=True) == "bad":
+            items.append(_reco_item(
+                65, "bad",
+                f"Успешность пайплайнов (pipelines.success_rate_pct) = {fmt_num(pipe['success_rate_pct'], 2)}%",
+                "Критично: ниже 80% (эвристика этого отчёта) — часть времени разработки уходит на нестабильный CI.",
+                "Разобрать упавшие пайплайны на систематические причины (флаки тестов, инфраструктура), "
+                "а не только на конкретный коммит, который их вызвал.",
+            ))
+
+        cov = eng["data"]["coverage"]
+        cov_val = cov.get("coverage_avg_pct")
+        if cov_val is None:
+            items.append(_reco_item(
+                50, "warn",
+                "Покрытие тестами (coverage.coverage_avg_pct) не измерено ни для одного проекта",
+                "sample_count = 0 — это отсутствие данных, а не факт хорошего покрытия.",
+                "Подключить отчёт о покрытии хотя бы для основных репозиториев, прежде чем делать выводы о качестве тестов.",
+            ))
+        elif _status_band(cov_val, 80, 65, higher_is_better=True) == "bad":
+            items.append(_reco_item(
+                50, "warn",
+                f"Покрытие тестами (coverage.coverage_avg_pct) = {fmt_num(cov_val, 2)}%",
+                "Критично: ниже 65% (эвристика этого отчёта).",
+                "Закладывать время на тесты в бэклог наравне с новым функционалом, а не по остаточному принципу.",
+            ))
+
+    # -- scope_removed_items high relative to committed (our heuristic) --
+    committed_items = m["committed_items"]
+    removed_items = m["scope_removed_items"]
+    if committed_items > 0 and (removed_items / committed_items) > 0.15:
+        pct = removed_items / committed_items * 100.0
+        items.append(_reco_item(
+            55, "warn",
+            f"Убрано из спринта (scope_removed_items) = {fmt_int(removed_items)} из {fmt_int(committed_items)} взятых ({fmt_num(pct, 0)}%)",
+            "Выше 15% (наша эвристика, порога в модуле нет) — часть того, что взяли на планировании, снимается по ходу спринта.",
+            "На ретро разобрать, почему эти задачи не подошли уже после старта — недооценка при "
+            "планировании или изменившиеся приоритеты, а не переносить решение на следующий спринт молча.",
+        ))
+
+    # -- rework_share high (per-person trigger, reported team-level only) -
+    personal = report.get("personal") or {}
+    if personal.get("available"):
+        people = personal["data"]["people"]
+        high_rework = [p for p in people if p.get("rework_share") is not None and p["rework_share"] > 0.3]
+        if high_rework and people:
+            worst = max(p["rework_share"] for p in high_rework)
+            items.append(_reco_item(
+                60, "warn",
+                f"Доля переработок (rework_share) выше 30% у {len(high_rework)} из {len(people)} участников "
+                f"(максимум {fmt_num(worst * 100.0, 0)}%)",
+                "Работа заметно возвращается в разработку после ревью или QA — приведено как счёт по команде, "
+                "не как оценка конкретных людей.",
+                "Разобрать конкретные случаи на командном ретро, а не в этом отчёте; проверить, не связано "
+                "ли с недостаточной детализацией задач на момент взятия в спринт.",
+            ))
+
+    items.sort(key=lambda item: -item[0])
+    items = items[:_RECO_MAX]
+
+    if not items:
+        ctx["RECOMMENDATIONS_BLOCK"] = (
+            '<div class="reco-none">По этому прогону явных проблем не видно — измеренные значения '
+            "не вышли за пороги, описанные выше по тексту отчёта.</div>"
+        )
+        return
+
+    html_items = []
+    for _severity, css_class, metric_line, signal_line, action_line in items:
+        html_items.append(
+            f'<li class="reco-item reco-{css_class}">'
+            f'<div class="reco-metric">{esc(metric_line)}</div>'
+            f'<div class="reco-signal">{esc(signal_line)}</div>'
+            f'<div class="reco-action"><b>Действие:</b> {esc(action_line)}</div>'
+            "</li>"
+        )
+    ctx["RECOMMENDATIONS_BLOCK"] = '<ol class="reco-list">' + "".join(html_items) + "</ol>"
+
+
+# ==========================================================================
 # Top level
 # ==========================================================================
 
@@ -1943,6 +2106,7 @@ def render_html(report: dict, *, template_path: Optional[Path] = None) -> str:
         else ""
     )
     build_footer(report, ctx)
+    build_recommendations(report, ctx)
 
     text = blank_block_markers(text, ("LOOP_KPI_TILES_START", "LOOP_KPI_TILES_END"), ("LOOP_FOOTER_PARAMS_START", "LOOP_FOOTER_PARAMS_END"))
     text = blank_block_markers(text, ("LOOP_HEATMAP_COLS_START", "LOOP_HEATMAP_COLS_END"), ("LOOP_TABLE_HEATMAP_COLS_START", "LOOP_TABLE_HEATMAP_COLS_END"))

@@ -1,8 +1,15 @@
-.PHONY: init check run report test
+.PHONY: install uninstall init check run report test
 
 # Convenience wrapper only — every target below just calls the real entry
-# point, scripts/jira-metrics. Nothing in this project depends on `make`
-# existing; run scripts/jira-metrics directly if you don't have it.
+# point, scripts/jira-metrics (or install.sh for install/uninstall).
+# Nothing in this project depends on `make` existing; run scripts/jira-metrics
+# or ./install.sh directly if you don't have it.
+
+install:
+	./install.sh
+
+uninstall:
+	./install.sh --uninstall
 
 init:
 	scripts/jira-metrics init

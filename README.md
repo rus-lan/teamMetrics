@@ -1,156 +1,390 @@
 # jira-metrics-report
 
-A self-contained HTML sprint/team-metrics report, built from Jira (and optionally GitLab) data
-by two stdlib-only Python 3.9+ CLIs. No third-party packages, no build step, no server — the
-output is one `.html` file with zero external references that opens from `file://` forever.
+Строит один самодостаточный HTML-отчёт по метрикам спринта и команды на основе данных Jira
+(и опционально GitLab). Два CLI на чистом stdlib Python 3.9+ — ни одной сторонней зависимости,
+никакой сборки, никакого сервера. На выходе — один файл `.html` без единой внешней ссылки,
+который открывается через `file://` вечно, хоть офлайн.
 
-It is a **Python port of two internal tools**: the Jira sprint-metrics engine
-(`internal/app/board/{translate,service,report,forecast}.go`, see
-`.research/jira-metrics-source/SPEC.md`) and the GitLab-derived personal/engineering-metrics
-skill (`.research/ai-integration-metrics/SPEC.md`). The numbers, thresholds, and even quirks
-(field semantics that differ between the two tabs, an "off by one" in `throughput_items` vs
-`delivered_items`, the exact percentile/histogram math of the forecast) are reproduced
-**deliberately** — this is a faithful port, not a redesign. See `.research/*/SPEC.md` for the
-line-by-line source citations, and `.research/design/DESIGN-NOTES.md` for the rendering
-decisions (status thresholds, delta directions, the four empty-value states) layered on top in
-`render_html.py`.
+Это **Python-порт двух внутренних инструментов**: движка спринт-метрик Jira
+(`internal/app/board/{translate,service,report,forecast}.go`, см.
+`.research/jira-metrics-source/SPEC.md`) и скилла персональных/инженерных метрик на данных GitLab
+(`.research/ai-integration-metrics/SPEC.md`). Цифры, пороги и даже особенности (разное значение
+одних и тех же полей на двух вкладках, «сдвиг на единицу» между `throughput_items` и
+`delivered_items`, точная арифметика перцентилей/гистограммы в прогнозе) воспроизведены
+**намеренно** — это честный порт, а не редизайн. Построчные ссылки на источник — в
+`.research/*/SPEC.md`, решения по вёрстке (пороги статусов, направление дельт, четыре состояния
+пустого значения), добавленные поверх в `render_html.py`, — в `.research/design/DESIGN-NOTES.md`.
 
-For how to trigger and run this as an agent skill, see [`SKILL.md`](./SKILL.md).
+Как запускать это как навык (skill) агента — см. [`SKILL.md`](./SKILL.md).
 
-## What it produces
+## Что нужно, прежде чем начинать
 
-Three tabs in one HTML file:
+1. **Python 3.9 или новее** — только стандартная библиотека, ставить ничего не нужно.
+2. **Personal Access Token в Jira** (обязательно). Инструмент шлёт его как
+   `Authorization: Bearer <token>` — это токен формата Jira Server/Data Center, а не
+   почта+API-токен Jira Cloud (Basic Auth). Получить: аватар профиля в правом верхнем углу →
+   **Personal Access Tokens** (в русской локализации — «Личные токены доступа») → **Create token**.
+   Если ваша Jira — облачная (`*.atlassian.net`) и токенов такого вида в профиле нет, сначала
+   уточните у администратора Jira, включена ли поддержка PAT — без неё это конкретный инструмент
+   не подключится.
+3. **Токен GitLab со scope `read_api`** (опционально — без него отчёт всё равно строится, просто
+   без вкладок «Персональные» и «Инженерия»). Получить: аватар профиля → **Edit profile** →
+   **Access Tokens**, поставить галку `read_api`, создать.
+4. Знать **имя или id спринта** в Jira, по которому нужен отчёт (`--sprint-names "Sprint 42"` или
+   `--sprint-ids 4821`).
 
-| Tab | Source | Content |
+Ни один из токенов никогда не хранится в конфиг-файле — только в переменных окружения (подробнее
+ниже).
+
+## Что вы получите
+
+Три вкладки в одном HTML-файле:
+
+| Вкладка | Источник данных | Содержимое |
 |---|---|---|
-| «Команда» | Jira only | Sprint KPIs, board history table, burndown chart, per-issue heatmap, Monte-Carlo forecast |
-| «Персональные» | GitLab + Jira | Per-person MR and task metrics: merge rate, cycle time, diff size, defect rate, rework, story points, per-sprint breakdown |
-| «Инженерия» | GitLab only | Team-level pipelines, deployments, test coverage, per-project breakdown |
+| «Команда» | только Jira | KPI спринта, таблица истории по доскам, бёрндаун, хитмап по задачам, Monte-Carlo-прогноз |
+| «Персональные» | GitLab + Jira | Метрики каждого разработчика по MR и задачам: доля смёрженных MR, cycle time, размер диффа, доля дефектов, rework, story points, разбивка по спринтам |
+| «Инженерия» | только GitLab | Командные пайплайны, деплои, покрытие тестами, разбивка по проектам |
 
-Tabs 2 and 3 are optional — without `GITLAB_URL`/`GITLAB_TOKEN` (or with `--no-gitlab`), they
-report themselves unavailable with a reason and tab 1 still renders normally.
+Вкладки 2 и 3 опциональны — без `GITLAB_URL`/`GITLAB_TOKEN` (или с флагом `--no-gitlab`) они
+показывают себя недоступными с указанием причины, а вкладка 1 при этом строится как обычно.
 
-A demo report generated from an offline fixture (no network) lives at
-[`demo/report-demo.html`](./demo/report-demo.html) — open it in a browser to see every tab
-exercised at once, including the edge cases (missing GitLab diff stats, a skipped project,
-several DIV0 metrics, a forecast that succeeds).
+Демо-отчёт, собранный из офлайн-фикстуры (без единого сетевого запроса), лежит в
+[`demo/report-demo.html`](./demo/report-demo.html) — откройте его в браузере, чтобы увидеть все три
+вкладки сразу, включая крайние случаи (у кого-то нет статистики по диффам GitLab, один проект
+пропущен, несколько метрик поделены на ноль, прогноз построился успешно).
 
-## Install
+## Установка
 
-Either works — this is a plain Python package, not something that needs "installing":
+Есть три способа пользоваться этим инструментом — выберите свой ниже. Все три ставятся одним и тем
+же скриптом, [`install.sh`](./install.sh), который:
 
-- **As a Claude Code / opencode skill**: copy this whole directory (`SKILL.md`, `README.md`,
-  `scripts/`, `templates/`, `.jira-metrics.example.json`, `demo/`) into
-  `~/.claude/skills/jira-metrics-report/`. Both assistants auto-discover skills from
-  `~/.claude/skills/`.
-- **Run the scripts directly**: clone/copy this repo and invoke `scripts/jira-metrics` (or the two
-  engines it wraps, `scripts/jira_metrics/report_data.py` / `render_html.py`) with `python3` — no
-  install step, no virtualenv needed (stdlib only).
+- проверяет, что `python3 >= 3.9` есть в системе, и если нет — печатает по-русски, что именно
+  поставить;
+- копирует репозиторий в `~/.claude/skills/jira-metrics-report/` — это один и тот же каталог,
+  который читают **и Claude Code, и opencode**, так что установка одна на оба;
+- кладёт команду `jira-metrics` в `~/.local/bin/`, создавая эту папку при необходимости, и если её
+  ещё нет в `PATH` — печатает точную строку, которую нужно добавить в `~/.bashrc` или `~/.zshrc`
+  (скрипт сам определяет вашу оболочку);
+- безопасно перезапускать сколько угодно раз — просто обновит уже установленную копию;
+- поддерживает `./install.sh --uninstall`, чтобы всё убрать.
 
-## Quickstart
+Работает на **Linux и macOS**. На **Windows** нативно не работает — нужен **WSL** или **Git Bash**;
+внутри них `install.sh` ведёт себя точно так же, как на Linux.
+
+`Makefile` в репозитории — это необязательная обёртка для тех, кто предпочитает `make run
+ARGS="..."` вместо прямого вызова: она просто вызывает то же самое `scripts/jira-metrics` (или, для
+установки, `install.sh`). Ничего в проекте от `make` не зависит.
+
+Выберите раздел ниже под свой сценарий.
+
+## Способ 1 — Claude Code
+
+Клонируйте или скачайте этот репозиторий, затем из его корня:
 
 ```sh
-scripts/jira-metrics init                         # writes ./.jira-metrics.json, lists missing env vars
+./install.sh
+```
 
+Это установит навык в `~/.claude/skills/jira-metrics-report/` — Claude Code подхватывает навыки из
+этой папки автоматически, перезапускать сессию не нужно (если сессия уже открыта — начните новый
+запрос).
+
+Дальше просто попросите Claude Code словами — навык триггерится на фразы вроде «отчёт по метрикам
+команды», «отчёт по спринту», «метрики спринта», «покажи бёрндаун», «прогноз по спринту», или на
+английские «jira metrics report», «sprint report», «burndown report». Либо вызовите его явно:
+
+```
+/jira-metrics-report
+```
+
+Дальше агент сам спросит (или возьмёт из переменных окружения, если они уже экспортированы) базовый
+URL и токен Jira, имя/id нужного спринта, и при желании данные GitLab — и сам выполнит
+`init`/`check`/`run` из `SKILL.md`, а в конце покажет путь к готовому `report.html`.
+
+## Способ 2 — opencode
+
+opencode читает те же навыки из `~/.claude/skills/` — отдельной установки не требуется, тот же
+`install.sh` ставит его для обоих инструментов сразу:
+
+```sh
+./install.sh
+```
+
+Внутри opencode вызовите навык явно тем же именем:
+
+```
+/jira-metrics-report
+```
+
+или опишите задачу естественным языком («нужен отчёт по метрикам за Sprint 42») — opencode находит
+навык по тем же триггер-фразам, что и Claude Code (см. `description` в [`SKILL.md`](./SKILL.md)).
+Дальнейшее поведение идентично Способу 1.
+
+## Способ 3 — без агента, в терминале
+
+Этот раздел самодостаточен: следуйте ему по порядку на чистой машине, ничего больше читать не нужно.
+
+**1. Установите инструмент.**
+
+```sh
+git clone <адрес-этого-репозитория> team-metrics
+cd team-metrics
+./install.sh
+```
+
+В конце `install.sh` напечатает, что установлено, и (если нужно) строку для добавления в
+`~/.bashrc`/`~/.zshrc`. Если он предупредил про `PATH` — добавьте строку, затем откройте новый
+терминал (или выполните `source ~/.bashrc` / `source ~/.zshrc`).
+
+**2. Создайте конфиг и задайте токены.**
+
+```sh
+cd /путь/к/вашему/проекту   # любая рабочая папка, где будет жить .jira-metrics.json и report.html
+jira-metrics init
+```
+
+Команда напечатает:
+
+```
+файл .jira-metrics.json создан
+нужно ещё задать (обязательно):
+  export JIRA_BASE_URL=...
+  export JIRA_TOKEN=...
+нужно ещё задать (необязательно — включает вкладки «Персональные»/«Инженерия»):
+  export GITLAB_URL=...
+  export GITLAB_TOKEN=...
+отредактируйте .jira-metrics.json: поле story points, проекты GitLab, список сотрудников
+дальше: jira-metrics check
+```
+
+Экспортируйте то, что она попросила:
+
+```sh
 export JIRA_BASE_URL="https://jira.example.com"
-export JIRA_TOKEN="<your Jira personal access token>"
-export GITLAB_URL="https://gitlab.example.com"          # optional — enables tabs 2/3
-export GITLAB_TOKEN="<your GitLab PAT, read_api scope>"  # optional
-
-# edit .jira-metrics.json: projects/employees/story_points_field_id for your team
-
-scripts/jira-metrics check --sprint-names "Sprint 42"   # verifies setup, builds nothing
-
-scripts/jira-metrics run --sprint-names "Sprint 42" --history 5
-# -> writes ./report.json and ./report.html, prints both paths
+export JIRA_TOKEN="<ваш Jira PAT>"
+export GITLAB_URL="https://gitlab.example.com"          # опционально — включает вкладки 2/3
+export GITLAB_TOKEN="<ваш GitLab PAT, scope read_api>"   # опционально
 ```
 
-`report.html` is the finished file — open it in any browser, `file://` included, no network
-required after this point. To re-render it later from the saved JSON, with no network at all:
+При желании откройте `.jira-metrics.json` и поправьте `gitlab.projects`, `employees`,
+`story_points_field_id` под вашу команду (описание каждого ключа — в разделе
+[«Конфигурационный файл»](#конфигурационный-файл--каждый-ключ) ниже). Этот шаг можно пропустить —
+отчёт по вкладке «Команда» соберётся и с конфигом по умолчанию.
+
+**3. Проверьте, что всё подключается, прежде чем строить отчёт.**
 
 ```sh
-scripts/jira-metrics report report.json -o report.html
+jira-metrics check --sprint-names "Sprint 42"
 ```
 
-`init`/`check`/`run`/`report` are the four subcommands of one dispatcher,
-`scripts/jira-metrics` (equivalently `python3 -m jira_metrics <command>` run from `scripts/`) —
-see [`SKILL.md`](./SKILL.md#cli-reference--jira-metrics-dispatcher-the-command-an-agent-should-run)
-for the full reference, or call the two underlying engines directly (`scripts/jira_metrics/
-report_data.py` / `render_html.py`, see SKILL.md's "Direct script invocation") if you want the
-JSON and HTML steps fully decoupled.
+Печатает по одной строке `[УСПЕШНО]`/`[ОШИБКА]`/`[ПРОПУЩЕНО]` на каждую проверку (переменные
+окружения, конфиг-файл, доступность и авторизация Jira, поле Story Points, разрешение
+спринта/доски, доступность и авторизация GitLab) и завершается ненулевым кодом, если хоть одна
+`[ОШИБКА]`. Это самый дешёвый способ понять, что именно сломано, ещё до попытки построить отчёт.
+Например, с заглушкой вместо настоящего `JIRA_BASE_URL` и `--no-gitlab` вывод выглядит так — по
+этому же виду вы поймёте, что именно чинить, и с настоящими токенами:
 
-## Environment variables (secrets — never the config file)
+```
+[УСПЕШНО] переменные окружения Jira — JIRA_BASE_URL=https://jira.example.invalid
+[ПРОПУЩЕНО] переменные окружения GitLab — --no-gitlab
+[УСПЕШНО] файл настроек — ./.jira-metrics.json (или значения по умолчанию)
+[ОШИБКА] подключение к Jira — jira: FieldIDs: <urlopen error [Errno -2] Name or service not known>
+[ПРОПУЩЕНО] поле Story Points — проверка подключения к Jira/файла настроек не пройдена
+[ОШИБКА] поиск спринта/доски — jira: SprintPicker: <urlopen error [Errno -2] Name or service not known>
+[ПРОПУЩЕНО] подключение к GitLab — --no-gitlab
+[ПРОПУЩЕНО] проекты GitLab — --no-gitlab
+```
 
-| Variable | Required | Sent as |
+**4. Постройте отчёт.**
+
+```sh
+jira-metrics run --sprint-names "Sprint 42" --history 5
+```
+
+Печатает:
+
+```
+файл с данными JSON записан: report.json
+HTML-отчёт записан: report.html
+```
+
+Откройте `report.html` в любом браузере — файл полностью самодостаточен, сеть после этого шага не
+нужна.
+
+**5. Позже — перерисовать HTML без единого сетевого запроса** (если поменяли шаблон или просто
+хотите пересобрать HTML из уже сохранённого `report.json`):
+
+```sh
+jira-metrics report report.json -o report.html
+```
+
+Полный список команд и флагов — в [`SKILL.md`](./SKILL.md#cli-справочник--диспетчер-jira-metrics-команда-которую-должен-запускать-агент).
+
+## Переменные окружения (секреты — никогда не в конфиг-файле)
+
+| Переменная | Обязательна | Как отправляется |
 |---|---|---|
-| `JIRA_BASE_URL` | yes | — |
-| `JIRA_TOKEN` | yes | `Authorization: Bearer <token>` |
-| `GITLAB_URL` | only to enable tabs 2/3 | — |
-| `GITLAB_TOKEN` | only to enable tabs 2/3 | `PRIVATE-TOKEN: <token>` header, `read_api` scope |
+| `JIRA_BASE_URL` | да | — |
+| `JIRA_TOKEN` | да | заголовок `Authorization: Bearer <token>` |
+| `GITLAB_URL` | только чтобы включить вкладки 2/3 | — |
+| `GITLAB_TOKEN` | только чтобы включить вкладки 2/3 | заголовок `PRIVATE-TOKEN: <token>`, нужен scope `read_api` |
 
-`config.py` actively rejects a `.jira-metrics.json` that contains any key shaped like a secret
-(`token`, `jira_token`, `gitlab_token`, `pat`, `password`, `secret`, checked recursively one
-level into nested objects) — the run aborts before any network call if one is found. There is
-no supported way to put a credential in the config file; it only ever comes from the
-environment.
+**Токены приходят только из переменных окружения — и никогда не из конфиг-файла.** `config.py`
+активно отклоняет `.jira-metrics.json`, если в нём встречается ключ, похожий на секрет (`token`,
+`pat`, `password`, `secret` и похожие подстроки, проверяется рекурсивно на один уровень вложенности)
+— запуск падает ещё до первого сетевого запроса. Положить токен в конфиг-файл штатно нельзя.
 
-## JSON config file — every key
+`GITLAB_URL`/`GITLAB_TOKEN` — либо обе заданы, либо ни одной. Если задана только одна, это считается
+ошибкой конфигурации и `check`/`run` завершатся с ошибкой сразу, а не после долгой попытки
+подключения.
 
-Optional. Default path is `./.jira-metrics.json`; override with `--config <path>`. See
-[`.jira-metrics.example.json`](./.jira-metrics.example.json) for a filled-in example — JSON has
-no comments, so the explanation of each key lives here instead.
+## Конфигурационный файл — каждый ключ
 
-| Key | Type | Default | Meaning |
+Опционален. Путь по умолчанию — `./.jira-metrics.json`, переопределяется флагом `--config <path>`.
+Готовый пример — [`.jira-metrics.example.json`](./.jira-metrics.example.json); JSON не поддерживает
+комментарии, поэтому объяснение каждого ключа — здесь.
+
+| Ключ | Тип | По умолчанию | Что означает |
 |---|---|---|---|
-| `status_map` | `{status name: category}` | `{}` | Overrides which status *category* (`new` \| `indeterminate` \| `done` \| `cancelled`) a raw Jira status name maps to. Case-insensitive lookup. Precedence: `cancelled_statuses` > `status_map` > Jira's own `/rest/api/2/status` catalog > unmapped (renders as `WARN_STATUS_UNMAPPED`, a distinct heatmap color) |
-| `cancelled_statuses` | `[string]` | `["Cancelled", "Отменено", "Rejected"]` | Status names treated as category `cancelled` — takes precedence over `status_map` and the Jira catalog |
-| `story_points_field_id` | `string` | `""` (auto-detect by field name) | Jira custom field id for Story Points (e.g. `"customfield_10016"`). Set this only if auto-detection by field name picks the wrong custom field on your instance |
-| `history_sprint_count` | `int` | `0` → resolves to `5`, clamped to `20` | How many previous **closed** sprints (besides the targets) feed the board history table and velocity trend on tab 1. Overridden by `--history` on the CLI when that flag is non-zero |
-| `gitlab.projects` | `[string]` | `[]` | GitLab project paths (`namespace/project`), fetched for tabs 2/3. A project that fails to resolve (renamed, deleted, no access) is recorded in `gitlab_fetch_issues.skipped_projects` — the run does not abort for it |
-| `employees` | `[string]` | `[]` | GitLab usernames to fetch merge requests for — the *same* string is used to match a Jira `assignee` on the personal tab, so this list should be each person's shared GitLab/Jira login |
-| `jira.final_statuses` | `[string]` | `["To Test", "Ready for Initial Test", "Done", "Closed", "Ready to Deploy"]` | Named Jira statuses the **personal-metrics tab** (tab 2 only) treats as "done" — first entry into any of these marks a task complete for that tab. Tab 1 never uses this list; it uses Jira's own `done` status category instead (see "How the metrics are defined" below) |
+| `status_map` | `{имя статуса: категория}` | `{}` | Переопределяет, к какой *категории* статуса (`new` \| `indeterminate` \| `done` \| `cancelled`) относится «сырое» имя статуса Jira. Поиск без учёта регистра. Приоритет: `cancelled_statuses` > `status_map` > собственный каталог Jira `/rest/api/2/status` > статус не сопоставлен (в хитмапе — отдельный цвет и код `WARN_STATUS_UNMAPPED`) |
+| `cancelled_statuses` | `[строка]` | `["Cancelled", "Отменено", "Rejected"]` | Имена статусов, которые считаются категорией `cancelled` — имеют приоритет над `status_map` и каталогом Jira |
+| `story_points_field_id` | `строка` | `""` (автоопределение по имени поля) | Id кастомного поля Jira для Story Points (например, `"customfield_10016"`). Указывайте только если автоопределение находит не то поле на вашем инстансе |
+| `history_sprint_count` | `int` | `0` → превращается в `5`, максимум `20` | Сколько предыдущих **закрытых** спринтов (кроме целевых) попадает в таблицу истории по доскам и тренд velocity на вкладке «Команда». Переопределяется флагом `--history`, если он не ноль |
+| `gitlab.projects` | `[строка]` | `[]` | Пути проектов GitLab (`namespace/project`), из которых собираются данные для вкладок 2/3. Проект, который не удалось разрешить (переименован, удалён, нет доступа), попадает в `gitlab_fetch_issues.skipped_projects` — весь запуск из-за него не падает |
+| `employees` | `[строка]` | `[]` | Логины GitLab, для которых собираются merge request'ы — та же строка используется для сопоставления с полем `assignee` в Jira на «Персональной» вкладке, так что в списке должен быть общий логин человека в GitLab и Jira |
+| `jira.final_statuses` | `[строка]` | `["To Test", "Ready for Initial Test", "Done", "Closed", "Ready to Deploy"]` | Именованные статусы Jira, которые **вкладка «Персональные»** (и только она) считает «сделано» — первое попадание в один из них закрывает задачу для этой вкладки. Вкладка «Команда» этот список не использует — она опирается на собственную категорию `done` Jira (см. «Что означают метрики» ниже) |
 
-## CLI reference
+## Что означают метрики
 
-Two levels, both documented in SKILL.md:
+Полные формулы, пороги и правила для крайних случаев живут в исходных спецификациях, а не
+дублируются здесь, чтобы не разъезжаться с кодом:
 
-- [`jira-metrics` dispatcher](./SKILL.md#cli-reference--jira-metrics-dispatcher-the-command-an-agent-should-run) —
-  `init`/`check`/`run`/`report`, the command surface described in Quickstart above.
-- [`report_data.py`/`render_html.py` direct flags](./SKILL.md#cli-reference--report_datapy-the-real-surface-read-configpy-before-inventing-a-flag) —
-  the full, verified flag table (`--sprint-ids`/`--sprint-names`, `--board-id`, `--history`,
-  `--seed`, `--target-items`, `--iterations`, `--config`, `--json`, `--out`, `--no-gitlab`,
-  `--no-personal`, plus `render_html.py`'s `report_json`/`-o`/`--template`) — identical to `run`'s
-  flags except `run`'s own `--out`/`--json-out` (HTML + JSON, not JSON-only).
-
-## How the metrics are defined
-
-Full formulas, thresholds, and edge-case rules live in the source specs, not duplicated here to
-avoid drift:
-
-- **Sprint metrics (tab 1)** — committed/delivered/scope-change SP and item counts, velocity,
-  SMA5, load %, closure %, the heatmap's status-category rules, the burndown model, and the
-  Monte-Carlo forecast (bootstrap over calendar daily throughput, nearest-rank percentiles):
-  `.research/jira-metrics-source/SPEC.md`.
-- **Personal + engineering metrics (tabs 2/3)** — MR merge rate, cycle time, diff size, defect
-  rate, rework, story points, per-sprint breakdown, and the team-level pipeline/deployment/
-  coverage rollups: `.research/ai-integration-metrics/SPEC.md`.
-- **Rendering decisions layered on top** — the good/warn/bad status thresholds (not present in
-  either backend — SPEC §7 is explicit that there is no KPI target classification in the data
-  layer, so the thresholds are a presentation-layer product decision), the delta-direction table
-  (which way is "good" per metric — `load_pct` is bad in *both* directions), and the four
-  distinct empty-value states (`DIV0` badge vs "no data" vs empty sample vs null-by-contract):
+- **Метрики спринта (вкладка «Команда»)** — committed/delivered/scope-change по SP и по числу
+  задач, velocity, SMA5, load %, closure %, правила категорий для хитмапа, модель бёрндауна,
+  Monte-Carlo-прогноз (бутстрап по календарному дневному throughput, перцентили методом
+  nearest-rank): `.research/jira-metrics-source/SPEC.md`.
+- **Персональные и инженерные метрики (вкладки 2/3)** — доля смёрженных MR, cycle time, размер
+  диффа, доля дефектов, rework, story points, разбивка по спринтам, командные показатели по
+  пайплайнам/деплоям/покрытию: `.research/ai-integration-metrics/SPEC.md`.
+- **Решения по вёрстке поверх данных** — пороги «норма/под наблюдением/критично» (в самих
+  бэкендах их нет — SPEC прямо говорит, что в слое данных нет никакой классификации KPI, так что
+  пороги — это решение уровня презентации), таблица направления дельт (в какую сторону изменение
+  считается хорошим — `load_pct` плох в обе стороны), четыре разных состояния «пустого» значения
+  (плашка `DIV0` vs «нет данных» vs пустая выборка vs `null` по контракту):
   `.research/design/DESIGN-NOTES.md`.
 
-Three cross-tab semantic divergences are worth knowing before comparing tab 1 and tab 2 numbers
-side by side — sprint attribution (membership intervals vs completion date), the definition of
-"done" (status category vs named final statuses), and story points (end-of-sprint-membership
-value vs current field value). The tool prints the exact wording to the user automatically
-(`semantics_notes` in the JSON report, rendered as a banner on tab 2); `SKILL.md` explains the
-WHY behind each one.
+### «Норма / под наблюдением / критично» — это НАША эвристика, не факт из данных
 
-## Troubleshooting
+Важно понимать эту границу, читая отчёт: у Jira- и GitLab-движков **нет встроенной классификации
+KPI** — они отдают только сырые числа. Единственные два реальных порога, зашитых в саму логику
+(а не придуманных при вёрстке), — это:
 
-See [`SKILL.md`'s Troubleshooting section](./SKILL.md#troubleshooting) — covers a revoked
-GitLab token (fails loudly, by design), a skipped GitLab project (disclosed, not fatal), a
-degraded forecast (reason shown, report still renders), and the division-by-zero contract (`0` +
-`DIV0` badge, never a crash or `NaN`).
+- **доступность прогноза**: Monte-Carlo-прогноз строится только если в истории набралось **≥ 10
+  ненулевых дней throughput** (иначе `forecast_error = ERR_FORECAST_NOT_ENOUGH_DATA`, панель
+  прогноза показывает «недоступно» с этой причиной, но остальной отчёт строится как обычно);
+- **предупреждение о нестабильности**: если коэффициент вариации недельного throughput
+  превышает **50%**, добавляется предупреждение `WARN_THROUGHPUT_UNSTABLE`.
+
+Все остальные пороги «норма/под наблюдением/критично», которые видны в цвете плашек отчёта, —
+продуктовое решение, добавленное на этапе вёрстки HTML (`render_html.py`), а не факт из Jira/GitLab:
+
+| Метрика | норма | под наблюдением | критично |
+|---|---|---|---|
+| `performance_pct` | ≥ 95 | 80–95 | < 80 |
+| `load_pct` | 85–110 | 70–85 или 110–125 | < 70 или > 125 |
+| `scope_change_pct` | ≤ 10 | 10–25 | > 25 |
+| `closure_pct_items` / `closure_pct_sp` | ≥ 85 | 70–85 | < 70 |
+| `velocity_sp`, `throughput_items` | ≥ базовой линии | в пределах −10% от базовой линии | ниже этого |
+| ENG `pipelines.success_rate_pct` | ≥ 90 | 80–90 | < 80 |
+| ENG `coverage.coverage_avg_pct` | ≥ 80 | 65–80 | < 65 |
+| person `mr_merge_rate_pct` | ≥ 85 | 65–85 | < 65 |
+
+Базовая линия — это `velocity_sma5_sp` для velocity, средняя по доске для остального. Хотите свои
+пороги — меняйте их прямо в `render_html.py`, это чисто вопрос вёрстки, не данных.
+
+Направление «выше — лучше» тоже не всегда очевидно: `scope_change_pct` растёт — это плохо (в спринт
+добавили лишнего), `defect_rate_pct`/cycle time/`rework_total` растут — тоже плохо (ниже — лучше), а
+`load_pct` плох **в обе стороны** — и перегруз, и недогруз команды одинаково плохи.
+
+## Почему вкладки «Команда» и «Персональные» могут не совпадать
+
+Вкладка «Команда» приходит только из движка спринт-метрик Jira. Вкладки «Персональные» и
+«Инженерия» — из GitLab, дополненного тем же самым проходом по Jira, который уже сделала вкладка
+«Команда» (второго обращения к Jira нет). Обе вкладки отвечают на похожие вопросы («сколько задач
+мы закрыли?»), но **по-разному их определяют** — если сравнивать голые цифры между вкладками не
+зная этого, легко решить, что отчёт сам себе противоречит. Инструмент сам печатает точные различия
+пользователю как `semantics_notes` (русский текст) в JSON-отчёте и в баннере в начале вкладки
+«Персональные» — а вот почему они возникают:
+
+1. **Привязка к спринту.** Вкладка «Команда» относит задачу к спринту по *интервалам членства* в
+   поле Sprint (задача может входить и выходить из спринта несколько раз — Jira хранит это в
+   changelog). Вкладки «Персональные»/«Инженерия» относят задачу к спринту по тому, попадает ли её
+   *дата завершения* в календарные даты этого спринта. Одна и та же задача может законно попасть в
+   разные спринты по этим двум правилам.
+2. **Что считается «сделано».** Вкладка «Команда» считает задачу выполненной, если к концу спринта
+   её статус относится к категории `done` в самой Jira (за вычетом `cancelled_statuses`). Вкладка
+   «Персональные» считает задачу сделанной в момент *первого* попадания в один из *именованных*
+   финальных статусов из `jira.final_statuses` — по умолчанию туда входят и предрелизные статусы
+   вроде «To Test» и «Ready to Deploy», которые ещё не обязательно относятся к категории `done`.
+   Числа с двух вкладок не сходятся один в один, и сравнивать их напрямую нельзя.
+3. **День throughput.** Вкладка «Команда» использует дату *последнего* перехода в статус категории
+   `done` внутри спринта (переоткрытая и затем повторно исправленная задача считается один раз, по
+   финальному исправлению). Вкладка «Персональные» использует дату *первого* перехода в финальный
+   статус. На переоткрытой задаче эти две даты могут разойтись на недели.
+4. **Story points.** Вкладка «Команда» проигрывает историю изменений поля Story Points и берёт
+   значение на момент, когда задача *покинула* спринт. Вкладка «Персональные» берёт *текущее*
+   значение поля на момент сбора данных. Переоценка задачи уже после закрытия спринта сдвигает сумму
+   SP на вкладке «Персональные», но никогда — на вкладке «Команда»; из-за одного этого суммы SP по
+   одному и тому же набору задач могут не совпасть даже на двух вкладках одного отчёта.
+
+## Устранение неполадок
+
+- **`jira-metrics: command not found`.** `~/.local/bin` не в `PATH` — `install.sh` печатает точную
+  строку `export PATH="$HOME/.local/bin:$PATH"` для вашего `~/.bashrc`/`~/.zshrc` в конце установки;
+  добавьте её и откройте новый терминал. Быстрая проверка без правки rc-файла:
+  `export PATH="$HOME/.local/bin:$PATH"` в текущей сессии.
+- **Токен недействителен.** Невалидный или отозванный токен Jira/GitLab — это `[ОШИБКА]` в
+  `jira-metrics check` с кодом вроде `ERR_JIRA_AUTH_FAILED` (Jira) или `AUTH_FAILED` (GitLab).
+  Отозванный **GitLab**-токен намеренно валит **весь** запуск `run` с ненулевым кодом выхода и
+  `error: ...` в stderr — а не тихо превращается в пустые вкладки «Персональные»/«Инженерия»:
+  отозванный токен не должен выглядеть как чистый нулевой отчёт. Пересоздайте токен и повторите.
+- **Спринт не найден.** `jira-metrics check --sprint-names "..."` или `run` падает с
+  `sprint not found: '...'` — проверьте точное имя спринта в Jira (сравнение без учёта регистра, но
+  без опечаток) или используйте `--sprint-ids` вместо `--sprint-names`, если знаете id.
+- **Проект GitLab переименован или удалён.** Это не фатальная ошибка — такой проект попадает в
+  `gitlab_fetch_issues.skipped_projects` (путь проекта + код ошибки + сообщение), отображается в
+  подвале готового отчёта, а остальные настроенные проекты обрабатываются как обычно. Поправьте путь
+  в `gitlab.projects` в `.jira-metrics.json`, когда будет удобно.
+- **Прогноза нет — «недостаточно истории».** Monte-Carlo-прогноз требует **≥ 10 ненулевых дней**
+  throughput за последние (до 5) закрытых спринтов, либо активного спринта, из которого можно взять
+  `--target-items`. Если условие не выполняется — `forecast_error` объясняет причину, панель
+  прогноза на вкладке «Команда» показывает «недоступно», а весь остальной отчёт строится как обычно
+  (это не сбой). Добавьте историю (больше закрытых спринтов) или передайте `--target-items` вручную.
+- **`jira-metrics run`/`check` вообще не запускается.** Сначала `jira-metrics check` — это
+  дешёвый способ понять, что именно сломано (переменные окружения, конфиг-файл, доступность Jira,
+  поле Story Points, разрешение спринта/доски, доступность GitLab), не дожидаясь, пока на этом же
+  месте упадёт полноценный `run`.
+- **Деление на ноль не роняет отчёт и никогда не показывает `NaN`.** Любое отношение в отчёте (KPI в
+  процентах, личные показатели MR/задач, инженерные success rate) при нулевом знаменателе
+  показывается как буквальный `0` с плашкой `DIV0` и кодом `WARN_DIVISION_BY_ZERO:<метрика>` — это
+  осознанно отличается от трёх других состояний пустого значения (источник вообще не вернул
+  статистику, среднее/медиана по действительно пустой выборке, значение `null` по контракту) — см.
+  `.research/design/DESIGN-NOTES.md §5`.
+
+## Устройство CLI
+
+Есть два уровня, оба описаны в `SKILL.md`:
+
+- [диспетчер `jira-metrics`](./SKILL.md#cli-справочник--диспетчер-jira-metrics-команда-которую-должен-запускать-агент) —
+  `init`/`check`/`run`/`report`, тот же набор команд, что и в разделе «Способ 3» выше.
+- [флаги `report_data.py`/`render_html.py` напрямую](./SKILL.md#cli-справочник--report_datapy-настоящая-поверхность-читайте-configpy-прежде-чем-придумывать-флаг) —
+  полная, выверенная по коду таблица флагов (`--sprint-ids`/`--sprint-names`, `--board-id`,
+  `--history`, `--seed`, `--target-items`, `--iterations`, `--config`, `--json`, `--out`,
+  `--no-gitlab`, `--no-personal`, плюс `report_json`/`-o`/`--template` у `render_html.py`) —
+  такой же набор, что и у `run`, кроме собственных `--out`/`--json-out` у `run` (HTML + JSON, а не
+  только JSON).
+
+Прямой вызов двух движков (без диспетчера `jira-metrics`) тоже работает — `python3
+scripts/jira_metrics/report_data.py` / `render_html.py`; см. раздел «Прямой вызов скриптов» в
+`SKILL.md`, если нужно разделить шаги «получить JSON» и «отрисовать HTML».

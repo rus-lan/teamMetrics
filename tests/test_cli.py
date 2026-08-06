@@ -27,6 +27,21 @@ from jira_metrics import model, report_data
 
 from helpers import dt
 
+# Russian check-item names/status labels cli.py prints — kept as constants so
+# a wording change in cli.py breaks exactly one place per test file.
+ITEM_JIRA_ENV = "переменные окружения Jira"
+ITEM_GITLAB_ENV = "переменные окружения GitLab"
+ITEM_CONFIG_FILE = "файл настроек"
+ITEM_JIRA_CONN = "подключение к Jira"
+ITEM_STORY_POINT = "поле Story Points"
+ITEM_SPRINT_BOARD = "поиск спринта/доски"
+ITEM_GITLAB_CONN = "подключение к GitLab"
+ITEM_GITLAB_PROJECTS = "проекты GitLab"
+
+PASS = "[УСПЕШНО]"
+FAIL = "[ОШИБКА]"
+SKIP = "[ПРОПУЩЕНО]"
+
 
 def _jira_env():
     return {"JIRA_BASE_URL": "https://jira.example.com", "JIRA_TOKEN": "jira-secret-token"}
@@ -67,7 +82,7 @@ class InitCommandTests(unittest.TestCase):
             self.assertEqual(code, 0)
             dest = tmp / config_mod.DEFAULT_CONFIG_FILENAME
             self.assertTrue(dest.exists())
-            self.assertIn("wrote .jira-metrics.json", out)
+            self.assertIn("файл .jira-metrics.json создан", out)
             self.assertIn("jira-metrics check", out)
 
     def test_written_config_matches_bundled_example(self):
@@ -92,7 +107,7 @@ class InitCommandTests(unittest.TestCase):
             dest.write_text('{"marker": "do-not-touch"}', encoding="utf-8")
             code, out, _err = _run_main(["init", "--force"], environ={})
             self.assertEqual(code, 0)
-            self.assertIn("wrote", out)
+            self.assertIn("создан", out)
             written = json.loads(dest.read_text(encoding="utf-8"))
             self.assertNotEqual(written, {"marker": "do-not-touch"})
 
@@ -118,15 +133,15 @@ class InitCommandTests(unittest.TestCase):
             environ = {**_jira_env(), **_gitlab_env()}
             code, out, _err = _run_main(["init"], environ=environ)
             self.assertEqual(code, 0)
-            self.assertIn("already set", out)
-            self.assertNotIn("still export", out)
+            self.assertIn("уже заданы", out)
+            self.assertNotIn("нужно ещё задать", out)
 
     def test_half_configured_gitlab_env_warns(self):
         with _tempdir():
             environ = {**_jira_env(), "GITLAB_URL": "https://gitlab.example.com"}
             code, out, _err = _run_main(["init"], environ=environ)
             self.assertEqual(code, 0)
-            self.assertIn("only one of GITLAB_URL/GITLAB_TOKEN", out)
+            self.assertIn("только один из GITLAB_URL/GITLAB_TOKEN", out)
 
 
 # --------------------------------------------------------------------------
@@ -201,51 +216,51 @@ class CheckCommandTests(unittest.TestCase):
     def test_all_pass_exits_zero(self):
         code, out, _err = self._check([], {**_jira_env(), **_gitlab_env()})
         self.assertEqual(code, 0)
-        self.assertIn("[PASS] jira env vars", out)
-        self.assertIn("[PASS] jira connectivity", out)
-        self.assertIn("[PASS] story point field", out)
-        self.assertIn("[PASS] gitlab connectivity", out)
+        self.assertIn(f"{PASS} {ITEM_JIRA_ENV}", out)
+        self.assertIn(f"{PASS} {ITEM_JIRA_CONN}", out)
+        self.assertIn(f"{PASS} {ITEM_STORY_POINT}", out)
+        self.assertIn(f"{PASS} {ITEM_GITLAB_CONN}", out)
 
     def test_missing_jira_env_vars_fails(self):
         code, out, _err = self._check([], {})
         self.assertEqual(code, 1)
-        self.assertIn("[FAIL] jira env vars", out)
+        self.assertIn(f"{FAIL} {ITEM_JIRA_ENV}", out)
 
     def test_no_gitlab_flag_skips_gitlab_checks(self):
         code, out, _err = self._check(["--no-gitlab"], _jira_env())
         self.assertEqual(code, 0)
-        self.assertIn("[SKIP] gitlab env vars", out)
-        self.assertIn("[SKIP] gitlab connectivity", out)
+        self.assertIn(f"{SKIP} {ITEM_GITLAB_ENV}", out)
+        self.assertIn(f"{SKIP} {ITEM_GITLAB_CONN}", out)
 
     def test_gitlab_not_configured_is_skip_not_fail(self):
         code, out, _err = self._check([], _jira_env())
         self.assertEqual(code, 0)
-        self.assertIn("[SKIP] gitlab env vars", out)
-        self.assertIn("[SKIP] gitlab connectivity", out)
+        self.assertIn(f"{SKIP} {ITEM_GITLAB_ENV}", out)
+        self.assertIn(f"{SKIP} {ITEM_GITLAB_CONN}", out)
 
     def test_half_configured_gitlab_env_fails(self):
         environ = {**_jira_env(), "GITLAB_URL": "https://gitlab.example.com"}
         code, out, _err = self._check([], environ)
         self.assertEqual(code, 1)
-        self.assertIn("[FAIL] gitlab env vars", out)
+        self.assertIn(f"{FAIL} {ITEM_GITLAB_ENV}", out)
 
     def test_jira_unreachable_fails(self):
         code, out, _err = self._check([], _jira_env(), jira_cls=_FailingJiraClient)
         self.assertEqual(code, 1)
-        self.assertIn("[FAIL] jira connectivity", out)
-        self.assertIn("[SKIP] story point field", out)
+        self.assertIn(f"{FAIL} {ITEM_JIRA_CONN}", out)
+        self.assertIn(f"{SKIP} {ITEM_STORY_POINT}", out)
 
     def test_gitlab_auth_failed_fails(self):
         code, out, _err = self._check([], {**_jira_env(), **_gitlab_env()}, gitlab_cls=_FailingGitLabClient)
         self.assertEqual(code, 1)
-        self.assertIn("[FAIL] gitlab connectivity", out)
+        self.assertIn(f"{FAIL} {ITEM_GITLAB_CONN}", out)
 
     def test_story_point_field_not_found_fails(self):
         code, out, _err = self._check(
             [], _jira_env(), jira_cls=lambda: _OKJiraClient(field_ids={"Summary": "summary"})
         )
         self.assertEqual(code, 1)
-        self.assertIn("[FAIL] story point field", out)
+        self.assertIn(f"{FAIL} {ITEM_STORY_POINT}", out)
 
     def test_configured_story_point_override_not_found_fails(self):
         with _tempdir() as tmp:
@@ -254,7 +269,7 @@ class CheckCommandTests(unittest.TestCase):
             )
             code, out, _err = self._check([], _jira_env(), jira_cls=lambda: _OKJiraClient(field_ids={"Summary": "summary"}))
         self.assertEqual(code, 1)
-        self.assertIn("[FAIL] story point field", out)
+        self.assertIn(f"{FAIL} {ITEM_STORY_POINT}", out)
 
     def test_sprint_id_resolves(self):
         sprint = jc.Sprint(id=100, name="Sprint 100", state="closed", board_id=1,
@@ -263,12 +278,12 @@ class CheckCommandTests(unittest.TestCase):
             ["--sprint-ids", "100"], _jira_env(), jira_cls=lambda: _OKJiraClient(sprints={100: sprint})
         )
         self.assertEqual(code, 0)
-        self.assertIn("[PASS] sprint/board resolution", out)
+        self.assertIn(f"{PASS} {ITEM_SPRINT_BOARD}", out)
 
     def test_sprint_id_not_found_fails(self):
         code, out, _err = self._check(["--sprint-ids", "999"], _jira_env(), jira_cls=lambda: _OKJiraClient())
         self.assertEqual(code, 1)
-        self.assertIn("[FAIL] sprint/board resolution", out)
+        self.assertIn(f"{FAIL} {ITEM_SPRINT_BOARD}", out)
 
     def test_board_id_mismatch_fails(self):
         sprint = jc.Sprint(id=100, name="Sprint 100", state="closed", board_id=1,
@@ -277,12 +292,12 @@ class CheckCommandTests(unittest.TestCase):
             ["--sprint-ids", "100", "--board-id", "999"], _jira_env(), jira_cls=lambda: _OKJiraClient(sprints={100: sprint})
         )
         self.assertEqual(code, 1)
-        self.assertIn("[FAIL] sprint/board resolution", out)
+        self.assertIn(f"{FAIL} {ITEM_SPRINT_BOARD}", out)
 
     def test_no_sprint_ref_given_is_skip(self):
         code, out, _err = self._check([], _jira_env())
         self.assertEqual(code, 0)
-        self.assertIn("[SKIP] sprint/board resolution", out)
+        self.assertIn(f"{SKIP} {ITEM_SPRINT_BOARD}", out)
 
     def test_output_never_contains_token(self):
         environ = {**_jira_env(), **_gitlab_env()}
@@ -295,7 +310,7 @@ class CheckCommandTests(unittest.TestCase):
     def test_no_gitlab_projects_configured_is_skip(self):
         code, out, _err = self._check([], {**_jira_env(), **_gitlab_env()})
         self.assertEqual(code, 0)
-        self.assertIn("[SKIP] gitlab projects", out)
+        self.assertIn(f"{SKIP} {ITEM_GITLAB_PROJECTS}", out)
 
     def test_configured_gitlab_projects_all_resolve(self):
         with _tempdir() as tmp:
@@ -307,8 +322,8 @@ class CheckCommandTests(unittest.TestCase):
                 gitlab_cls=lambda: _OKGitLabClient(project_ids={"team/a": 1, "team/b": 2}),
             )
         self.assertEqual(code, 0)
-        self.assertIn("[PASS] gitlab projects", out)
-        self.assertIn("2/2 resolve", out)
+        self.assertIn(f"{PASS} {ITEM_GITLAB_PROJECTS}", out)
+        self.assertIn("2/2", out)
 
     def test_unresolvable_gitlab_project_fails_with_readable_detail_not_a_stringified_dict(self):
         with _tempdir() as tmp:
@@ -320,7 +335,7 @@ class CheckCommandTests(unittest.TestCase):
                 gitlab_cls=lambda: _ProjectFailingGitLabClient(project_ids={"team/a": 1}),
             )
         self.assertEqual(code, 1)
-        self.assertIn("[FAIL] gitlab projects", out)
+        self.assertIn(f"{FAIL} {ITEM_GITLAB_PROJECTS}", out)
         # readable fields, not Python's dict repr ("{'project': ...}")
         self.assertIn("team/renamed", out)
         self.assertIn("NOT_FOUND", out)
@@ -333,8 +348,8 @@ class CheckCommandTests(unittest.TestCase):
             )
             code, out, _err = self._check([], {**_jira_env(), **_gitlab_env()}, gitlab_cls=_FailingGitLabClient)
         self.assertEqual(code, 1)
-        self.assertIn("[FAIL] gitlab connectivity", out)
-        self.assertIn("[SKIP] gitlab projects", out)
+        self.assertIn(f"{FAIL} {ITEM_GITLAB_CONN}", out)
+        self.assertIn(f"{SKIP} {ITEM_GITLAB_PROJECTS}", out)
 
 
 # --------------------------------------------------------------------------
@@ -432,7 +447,7 @@ class RunCommandTests(unittest.TestCase):
             with contextlib.redirect_stderr(err):
                 code = cli.cmd_run(args, {}, jira_client_cls=lambda *_a, **_kw: _FakeJiraClient())
             self.assertEqual(code, 2)
-            self.assertIn("config error", err.getvalue())
+            self.assertIn("ошибка настройки", err.getvalue())
 
 
 # --------------------------------------------------------------------------
@@ -526,6 +541,137 @@ class ZeroNetworkTests(unittest.TestCase):
             code, out, _err = _run_main(["report", str(src), "-o", "out.html"], environ={})
             self.assertEqual(code, 0)
             self.assertTrue((tmp / "out.html").exists())
+
+
+# --------------------------------------------------------------------------
+# --help wording is Russian
+# --------------------------------------------------------------------------
+
+
+class HelpTextIsRussianTests(unittest.TestCase):
+    """argparse's `--help` prints and calls sys.exit(0) — captured the same
+    way real terminal usage would see it. Asserts on the actual Russian
+    wording cli.py sets, not a "contains Cyrillic somewhere" regex."""
+
+    def _help_text(self, argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as ctx:
+                cli.build_parser().parse_args(argv)
+        self.assertEqual(ctx.exception.code, 0)
+        # argparse's HelpFormatter wraps long help= text across lines at the
+        # terminal width it detects — collapse whitespace so a substring
+        # check doesn't depend on exactly where that wrap lands.
+        return " ".join(out.getvalue().split())
+
+    def test_top_level_help_is_russian(self):
+        text = self._help_text(["--help"])
+        self.assertIn("Отчёты по метрикам команды из Jira и GitLab", text)
+        self.assertIn("Создать .jira-metrics.json в текущей папке", text)
+        self.assertIn("Проверить настройку Jira/GitLab без построения отчёта", text)
+        self.assertIn("Собрать данные из Jira/GitLab, посчитать метрики, записать JSON и HTML", text)
+        self.assertIn("Отрисовать HTML из уже полученного JSON-файла — без обращений к сети", text)
+
+    def test_init_help_is_russian(self):
+        text = self._help_text(["init", "--help"])
+        self.assertIn("Перезаписать существующий .jira-metrics.json", text)
+
+    def test_check_help_is_russian(self):
+        text = self._help_text(["check", "--help"])
+        self.assertIn("Список id спринтов через запятую", text)
+        self.assertIn("Пропустить проверки GitLab", text)
+
+    def test_run_help_is_russian(self):
+        """Covers _translate_pipeline_help(): flags run shares with
+        report_data.py via config.add_pipeline_args() must still show
+        Russian help text on `run --help` even though report_data.py's own
+        --help (untouched, out of scope) keeps its English text."""
+        text = self._help_text(["run", "--help"])
+        self.assertIn("Список id спринтов Jira через запятую (целевые спринты)", text)
+        self.assertIn("Пропустить обе вкладки GitLab", text)
+        self.assertIn("Путь для HTML-отчёта", text)
+        self.assertIn("Путь для JSON-файла с данными", text)
+
+    def test_report_help_is_russian(self):
+        text = self._help_text(["report", "--help"])
+        self.assertIn("Путь к JSON-файлу report_data", text)
+        self.assertIn("Свой путь к шаблону", text)
+
+    def test_report_data_py_own_help_is_unaffected_and_stays_english(self):
+        """_translate_pipeline_help() must only mutate the `run` subparser's
+        own actions, never config.add_pipeline_args()'s shared definitions —
+        report_data.py's own CLI must keep reading in English, unchanged."""
+        text_out = io.StringIO()
+        with contextlib.redirect_stdout(text_out):
+            with self.assertRaises(SystemExit):
+                config_mod.build_arg_parser().parse_args(["--help"])
+        text = " ".join(text_out.getvalue().split())
+        self.assertIn("Comma-separated Jira sprint ids (target sprints)", text)
+
+
+# --------------------------------------------------------------------------
+# invocation-name resolution: never an absolute path in a printed hint
+# --------------------------------------------------------------------------
+
+
+class InvocationNameTests(unittest.TestCase):
+    def test_relative_candidate_used_as_is(self):
+        self.assertEqual(cli._resolve_invocation_name("scripts/jira-metrics", {}), "scripts/jira-metrics")
+
+    def test_dot_slash_relative_candidate_used_as_is(self):
+        self.assertEqual(cli._resolve_invocation_name("./scripts/jira-metrics", {}), "./scripts/jira-metrics")
+
+    def test_python_dash_m_friendly_string_used_as_is(self):
+        self.assertEqual(cli._resolve_invocation_name("python3 -m jira_metrics", {}), "python3 -m jira_metrics")
+
+    def test_absolute_candidate_collapses_to_basename(self):
+        name = cli._resolve_invocation_name("/home/alice/.claude/skills/jira-metrics-report/scripts/jira-metrics", {})
+        self.assertEqual(name, "jira-metrics")
+
+    def test_env_override_wins_over_a_relative_candidate(self):
+        name = cli._resolve_invocation_name("scripts/jira-metrics", {cli.INVOCATION_NAME_ENV_VAR: "jira-metrics"})
+        self.assertEqual(name, "jira-metrics")
+
+    def test_env_override_wins_over_an_absolute_candidate(self):
+        name = cli._resolve_invocation_name(
+            "/home/alice/.claude/skills/jira-metrics-report/scripts/jira-metrics",
+            {cli.INVOCATION_NAME_ENV_VAR: "jira-metrics"},
+        )
+        self.assertEqual(name, "jira-metrics")
+
+    def test_empty_or_missing_candidate_falls_back_to_short_name(self):
+        self.assertEqual(cli._resolve_invocation_name(None, {}), "jira-metrics")
+        self.assertEqual(cli._resolve_invocation_name("", {}), "jira-metrics")
+
+    def test_result_is_never_an_absolute_path(self):
+        candidates = (
+            None, "", "scripts/jira-metrics", "./scripts/jira-metrics",
+            "/home/alice/.claude/skills/jira-metrics-report/scripts/jira-metrics", "/",
+        )
+        for candidate in candidates:
+            with self.subTest(candidate=candidate):
+                name = cli._resolve_invocation_name(candidate, {})
+                self.assertFalse(os.path.isabs(name), f"{name!r} must not be an absolute path")
+
+    def test_init_hint_never_contains_an_absolute_path_after_simulated_global_install(self):
+        with _tempdir():
+            absolute_argv0 = "/home/alice/.claude/skills/jira-metrics-report/scripts/jira-metrics"
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cli.main(["init"], environ={}, invocation=absolute_argv0)
+            self.assertEqual(code, 0)
+            self.assertNotIn("/home/alice", out.getvalue())
+            self.assertIn("jira-metrics check", out.getvalue())
+
+    def test_init_hint_honors_launcher_env_override(self):
+        with _tempdir():
+            absolute_argv0 = "/home/alice/.claude/skills/jira-metrics-report/scripts/jira-metrics"
+            out = io.StringIO()
+            environ = {cli.INVOCATION_NAME_ENV_VAR: "jira-metrics"}
+            with contextlib.redirect_stdout(out):
+                code = cli.main(["init"], environ=environ, invocation=absolute_argv0)
+            self.assertEqual(code, 0)
+            self.assertIn("дальше: jira-metrics check", out.getvalue())
 
 
 if __name__ == "__main__":

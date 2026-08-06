@@ -876,6 +876,40 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
 .param dd { margin: 0; font-size: 12.5px; font-family: var(--font-mono); word-break: break-word; }
 
 /* ============================================================
+   Closing recommendations — automatic, one heuristic per measured value
+   ============================================================ */
+.report-conclusions {
+  margin-top: 32px; padding: 24px 0;
+  border-top: 1px solid var(--border); background: var(--surface);
+}
+.conclusions-title { font-size: 16.5px; font-weight: 640; margin: 0 0 4px; }
+.report-conclusions .section-desc { margin: 0 0 14px; text-align: left; max-width: none; }
+.reco-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; counter-reset: reco; }
+.reco-item {
+  counter-increment: reco; position: relative;
+  padding: 11px 14px 11px 40px;
+  border-radius: var(--radius); border: 1px solid var(--border);
+  background: var(--surface-2); border-left: 3px solid var(--border-strong);
+}
+.reco-item::before {
+  content: counter(reco); position: absolute; left: 13px; top: 12px;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 640; color: var(--text-faint);
+}
+.reco-item.reco-bad { border-left-color: var(--bad); }
+.reco-item.reco-warn { border-left-color: var(--warn); }
+.reco-metric { font-size: 13px; font-weight: 640; color: var(--text); }
+.reco-signal { font-size: 12.5px; color: var(--text-muted); margin-top: 3px; }
+.reco-action { font-size: 12.5px; color: var(--text); margin-top: 5px; }
+.reco-action b { font-weight: 640; }
+.reco-none {
+  padding: 12px 14px; border-radius: var(--radius);
+  border: 1px dashed var(--border-strong); color: var(--text-muted); font-size: 13px;
+}
+@media print {
+  .report-conclusions { break-before: page; page-break-before: always; }
+}
+
+/* ============================================================
    Responsive
    ============================================================ */
 @media (max-width: 760px) {
@@ -1152,14 +1186,14 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
             <details class="thresholds">
               <summary>Как читать статус тайлов <span class="heuristic-flag">— пороги придуманы нами, не модулем</span></summary>
               <div class="state-legend">
-                <span class="legend-note">В исходном модуле нет классификации good/warn/bad (SPEC §7) — цвета ниже это эвристика прототипа, а не стандарт; можно не соглашаться с конкретными числами.</span>
-                <span><b>velocity_sp</b> — good &ge; SMA5, warn &ge; 90% SMA5, bad ниже. Рост хорош.</span>
-                <span><b>SMA5</b> — good: база на 5 спринтах, warn: короче (<span class="mono">WARN_BASELINE_SHORT</span>), «нет базы»: истории нет вовсе (реальный div0).</span>
-                <span><b>Performance</b> — good &ge; 95%, warn 80&ndash;95%, bad &lt; 80%. Рост хорош.</span>
-                <span><b>Load</b> — good 85&ndash;110%, warn 70&ndash;85% или 110&ndash;125%, bad вне этого диапазона. Плохо в ОБЕ стороны от 100% — и перегруз, и недогруз.</span>
-                <span><b>Scope change</b> — good &le; 10%, warn 10&ndash;25%, bad &gt; 25%. Рост — ПЛОХО, не хорошо.</span>
-                <span><b>Throughput</b> — good &ge; среднего по базе, warn &ge; 90% среднего, bad ниже. Рост хорош.</span>
-                <span><b>Closure, задачи / SP</b> — good &ge; 85%, warn 70&ndash;85%, bad &lt; 70%. Рост хорош.</span>
+                <span class="legend-note">В исходном модуле нет классификации «норма / под наблюдением / критично» (SPEC §7) — цвета ниже это эвристика прототипа, а не стандарт; можно не соглашаться с конкретными числами.</span>
+                <span><b>Скорость</b> (<span class="mono">velocity_sp</span>) — норма &ge; SMA5, под наблюдением &ge; 90% SMA5, критично ниже. Рост — хорошо.</span>
+                <span><b>Скользящее среднее</b> (SMA5) — норма: база на 5 спринтах, под наблюдением: короче (<span class="mono">WARN_BASELINE_SHORT</span>), «нет базы»: истории нет вовсе (реальный div0).</span>
+                <span><b>Выполнение обязательств</b> (<span class="mono">performance_pct</span>) — норма &ge; 95%, под наблюдением 80&ndash;95%, критично &lt; 80%. Рост — хорошо.</span>
+                <span><b>Загрузка</b> (<span class="mono">load_pct</span>) — норма 85&ndash;110%, под наблюдением 70&ndash;85% или 110&ndash;125%, критично вне этого диапазона. Плохо в ОБЕ стороны от 100% — и перегруз, и недогруз.</span>
+                <span><b>Изменение объёма</b> (<span class="mono">scope_change_pct</span>) — норма &le; 10%, под наблюдением 10&ndash;25%, критично &gt; 25%. Рост — ПЛОХО, не хорошо.</span>
+                <span><b>Пропускная способность</b> (<span class="mono">throughput_items</span>) — норма &ge; среднего по базе, под наблюдением &ge; 90% среднего, критично ниже. Рост — хорошо.</span>
+                <span><b>Закрытие, задачи / SP</b> — норма &ge; 85%, под наблюдением 70&ndash;85%, критично &lt; 70%. Рост — хорошо.</span>
               </div>
             </details>
           </div>
@@ -1172,7 +1206,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
               
               <article class="kpi card" data-status="good">
                 <div class="kpi-head">
-                  <span class="kpi-label">Velocity</span>
+                  <span class="kpi-label">Скорость</span>
                   
                   <span class="kpi-status">норма</span>
                 </div>
@@ -1197,7 +1231,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
               
               <article class="kpi card" data-status="warn">
                 <div class="kpi-head">
-                  <span class="kpi-label">Velocity SMA5</span>
+                  <span class="kpi-label">Скользящее среднее</span>
                   
                   <span class="kpi-status">короткая база</span>
                 </div>
@@ -1223,7 +1257,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
               
               <article class="kpi card" data-status="good">
                 <div class="kpi-head">
-                  <span class="kpi-label">Performance</span>
+                  <span class="kpi-label">Выполнение обязательств</span>
                   
                   <span class="kpi-status">норма</span>
                 </div>
@@ -1248,7 +1282,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
               
               <article class="kpi card" data-status="bad">
                 <div class="kpi-head">
-                  <span class="kpi-label">Load</span>
+                  <span class="kpi-label">Загрузка</span>
                   
                   <span class="kpi-status">критично</span>
                 </div>
@@ -1273,7 +1307,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
               
               <article class="kpi card" data-status="good">
                 <div class="kpi-head">
-                  <span class="kpi-label">Scope change</span>
+                  <span class="kpi-label">Изменение объёма</span>
                   
                   <span class="kpi-status">норма</span>
                 </div>
@@ -1298,7 +1332,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
               
               <article class="kpi card" data-status="good">
                 <div class="kpi-head">
-                  <span class="kpi-label">Throughput</span>
+                  <span class="kpi-label">Пропускная способность</span>
                   
                   <span class="kpi-status">норма</span>
                 </div>
@@ -1323,7 +1357,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
               
               <article class="kpi card" data-status="good">
                 <div class="kpi-head">
-                  <span class="kpi-label">Closure, задачи</span>
+                  <span class="kpi-label">Закрытие, задачи</span>
                   
                   <span class="kpi-status">норма</span>
                 </div>
@@ -1348,7 +1382,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
               
               <article class="kpi card" data-status="good">
                 <div class="kpi-head">
-                  <span class="kpi-label">Closure, SP</span>
+                  <span class="kpi-label">Закрытие, SP</span>
                   
                   <span class="kpi-status">норма</span>
                 </div>
@@ -1383,7 +1417,17 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
             <h2 class="section-title">Метрики спринта</h2>
             <button class="collapse-btn no-print" type="button" data-collapse="sec-metrics"
                     aria-expanded="true" aria-controls="sec-metrics-body">Скрыть</button>
-            <p class="section-desc">Значения без округления, как их отдаёт модуль. SP задачи берётся на момент конца её участия в спринте.</p>
+            <p class="section-desc">Значения без округления, как их отдаёт модуль. SP задачи берётся на момент конца её участия в спринте. Это те же числа, что в KPI-тайлах выше, но подробнее и без округления.</p>
+            <details class="thresholds">
+              <summary>Что здесь можно оценить <span class="heuristic-flag">— у части метрик эталона нет</span></summary>
+              <div class="state-legend">
+                <span class="legend-note">«Обязательства и поставка» и «Изменение объёма» — исходные величины модуля, порога у них нет: эталонное значение не задано, смотрите на соотношение (поставлено vs взято, добавлено vs убрано), а не на абсолютное число.</span>
+                <span><b>Взято / Поставлено, SP и задачи</b> — эталона нет; полоса ниже сравнивает поставленное с итоговым объёмом.</span>
+                <span><b>Добавлено / Убрано / Переоценка внутри спринта</b> — эталона нет; всплеск добавленного без сравнимого убранного — сигнал нестабильного скоупа.</span>
+                <span><b>Итого изменение объёма</b> (<span class="mono">scope_change_pct</span>) — как у тайла «Изменение объёма»: норма &le; 10%, под наблюдением 10&ndash;25%, критично &gt; 25%. Рост — плохо.</span>
+                <span><b>Выполнение обязательств, Скорость, Скользящее среднее, Загрузка, Пропускная способность, Закрытие по задачам/SP</b> — та же эвристика, что у одноимённых тайлов выше (раскройте «Как читать статус тайлов» в начале вкладки).</span>
+              </div>
+            </details>
           </div>
 
           <div class="section-body" id="sec-metrics-body">
@@ -1507,7 +1551,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
         <section class="section" id="sec-burndown">
           <div class="section-head">
             <span class="section-index">04</span>
-            <h2 class="section-title">Burndown</h2>
+            <h2 class="section-title">Диаграмма сгорания</h2>
             <button class="collapse-btn no-print" type="button" data-collapse="sec-burndown"
                     aria-expanded="true" aria-controls="sec-burndown-body">Скрыть</button>
             <p class="section-desc">Ось X — календарные дни, выходные включены. Статус на субботу и воскресенье наследуется от пятницы, поэтому линия на выходных горизонтальна. Сплошная линия с точками — фактический остаток (<span class="mono">remaining_sp</span>), пунктир — идеальный темп (<span class="mono">ideal_sp</span>). <b>Хорошо</b> — когда фактическая линия идёт на уровне идеальной или ниже; плоский участок фактической линии означает, что в эти дни ничего не закрывалось.</p>
@@ -1736,7 +1780,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                     <svg class="legend-line" viewBox="0 0 26 10" aria-hidden="true" focusable="false">
                       <path class="lg-marker" d="M13 0 V10"/>
                     </svg>
-                    <b>перцентиль</b> по методу nearest-rank
+                    <b>перцентиль</b> по методу ближайшего ранга
                   </span>
                 </div>
               </div>
@@ -2163,7 +2207,16 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
             <h2 class="section-title">Сводка по людям</h2>
             <button class="collapse-btn no-print" type="button" data-collapse="sec-person-table"
                     aria-expanded="true" aria-controls="sec-person-table-body">Скрыть</button>
-            <p class="section-desc">Одна строка на человека (ключ — поле <span class="mono">user</span>). Колонки сгруппированы по источнику: GitLab, Jira и связка между ними. Таблица прокручивается по горизонтали внутри своего контейнера, обе строки шапки закреплены. Цветом размечен только <span class="mono">mr_merge_rate_pct</span> — та же эвристика, что на карточках участников (<b>Хорошо</b> &ge; 85%, под наблюдением 65&ndash;85%, плохо &lt; 65%). У остальных колонок порога нет, они справочные.</p>
+            <p class="section-desc">Одна строка на человека (ключ — поле <span class="mono">user</span>). Колонки сгруппированы по источнику: GitLab, Jira и связка между ними. Таблица прокручивается по горизонтали внутри своего контейнера, обе строки шапки закреплены. <b>Хорошо</b> размечено цветом только у <span class="mono">mr_merge_rate_pct</span> — та же эвристика, что на карточках участников (норма &ge; 85%, под наблюдением 65&ndash;85%, критично &lt; 65%). У остальных колонок эталонное значение не задано модулем — справочные, смотрите на динамику.</p>
+            <details class="thresholds">
+              <summary>Что измеряет каждая группа колонок <span class="heuristic-flag">— эталон есть только у merge rate</span></summary>
+              <div class="state-legend">
+                <span class="legend-note">Эталонное значение не задано ни для одной колонки, кроме <span class="mono">mr_merge_rate_pct</span> — сравнивайте человека с его же прошлыми спринтами, не с соседом по строке.</span>
+                <span><b>GitLab</b> — активность в MR: сколько их было, как быстро проходили ревью и мерж, насколько крупными были дифы.</span>
+                <span><b>Jira</b> — активность в задачах: сколько закрыто, доля багов, скорость цикла задачи, объём переработок и story points.</span>
+                <span><b>Связка</b> — сколько задач было явно привязано к MR через ключ Jira; низкое значение может значить, что привязку теряют, а не что работы не было.</span>
+              </div>
+            </details>
           </div>
 
           <div class="section-body" id="sec-person-table-body">
@@ -2780,7 +2833,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
             <h2 class="section-title">Карточки участников</h2>
             <button class="collapse-btn no-print" type="button" data-collapse="sec-person-cards"
                     aria-expanded="true" aria-controls="sec-person-cards-body">Скрыть</button>
-            <p class="section-desc">Блок целиком повторяется генератором для каждого пользователя: пять ключевых значений (merge rate, медиана цикла MR, число задач, доля переработок, успешность пайплайнов), столбцы MR по спринтам и разбивка по спринтам. <b>Хорошо</b> — высокий merge rate, короткий цикл MR, низкая доля переработок, высокая успешность пайплайнов. Цветом размечен только merge rate (единственный порог на этой вкладке, эвристика этого отчёта: good &ge; 85%, warn 65&ndash;85%, bad &lt; 65%) — у остальных четырёх значений порога нет, они справочные.</p>
+            <p class="section-desc">Блок целиком повторяется генератором для каждого пользователя: пять ключевых значений (доля смерженных, медиана цикла MR, задач закрыто, доля переработок, успешность пайплайнов), столбцы MR по спринтам и разбивка по спринтам. <b>Хорошо</b> — высокая доля смерженных, короткий цикл MR, низкая доля переработок, высокая успешность пайплайнов. Цветом размечена только доля смерженных (единственный порог на этой вкладке, эвристика этого отчёта: норма &ge; 85%, под наблюдением 65&ndash;85%, критично &lt; 65%) — у остальных четырёх значений порога нет, они справочные.</p>
           </div>
 
           <div class="section-body" id="sec-person-cards-body">
@@ -2797,11 +2850,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="none"><div class="stat-label">merge rate</div><div class="stat-value">—</div><div style=margin-top:5px><span class="warn-badge">WARN_DIVISION_BY_ZERO</span></div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">MR cycle med</div><div class="stat-value">—</div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">1</div></div>
-                  <div class="stat" data-status=""><div class="stat-label">rework share</div><div class="stat-value">0<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">pipeline success</div><div class="stat-value">100<span class="u">%</span></div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">доля смерженных</div><div class="stat-value">—</div><div style=margin-top:5px><span class="warn-badge">WARN_DIVISION_BY_ZERO</span></div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">медиана цикла MR</div><div class="stat-value">—</div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">1</div></div>
+                  <div class="stat" data-status=""><div class="stat-label">доля переработок</div><div class="stat-value">0<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">успешность пайплайнов</div><div class="stat-value">100<span class="u">%</span></div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -2815,9 +2868,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2854,11 +2907,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="warn"><div class="stat-label">merge rate</div><div class="stat-value">66.7<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">MR cycle med</div><div class="stat-value">9<span class="u">ч</span></div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">1</div></div>
-                  <div class="stat" data-status=""><div class="stat-label">rework share</div><div class="stat-value">0<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">pipeline success</div><div class="stat-value">0<span class="u">%</span></div></div>
+                  <div class="stat" data-status="warn"><div class="stat-label">доля смерженных</div><div class="stat-value">66.7<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">медиана цикла MR</div><div class="stat-value">9<span class="u">ч</span></div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">1</div></div>
+                  <div class="stat" data-status=""><div class="stat-label">доля переработок</div><div class="stat-value">0<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">успешность пайплайнов</div><div class="stat-value">0<span class="u">%</span></div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -2872,9 +2925,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2911,11 +2964,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="bad"><div class="stat-label">merge rate</div><div class="stat-value">50<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">MR cycle med</div><div class="stat-value">10.5<span class="u">ч</span></div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">1</div></div>
-                  <div class="stat" data-status=""><div class="stat-label">rework share</div><div class="stat-value">0<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">pipeline success</div><div class="stat-value">100<span class="u">%</span></div></div>
+                  <div class="stat" data-status="bad"><div class="stat-label">доля смерженных</div><div class="stat-value">50<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">медиана цикла MR</div><div class="stat-value">10.5<span class="u">ч</span></div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">1</div></div>
+                  <div class="stat" data-status=""><div class="stat-label">доля переработок</div><div class="stat-value">0<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">успешность пайплайнов</div><div class="stat-value">100<span class="u">%</span></div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -2929,9 +2982,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2968,11 +3021,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="bad"><div class="stat-label">merge rate</div><div class="stat-value">50<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">MR cycle med</div><div class="stat-value">7.5<span class="u">ч</span></div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">1</div></div>
-                  <div class="stat" data-status=""><div class="stat-label">rework share</div><div class="stat-value">0<span class="u">%</span></div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">pipeline success</div><div class="stat-value">—</div></div>
+                  <div class="stat" data-status="bad"><div class="stat-label">доля смерженных</div><div class="stat-value">50<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">медиана цикла MR</div><div class="stat-value">7.5<span class="u">ч</span></div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">1</div></div>
+                  <div class="stat" data-status=""><div class="stat-label">доля переработок</div><div class="stat-value">0<span class="u">%</span></div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">успешность пайплайнов</div><div class="stat-value">—</div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -2986,9 +3039,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3025,11 +3078,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="warn"><div class="stat-label">merge rate</div><div class="stat-value">66.7<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">MR cycle med</div><div class="stat-value">9<span class="u">ч</span></div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">1</div></div>
-                  <div class="stat" data-status=""><div class="stat-label">rework share</div><div class="stat-value">0<span class="u">%</span></div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">pipeline success</div><div class="stat-value">—</div></div>
+                  <div class="stat" data-status="warn"><div class="stat-label">доля смерженных</div><div class="stat-value">66.7<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">медиана цикла MR</div><div class="stat-value">9<span class="u">ч</span></div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">1</div></div>
+                  <div class="stat" data-status=""><div class="stat-label">доля переработок</div><div class="stat-value">0<span class="u">%</span></div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">успешность пайплайнов</div><div class="stat-value">—</div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -3043,9 +3096,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3082,11 +3135,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="bad"><div class="stat-label">merge rate</div><div class="stat-value">50<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">MR cycle med</div><div class="stat-value">10.5<span class="u">ч</span></div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">1</div></div>
-                  <div class="stat" data-status=""><div class="stat-label">rework share</div><div class="stat-value">0<span class="u">%</span></div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">pipeline success</div><div class="stat-value">—</div></div>
+                  <div class="stat" data-status="bad"><div class="stat-label">доля смерженных</div><div class="stat-value">50<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">медиана цикла MR</div><div class="stat-value">10.5<span class="u">ч</span></div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">1</div></div>
+                  <div class="stat" data-status=""><div class="stat-label">доля переработок</div><div class="stat-value">0<span class="u">%</span></div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">успешность пайплайнов</div><div class="stat-value">—</div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -3100,9 +3153,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3139,11 +3192,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="bad"><div class="stat-label">merge rate</div><div class="stat-value">50<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">MR cycle med</div><div class="stat-value">7.5<span class="u">ч</span></div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">1</div></div>
-                  <div class="stat" data-status=""><div class="stat-label">rework share</div><div class="stat-value">0<span class="u">%</span></div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">pipeline success</div><div class="stat-value">—</div></div>
+                  <div class="stat" data-status="bad"><div class="stat-label">доля смерженных</div><div class="stat-value">50<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">медиана цикла MR</div><div class="stat-value">7.5<span class="u">ч</span></div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">1</div></div>
+                  <div class="stat" data-status=""><div class="stat-label">доля переработок</div><div class="stat-value">0<span class="u">%</span></div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">успешность пайплайнов</div><div class="stat-value">—</div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -3157,9 +3210,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3196,11 +3249,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="warn"><div class="stat-label">merge rate</div><div class="stat-value">66.7<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">MR cycle med</div><div class="stat-value">9<span class="u">ч</span></div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">1</div></div>
-                  <div class="stat" data-status=""><div class="stat-label">rework share</div><div class="stat-value">0<span class="u">%</span></div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">pipeline success</div><div class="stat-value">—</div></div>
+                  <div class="stat" data-status="warn"><div class="stat-label">доля смерженных</div><div class="stat-value">66.7<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">медиана цикла MR</div><div class="stat-value">9<span class="u">ч</span></div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">1</div></div>
+                  <div class="stat" data-status=""><div class="stat-label">доля переработок</div><div class="stat-value">0<span class="u">%</span></div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">успешность пайплайнов</div><div class="stat-value">—</div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -3214,9 +3267,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3253,11 +3306,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="bad"><div class="stat-label">merge rate</div><div class="stat-value">50<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">MR cycle med</div><div class="stat-value">10.5<span class="u">ч</span></div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">1</div></div>
-                  <div class="stat" data-status=""><div class="stat-label">rework share</div><div class="stat-value">0<span class="u">%</span></div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">pipeline success</div><div class="stat-value">—</div></div>
+                  <div class="stat" data-status="bad"><div class="stat-label">доля смерженных</div><div class="stat-value">50<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">медиана цикла MR</div><div class="stat-value">10.5<span class="u">ч</span></div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">1</div></div>
+                  <div class="stat" data-status=""><div class="stat-label">доля переработок</div><div class="stat-value">0<span class="u">%</span></div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">успешность пайплайнов</div><div class="stat-value">—</div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -3271,9 +3324,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3310,11 +3363,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="bad"><div class="stat-label">merge rate</div><div class="stat-value">50<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">MR cycle med</div><div class="stat-value">7.5<span class="u">ч</span></div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">1</div></div>
-                  <div class="stat" data-status=""><div class="stat-label">rework share</div><div class="stat-value">0<span class="u">%</span></div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">pipeline success</div><div class="stat-value">—</div></div>
+                  <div class="stat" data-status="bad"><div class="stat-label">доля смерженных</div><div class="stat-value">50<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">медиана цикла MR</div><div class="stat-value">7.5<span class="u">ч</span></div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">1</div></div>
+                  <div class="stat" data-status=""><div class="stat-label">доля переработок</div><div class="stat-value">0<span class="u">%</span></div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">успешность пайплайнов</div><div class="stat-value">—</div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -3328,9 +3381,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3367,11 +3420,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="warn"><div class="stat-label">merge rate</div><div class="stat-value">66.7<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">MR cycle med</div><div class="stat-value">9<span class="u">ч</span></div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">1</div></div>
-                  <div class="stat" data-status=""><div class="stat-label">rework share</div><div class="stat-value">0<span class="u">%</span></div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">pipeline success</div><div class="stat-value">—</div></div>
+                  <div class="stat" data-status="warn"><div class="stat-label">доля смерженных</div><div class="stat-value">66.7<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">медиана цикла MR</div><div class="stat-value">9<span class="u">ч</span></div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">1</div></div>
+                  <div class="stat" data-status=""><div class="stat-label">доля переработок</div><div class="stat-value">0<span class="u">%</span></div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">успешность пайплайнов</div><div class="stat-value">—</div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -3385,9 +3438,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3424,11 +3477,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="bad"><div class="stat-label">merge rate</div><div class="stat-value">50<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">MR cycle med</div><div class="stat-value">10.5<span class="u">ч</span></div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">1</div></div>
-                  <div class="stat" data-status=""><div class="stat-label">rework share</div><div class="stat-value">0<span class="u">%</span></div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">pipeline success</div><div class="stat-value">—</div></div>
+                  <div class="stat" data-status="bad"><div class="stat-label">доля смерженных</div><div class="stat-value">50<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">медиана цикла MR</div><div class="stat-value">10.5<span class="u">ч</span></div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">1</div></div>
+                  <div class="stat" data-status=""><div class="stat-label">доля переработок</div><div class="stat-value">0<span class="u">%</span></div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">успешность пайплайнов</div><div class="stat-value">—</div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -3442,9 +3495,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3481,11 +3534,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="bad"><div class="stat-label">merge rate</div><div class="stat-value">50<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">MR cycle med</div><div class="stat-value">7.5<span class="u">ч</span></div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">1</div></div>
-                  <div class="stat" data-status=""><div class="stat-label">rework share</div><div class="stat-value">0<span class="u">%</span></div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">pipeline success</div><div class="stat-value">—</div></div>
+                  <div class="stat" data-status="bad"><div class="stat-label">доля смерженных</div><div class="stat-value">50<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">медиана цикла MR</div><div class="stat-value">7.5<span class="u">ч</span></div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">1</div></div>
+                  <div class="stat" data-status=""><div class="stat-label">доля переработок</div><div class="stat-value">0<span class="u">%</span></div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">успешность пайплайнов</div><div class="stat-value">—</div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -3499,9 +3552,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3538,11 +3591,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="warn"><div class="stat-label">merge rate</div><div class="stat-value">66.7<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">MR cycle med</div><div class="stat-value">9<span class="u">ч</span></div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">1</div></div>
-                  <div class="stat" data-status=""><div class="stat-label">rework share</div><div class="stat-value">0<span class="u">%</span></div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">pipeline success</div><div class="stat-value">—</div></div>
+                  <div class="stat" data-status="warn"><div class="stat-label">доля смерженных</div><div class="stat-value">66.7<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">медиана цикла MR</div><div class="stat-value">9<span class="u">ч</span></div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">1</div></div>
+                  <div class="stat" data-status=""><div class="stat-label">доля переработок</div><div class="stat-value">0<span class="u">%</span></div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">успешность пайплайнов</div><div class="stat-value">—</div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -3556,9 +3609,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3595,11 +3648,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="bad"><div class="stat-label">merge rate</div><div class="stat-value">50<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">MR cycle med</div><div class="stat-value">10.5<span class="u">ч</span></div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">1</div></div>
-                  <div class="stat" data-status=""><div class="stat-label">rework share</div><div class="stat-value">0<span class="u">%</span></div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">pipeline success</div><div class="stat-value">—</div></div>
+                  <div class="stat" data-status="bad"><div class="stat-label">доля смерженных</div><div class="stat-value">50<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">медиана цикла MR</div><div class="stat-value">10.5<span class="u">ч</span></div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">1</div></div>
+                  <div class="stat" data-status=""><div class="stat-label">доля переработок</div><div class="stat-value">0<span class="u">%</span></div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">успешность пайплайнов</div><div class="stat-value">—</div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -3613,9 +3666,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3652,11 +3705,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="bad"><div class="stat-label">merge rate</div><div class="stat-value">50<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">MR cycle med</div><div class="stat-value">7.5<span class="u">ч</span></div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">1</div></div>
-                  <div class="stat" data-status=""><div class="stat-label">rework share</div><div class="stat-value">0<span class="u">%</span></div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">pipeline success</div><div class="stat-value">—</div></div>
+                  <div class="stat" data-status="bad"><div class="stat-label">доля смерженных</div><div class="stat-value">50<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">медиана цикла MR</div><div class="stat-value">7.5<span class="u">ч</span></div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">1</div></div>
+                  <div class="stat" data-status=""><div class="stat-label">доля переработок</div><div class="stat-value">0<span class="u">%</span></div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">успешность пайплайнов</div><div class="stat-value">—</div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -3670,9 +3723,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3709,11 +3762,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="warn"><div class="stat-label">merge rate</div><div class="stat-value">66.7<span class="u">%</span></div></div>
-                  <div class="stat" data-status=""><div class="stat-label">MR cycle med</div><div class="stat-value">9<span class="u">ч</span></div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">0</div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">rework share</div><div class="stat-value">—</div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">pipeline success</div><div class="stat-value">—</div></div>
+                  <div class="stat" data-status="warn"><div class="stat-label">доля смерженных</div><div class="stat-value">66.7<span class="u">%</span></div></div>
+                  <div class="stat" data-status=""><div class="stat-label">медиана цикла MR</div><div class="stat-value">9<span class="u">ч</span></div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">0</div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">доля переработок</div><div class="stat-value">—</div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">успешность пайплайнов</div><div class="stat-value">—</div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -3727,9 +3780,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3758,11 +3811,11 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                 </div>
 
                 <div class="person-stats">
-                  <div class="stat" data-status="bad"><div class="stat-label">merge rate</div><div class="stat-value">50<span class="u">%</span></div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">MR cycle med</div><div class="stat-value">—</div></div>
-                  <div class="stat"><div class="stat-label">tasks_done</div><div class="stat-value">0</div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">rework share</div><div class="stat-value">—</div></div>
-                  <div class="stat" data-status="none"><div class="stat-label">pipeline success</div><div class="stat-value">—</div></div>
+                  <div class="stat" data-status="bad"><div class="stat-label">доля смерженных</div><div class="stat-value">50<span class="u">%</span></div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">медиана цикла MR</div><div class="stat-value">—</div></div>
+                  <div class="stat"><div class="stat-label">задач закрыто</div><div class="stat-value">0</div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">доля переработок</div><div class="stat-value">—</div></div>
+                  <div class="stat" data-status="none"><div class="stat-label">успешность пайплайнов</div><div class="stat-value">—</div></div>
                 </div>
 
                 <div class="person-chart-title">MR по спринтам</div>
@@ -3776,9 +3829,9 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <tr>
                         <th scope="col">Спринт</th>
                         <th scope="col">mr_count</th>
-                        <th scope="col">tasks</th>
+                        <th scope="col">задачи</th>
                         <th scope="col">SP</th>
-                        <th scope="col">cycle avg, ч</th>
+                        <th scope="col">цикл MR, ч</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3835,12 +3888,12 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
             <details class="thresholds">
               <summary>Как читать статус тайлов <span class="heuristic-flag">— пороги придуманы нами, не модулем</span></summary>
               <div class="state-legend">
-                <span class="legend-note">Как и на вкладке «Команда», в исходном модуле нет классификации good/warn/bad — цвета ниже это эвристика прототипа.</span>
-                <span><b>Пайплайны</b> — это count, порога нет: справочная величина, цвет не назначается.</span>
-                <span><b>Успешные пайплайны</b> — good &ge; 90%, warn 80&ndash;90%, bad &lt; 80%.</span>
-                <span><b>Деплои</b> — плитка красит count по <span class="mono">success_rate_pct</span> деплоев: good &ge; 90%, warn 75&ndash;90%, bad &lt; 75%.</span>
+                <span class="legend-note">Как и на вкладке «Команда», в исходном модуле нет классификации «норма / под наблюдением / критично» — цвета ниже это эвристика прототипа.</span>
+                <span><b>Пайплайны</b> — это счётчик запусков, порога нет: справочная величина, цвет не назначается.</span>
+                <span><b>Успешные пайплайны</b> (<span class="mono">pipelines.success_rate_pct</span>) — норма &ge; 90%, под наблюдением 80&ndash;90%, критично &lt; 80%.</span>
+                <span><b>Деплои</b> — плитка красит счётчик по <span class="mono">success_rate_pct</span> деплоев: норма &ge; 90%, под наблюдением 75&ndash;90%, критично &lt; 75%.</span>
                 <span><b>Деплоев в неделю</b> — это частота, порога нет: справочная величина, цвет не назначается.</span>
-                <span><b>Покрытие</b> — good &ge; 80%, warn 65&ndash;80%, bad &lt; 65%.</span>
+                <span><b>Покрытие</b> (<span class="mono">coverage.coverage_avg_pct</span>) — норма &ge; 80%, под наблюдением 65&ndash;80%, критично &lt; 65%.</span>
               </div>
             </details>
           </div>
@@ -3974,7 +4027,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
         <section class="section" id="sec-eng-chart">
           <div class="section-head">
             <span class="section-index">02</span>
-            <h2 class="section-title">Success rate пайплайнов по неделям</h2>
+            <h2 class="section-title">Успешность пайплайнов по неделям</h2>
             <button class="collapse-btn no-print" type="button" data-collapse="sec-eng-chart"
                     aria-expanded="true" aria-controls="sec-eng-chart-body">Скрыть</button>
             <p class="section-desc">Раздел pipelines ограничен окном отчёта, поэтому недельный ряд сопоставим с остальными числами. Каждая точка — доля успешных пайплайнов за календарную неделю. <b>Хорошо</b> — линия ближе к 100% и без резких провалов; растущий тренд лучше падающего. Если ниже написано, что понедельная история недоступна — это контракт данных, а не ошибка генератора: раздел pipelines отдаёт только агрегат за всё окно отчёта.</p>
@@ -4087,6 +4140,20 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
     </div>
   </div>
 </main>
+
+<!-- ================================================================
+     CLOSING RECOMMENDATIONS — always visible, not tab-gated, prints on
+     its own page. Every item is derived from a measured value in THIS
+     run; see render_html.py build_recommendations().
+     ================================================================ -->
+<section class="report-conclusions" id="sec-conclusions">
+  <div class="wrap">
+    <h2 class="conclusions-title">Что можно улучшить</h2>
+    <p class="section-desc">Автоматические эвристики по цифрам этого спринта — не вердикт по людям и не итоговая оценка команды. Каждый пункт выведен из измеренного значения этого прогона: метрика и её число указаны явно; если ни один порог не превышен, здесь так и написано.</p>
+    
+    <ol class="reco-list"><li class="reco-item reco-bad"><div class="reco-metric">Загрузка (load_pct) = 206.67%</div><div class="reco-signal">Критично: вне диапазона 85–110% (эвристика этого отчёта) — команда перегружена относительно своей же скользящей средней.</div><div class="reco-action"><b>Действие:</b> Пересмотреть объём при планировании следующего спринта относительно фактической SMA5, а не повторять цифру этого спринта.</div></li><li class="reco-item reco-bad"><div class="reco-metric">Успешность пайплайнов (pipelines.success_rate_pct) = 66.7%</div><div class="reco-signal">Критично: ниже 80% (эвристика этого отчёта) — часть времени разработки уходит на нестабильный CI.</div><div class="reco-action"><b>Действие:</b> Разобрать упавшие пайплайны на систематические причины (флаки тестов, инфраструктура), а не только на конкретный коммит, который их вызвал.</div></li></ol>
+  </div>
+</section>
 
 <!-- ================================================================
      FOOTER
