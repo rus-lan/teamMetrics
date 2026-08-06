@@ -168,7 +168,7 @@ def sprint_calendar_window(payload: "metrics_mod.Payload") -> list[int]:
     out = []
     d = start
     while d <= last:
-        out.append(counts.get(d.strftime("%Y-%m-%d"), 0))
+        out.append(counts.get(model.format_date(d), 0))
         d += timedelta(days=1)
     return out
 

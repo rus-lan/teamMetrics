@@ -107,7 +107,12 @@ def _parse_iso(s: Optional[str]) -> Optional[datetime]:
 
 
 def _format_window_bound(d: datetime) -> str:
-    return d.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Not strftime("%Y-..."): %Y delegates to the platform C library, which
+    # does not zero-pad years below 1000 on Python 3.9 (e.g. "1-01-01"
+    # instead of "0001-01-01"), while 3.10+ does. Manual formatting is
+    # version-independent.
+    d = d.astimezone(UTC)
+    return f"{d.year:04d}-{d.month:02d}-{d.day:02d}T{d.hour:02d}:{d.minute:02d}:{d.second:02d}Z"
 
 
 def _qs(v: Any) -> str:

@@ -460,8 +460,8 @@ def _build_board_table(sprint_results: list[dict]) -> tuple[list[str], list[list
         row = [
             p.sprint.name,
             p.sprint.state,
-            p.sprint.start_at.strftime("%Y-%m-%d"),
-            p.sprint.end_at.strftime("%Y-%m-%d"),
+            model.format_date(p.sprint.start_at),
+            model.format_date(p.sprint.end_at),
             _format_number(m.committed_sp),
             _format_number(m.delivered_sp),
             _format_number(m.scope_added_sp),

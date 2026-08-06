@@ -349,7 +349,13 @@ def end_of_day(day: datetime) -> datetime:
 
 
 def format_date(t: datetime) -> str:
-    return t.strftime("%Y-%m-%d")
+    """YYYY-MM-DD, formatted explicitly rather than via strftime("%Y-%m-%d").
+    strftime's "%Y" zero-pads a <4-digit year (e.g. year 1, our own
+    ZERO_TIME sentinel) only on some platforms/versions — verified on a real
+    Python 3.9: `datetime(1,1,1).strftime("%Y-%m-%d")` gives "1-01-01", not
+    "0001-01-01". f-string `:04d` formatting is a language guarantee, not a
+    libc one, so it is identical on every version and platform."""
+    return f"{t.year:04d}-{t.month:02d}-{t.day:02d}"
 
 
 def working_days(start: datetime, end: datetime) -> list[datetime]:

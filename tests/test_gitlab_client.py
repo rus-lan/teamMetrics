@@ -267,6 +267,25 @@ class PaginationTests(unittest.TestCase):
             client._get_paginated("Op", "/x", per_page=2)
 
 
+class FormatWindowBoundTests(unittest.TestCase):
+    """Regression guard: strftime("%Y-...") delegates year formatting to the
+    platform C library, which does not zero-pad years below 1000 on Python
+    3.9 (produces "1-01-01" instead of "0001-01-01"), while 3.10+ does.
+    `_format_window_bound` must not depend on that platform behavior."""
+
+    def test_year_below_1000_is_zero_padded(self):
+        self.assertEqual(gc._format_window_bound(datetime(1, 1, 1, tzinfo=UTC)), "0001-01-01T00:00:00Z")
+
+    def test_normal_year_still_formats_correctly(self):
+        self.assertEqual(gc._format_window_bound(datetime(2026, 3, 5, 9, 8, 7, tzinfo=UTC)), "2026-03-05T09:08:07Z")
+
+    def test_window_params_zero_date_bound_is_zero_padded(self):
+        window = gc.Window(start=datetime(1, 1, 1, tzinfo=UTC), end=datetime(1, 1, 1, tzinfo=UTC))
+        params = window.params("a", "b")
+        self.assertEqual(params["a"], "0001-01-01T00:00:00Z")
+        self.assertEqual(params["b"], "0001-01-01T23:59:59Z")
+
+
 class WindowFilterTests(unittest.TestCase):
     """Bug fixes: deployments/coverage were never window-filtered upstream
     even though the endpoints support it (SPEC.md GAPS §11.4), and the

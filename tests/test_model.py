@@ -219,6 +219,25 @@ class EffectiveStatusCategoryTests(unittest.TestCase):
         self.assertEqual(cat, model.CATEGORY_CANCELLED)
 
 
+class FormatDateTests(unittest.TestCase):
+    """format_date must not delegate year zero-padding to strftime("%Y..."):
+    on Python 3.9 (verified against a real 3.9 interpreter — this is not a
+    hypothesis), datetime(1,1,1).strftime("%Y-%m-%d") yields "1-01-01", not
+    "0001-01-01". format_date is the single place every user-visible date
+    string in this codebase goes through (sprint.working_days, DayStatus.date,
+    board_table's start/end columns via burndown/forecast/report_data), so
+    pinning it here catches a regression before it reaches any of them."""
+
+    def test_ordinary_date(self):
+        self.assertEqual(model.format_date(dt(2026, 1, 5)), "2026-01-05")
+
+    def test_zero_time_sentinel_is_zero_padded_to_four_digits(self):
+        self.assertEqual(model.format_date(model.ZERO_TIME), "0001-01-01")
+
+    def test_single_digit_month_and_day_are_zero_padded(self):
+        self.assertEqual(model.format_date(dt(2026, 3, 7)), "2026-03-07")
+
+
 class WorkingDaysTests(unittest.TestCase):
     def test_excludes_saturday_and_sunday(self):
         # Mon 2026-01-05 .. Sun 2026-01-11 (one full week)

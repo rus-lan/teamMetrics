@@ -60,7 +60,7 @@ def burndown_from_payload(payload: "metrics_mod.Payload", now: datetime) -> list
     k = 0
     d = first
     while d <= last:
-        date_str = d.strftime("%Y-%m-%d")
+        date_str = model.format_date(d)
         remaining_sp = 0.0
         remaining_items = 0
         for is_ in payload.issues:
