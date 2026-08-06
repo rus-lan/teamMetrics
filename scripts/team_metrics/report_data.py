@@ -839,7 +839,7 @@ def build_combined_report(
 
     personal_available, personal_reason, personal_data = False, "GitLab is not configured for this run", None
     engineering_available, engineering_reason, engineering_data = False, "GitLab is not configured for this run", None
-    gitlab_fetch_issues = {"skipped_projects": [], "mr_fetch_errors": []}
+    gitlab_fetch_issues = {"skipped_projects": [], "mr_fetch_errors": [], "deployment_warnings": []}
     # None (not False/0) when GitLab was never configured: neither fetch ran
     # one way or the other, so True/False would misleadingly imply a
     # decision was actually made about a fetch that never happened.
@@ -877,9 +877,22 @@ def build_combined_report(
         # class that does NOT reach here: it propagates out of
         # fetch_team_data and fails the whole run (see main()'s except
         # clause) — a revoked token must never look like a clean report.
+        #
+        # deployment_warnings carries two distinct codes a renderer must
+        # treat differently:
+        #   FILTER_REJECTED_FALLBACK — the server rejected the date-filtered
+        #     request; the client retried unfiltered and windowed client-side.
+        #     The numbers are still correct, the run just cost more requests.
+        #   PAGINATION_LIMIT — the fetch hit the page cap or time deadline and
+        #     returned a PARTIAL deployment list. deployment counts and the
+        #     success rate computed over that subset are understated and must
+        #     not be read as complete — this is exactly the "truncated list
+        #     that looks like a plausible lower number" failure mode this
+        #     whole audit exists to surface, not hide.
         gitlab_fetch_issues = {
             "skipped_projects": gitlab_data.get("skipped_projects", []),
             "mr_fetch_errors": gitlab_data.get("mr_fetch_errors", []),
+            "deployment_warnings": gitlab_data.get("deployment_warnings", []),
         }
 
         engineering_data = engineering_metrics.build_engineering_metrics(

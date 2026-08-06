@@ -1269,6 +1269,16 @@ def build_eng_tab(report: dict, ctx: dict) -> str:
 
     pipe, dep, cov = data["pipelines"], data["deployments"], data["coverage"]
 
+    # PAGINATION_LIMIT means the fetch hit a page cap or time deadline and
+    # returned a partial record set — unlike a window caveat, the numbers
+    # themselves are wrong (understated), not merely out of scope, so this
+    # gets the warn-badge treatment (kpi-warn) rather than the muted .caveat
+    # used for "вне окна отчёта". FILTER_REJECTED_FALLBACK is the opposite:
+    # numbers are correct, it only explains why the run was slower, so it
+    # stays a quiet footer note (see build_footer).
+    dep_warnings = (report.get("gitlab_fetch_issues") or {}).get("deployment_warnings") or []
+    pagination_projects = sorted({w.get("project") for w in dep_warnings if w.get("code") == "PAGINATION_LIMIT"})
+
     # pipelines.count is a run count, not a rate — §5 defines no band for
     # it, so it never borrows the success-rate band (m6).
     p_status = "none"
@@ -1325,6 +1335,23 @@ def build_eng_tab(report: dict, ctx: dict) -> str:
     ctx["ENG_DEPLOYMENTS_PER_WEEK_DELTA_NOTE"] = esc(f"{dep['count']} выкатов" if dep.get("per_week") else "недостаточно точек для частоты")
     ctx["ENG_DEPLOYMENTS_PER_WEEK_SPARK_POINTS"] = build_spark_svg([dep["per_week"]] if dep.get("per_week") else [], spark_status_class(pw_status))
 
+    if pagination_projects:
+        proj_word = ru_plural(len(pagination_projects), "проекту", "проектам", "проектам")
+        raw_names = ", ".join(pagination_projects)
+        pagination_title = (
+            f"Часть записей о деплоях по {proj_word} {raw_names} не была получена — упёрлись в лимит "
+            "страниц или дедлайн запроса. count, per_week и success_rate_pct по деплоям посчитаны на "
+            "неполной выборке и, вероятно, занижены."
+        )
+        dep_pagination_warn = (
+            '<div class="kpi-warn"><span class="warn-badge" title="' + esc(pagination_title) + '">'
+            "PAGINATION_LIMIT: " + esc(raw_names) + "</span></div>"
+        )
+    else:
+        dep_pagination_warn = ""
+    ctx["ENG_DEPLOYMENTS_COUNT_PAGINATION_WARN"] = dep_pagination_warn
+    ctx["ENG_DEPLOYMENTS_PER_WEEK_PAGINATION_WARN"] = dep_pagination_warn
+
     cov_available = cov.get("coverage_avg_pct") is not None
     cov_status = "none" if not cov_available else _status_band(cov["coverage_avg_pct"], 80, 65, higher_is_better=True)
     project_word = ru_plural(cov["sample_count"], "проекту", "проектам", "проектам")
@@ -1370,6 +1397,7 @@ def build_eng_tab(report: dict, ctx: dict) -> str:
             "pipelines": by_pipe.get(proj, {"count": 0, "failed": 0, "success_rate_pct": None}),
             "deployments": by_dep.get(proj, {"count": 0, "failed": 0, "success_rate_pct": None}),
             "coverage": by_cov.get(proj, {"coverage_avg_pct": None, "sample_count": 0}),
+            "deployments_pagination_limited": proj in pagination_projects,
         }
         for proj in projects
     ]
@@ -1401,12 +1429,22 @@ def build_eng_project_row_html(inner: str, row: dict) -> str:
     cov_val = cc.get("coverage_avg_pct")
     cov_cell = fmt_num(cov_val, 2) if cov_val is not None else '&mdash; <span class="badge-na">нет данных</span>'
     cov_cls = "" if cov_val is not None else " cell-unavail"
+    dep_count_cell = fmt_int(dd.get("count", 0))
+    if row.get("deployments_pagination_limited"):
+        # Same PAGINATION_LIMIT condition as the team-level tile warning
+        # (build_eng_tab) — marked here too because the caveat belongs
+        # beside every number it qualifies, not only the aggregate.
+        row_title = (
+            "Деплои по этому проекту получены не полностью — упёрлись в лимит страниц или дедлайн "
+            "запроса (PAGINATION_LIMIT). count, failed и success_rate_pct в этой строке занижены."
+        )
+        dep_count_cell += f' <span class="warn-badge" title="{esc(row_title)}">неполно</span>'
     mapping = {
         "ENG_PROJECT_NAME": esc(row["project"]),
         "ENG_PROJECT_PIPELINES_COUNT": fmt_int(pp.get("count", 0)),
         "ENG_PROJECT_PIPELINES_FAILED": fmt_int(pp.get("failed", 0)),
         "ENG_PROJECT_PIPELINES_SUCCESS_RATE_PCT": fmt_num(pp.get("success_rate_pct"), 2),
-        "ENG_PROJECT_DEPLOYMENTS_COUNT": fmt_int(dd.get("count", 0)),
+        "ENG_PROJECT_DEPLOYMENTS_COUNT": dep_count_cell,
         "ENG_PROJECT_DEPLOYMENTS_FAILED": fmt_int(dd.get("failed", 0)),
         "ENG_PROJECT_DEPLOYMENTS_SUCCESS_RATE_PCT": fmt_num(dd.get("success_rate_pct"), 2),
         "ENG_PROJECT_COVERAGE_AVG_PCT": cov_cell,
@@ -1809,7 +1847,7 @@ def build_footer(report: dict, ctx: dict) -> None:
     params = report.get("params") or {}
     board = report.get("board") or {}
     forecast = report.get("forecast")
-    gitlab_issues = report.get("gitlab_fetch_issues") or {"skipped_projects": [], "mr_fetch_errors": []}
+    gitlab_issues = report.get("gitlab_fetch_issues") or {"skipped_projects": [], "mr_fetch_errors": [], "deployment_warnings": []}
     eng = report.get("engineering") or {}
     gitlab_configured = eng.get("available") or (report.get("personal") or {}).get("available")
 
@@ -1834,6 +1872,21 @@ def build_footer(report: dict, ctx: dict) -> None:
         )
         disclaimers.append(
             f"Ошибки при выгрузке merge request'ов ({len(gitlab_issues['mr_fetch_errors'])}): {details}."
+        )
+    filter_fallback_projects = sorted({
+        w.get("project") for w in (gitlab_issues.get("deployment_warnings") or [])
+        if w.get("code") == "FILTER_REJECTED_FALLBACK"
+    })
+    if filter_fallback_projects:
+        # Informational only — the server rejected server-side date filtering
+        # for deployments, the client retried unfiltered and windowed the
+        # result itself. Numbers are unaffected, this only explains why the
+        # run took longer, so unlike PAGINATION_LIMIT it stays a quiet note
+        # here rather than a marker on any tile or row.
+        disclaimers.append(
+            "GitLab отклонил серверную фильтрацию деплоев по дате для проектов ("
+            + ", ".join(esc(p) for p in filter_fallback_projects)
+            + ") — список запрошен целиком, окно отчёта применено на стороне клиента; на итоговые числа это не влияет."
         )
     footer_note = "Статический файл — ни одного внешнего запроса, работает из file:// в закрытой сети."
     if disclaimers:

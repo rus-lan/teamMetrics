@@ -2196,6 +2196,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
         <section class="section" id="sec-person-note">
           <div class="section-body">
             
+            
             <div class="banner info"><span class="banner-tag">СЕМАНТИКА</span><div class="banner-body"><b>Числа этой вкладки не обязаны сходиться с вкладкой «Команда».</b><span class="detail">Привязка задачи к спринту: вкладка «Спринт» относит задачу к спринту по интервалам членства в поле Sprint (задача могла заходить и выходить из спринта несколько раз), а персональная и инженерная статистика — по дате завершения задачи, попавшей в календарные даты спринта. Для одной и той же задачи эти два способа могут указать на разные спринты.<br><br>Определение «сделано»: вкладка «Спринт» считает задачу выполненной, если на конец спринта её статус относится к категории Jira «done» (с учётом списка отменённых статусов). Персональная статистика считает задачу выполненной по первому попаданию в один из именованных финальных статусов, включая предрелизные «To Test» и «Ready to Deploy». Число выполненных задач по этим двум вкладкам не совпадает и не должно сравниваться напрямую.<br><br>Throughput (день сдачи задачи): вкладка «Спринт» берёт день ПОСЛЕДНЕГО перехода задачи в категорию «done» внутри спринта, а персональная статистика — день ПЕРВОГО перехода в финальный статус. При повторных переоткрытиях задачи эти даты могут разойтись на недели.<br><br>Story Points: вкладка «Спринт» показывает значение поля на момент выхода задачи из спринта (реплей истории изменений SP), а персональная статистика — текущее значение поля на момент выгрузки отчёта. Если оценку меняли уже после спринта, суммы SP по двум вкладкам разойдутся.</span></div></div>
           </div>
         </section>
@@ -3970,6 +3971,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                   </div>
                   <svg class="spark" viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden="true" focusable="false"><circle class="sp-dot-good" cx="98" cy="16.00" r="2.4"/></svg>
                 </div>
+                <div class="kpi-warn"><span class="warn-badge" title="Часть записей о деплоях по проекту group/proj не была получена — упёрлись в лимит страниц или дедлайн запроса. count, per_week и success_rate_pct по деплоям посчитаны на неполной выборке и, вероятно, занижены.">PAGINATION_LIMIT: group/proj</span></div>
               </article>
 
               
@@ -3994,6 +3996,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                   </div>
                   <svg class="spark" viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden="true" focusable="false"></svg>
                 </div>
+                <div class="kpi-warn"><span class="warn-badge" title="Часть записей о деплоях по проекту group/proj не была получена — упёрлись в лимит страниц или дедлайн запроса. count, per_week и success_rate_pct по деплоям посчитаны на неполной выборке и, вероятно, занижены.">PAGINATION_LIMIT: group/proj</span></div>
               </article>
 
               
@@ -4107,7 +4110,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
                       <td class="col-num gsep">2</td>
                       <td class="col-num">1</td>
                       <td class="col-num">50</td>
-                      <td class="col-num gsep">1</td>
+                      <td class="col-num gsep">1 <span class="warn-badge" title="Деплои по этому проекту получены не полностью — упёрлись в лимит страниц или дедлайн запроса (PAGINATION_LIMIT). count, failed и success_rate_pct в этой строке занижены.">неполно</span></td>
                       <td class="col-num">0</td>
                       <td class="col-num">100</td>
                       <td class="col-num gsep">82.5</td>
@@ -4166,7 +4169,7 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
         <span class="tool-version">calc_schema_version 1</span>
       </div>
       
-      <p class="foot-note">Статический файл — ни одного внешнего запроса, работает из file:// в закрытой сети. Пропущены проекты GitLab (не путать с нулевой активностью): team/legacy-billing (NOT_FOUND) Ошибки при выгрузке merge request'ов (1): group/proj/wendy (merged): RATE_LIMITED.</p>
+      <p class="foot-note">Статический файл — ни одного внешнего запроса, работает из file:// в закрытой сети. Пропущены проекты GitLab (не путать с нулевой активностью): team/legacy-billing (NOT_FOUND) Ошибки при выгрузке merge request'ов (1): group/proj/wendy (merged): RATE_LIMITED. GitLab отклонил серверную фильтрацию деплоев по дате для проектов (group/infra) — список запрошен целиком, окно отчёта применено на стороне клиента; на итоговые числа это не влияет.</p>
     </div>
 
     <h2 class="eyebrow" style="margin-bottom:8px">Параметры запуска</h2>
@@ -4267,6 +4270,10 @@ table.data th.rowkey { font-family: var(--font-mono); font-size: 11.5px; }
       <div class="param">
         <dt>Длительность запуска</dt>
         <dd>—</dd>
+      </div>
+      <div class="param">
+        <dt>Запросов к GitLab</dt>
+        <dd>10 запросов к GitLab</dd>
       </div>
       
     </dl>

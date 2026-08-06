@@ -561,7 +561,10 @@ class FakeGitLabClient:
     """Duck-typed stub matching gitlab_client.GitLabClient's public surface —
     only what glc.fetch_team_data() calls. No network involvement."""
 
-    def __init__(self, project_ids, mrs_by_project=None, pipelines_by_project=None, deployments_by_project=None, coverage_by_project=None):
+    def __init__(
+        self, project_ids, mrs_by_project=None, pipelines_by_project=None, deployments_by_project=None,
+        coverage_by_project=None, deployment_warnings_to_emit=None,
+    ):
         self._project_ids = project_ids
         self._mrs = mrs_by_project or {}
         self._pipelines = pipelines_by_project or {}
@@ -574,6 +577,12 @@ class FakeGitLabClient:
         # call is a fine duck-typed stand-in since this fake never does real
         # HTTP.
         self.request_count = 0
+        # fetch_team_data() reads client.deployment_warnings the same way
+        # (before/after length snapshot) — starts empty, deployments()
+        # appends whatever this fake is configured to emit, so the snapshot
+        # correctly captures only what happened during THIS call.
+        self.deployment_warnings = []
+        self._deployment_warnings_to_emit = deployment_warnings_to_emit or []
 
     def project_id(self, path):
         self.request_count += 1
@@ -593,6 +602,7 @@ class FakeGitLabClient:
 
     def deployments(self, path, project_id, *, window=None):
         self.request_count += 1
+        self.deployment_warnings.extend(self._deployment_warnings_to_emit)
         return list(self._deployments.get(path, []))
 
     def coverage(self, path, project_id, *, window=None):
@@ -716,6 +726,29 @@ class BuildCombinedReportTests(unittest.TestCase):
         )
         self.assertIn("skipped_projects", report["gitlab_fetch_issues"])
         self.assertIn("mr_fetch_errors", report["gitlab_fetch_issues"])
+        self.assertEqual(report["gitlab_fetch_issues"]["deployment_warnings"], [])
+
+    def test_deployment_warnings_surfaced_from_fetch_team_data(self):
+        gitlab = FakeGitLabClient(
+            project_ids={"group/proj": 42},
+            deployment_warnings_to_emit=[
+                {"project": "group/proj", "code": "PAGINATION_LIMIT", "message": "deployment fetch stopped early: hit page cap"},
+            ],
+        )
+        report = report_data.build_combined_report(
+            self.client, sprint_ids=[500], now=dt(2026, 2, 7),
+            gitlab_client_obj=gitlab, gitlab_projects=["group/proj"], employees=["alice"],
+        )
+        warnings = report["gitlab_fetch_issues"]["deployment_warnings"]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["code"], "PAGINATION_LIMIT")
+        self.assertEqual(warnings[0]["project"], "group/proj")
+
+    def test_deployment_warnings_absent_key_when_gitlab_not_configured(self):
+        report = report_data.build_combined_report(
+            self.client, sprint_ids=[500], now=dt(2026, 2, 7), gitlab_client_obj=None,
+        )
+        self.assertEqual(report["gitlab_fetch_issues"]["deployment_warnings"], [])
 
     def test_request_count_and_opt_out_flags_echoed_into_params_when_gitlab_used(self):
         report = report_data.build_combined_report(

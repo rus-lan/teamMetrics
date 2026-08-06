@@ -1090,6 +1090,119 @@ class WindowCaveatTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------
+# gitlab_fetch_issues.deployment_warnings — PAGINATION_LIMIT understates the
+# numbers and must be unmissable; FILTER_REJECTED_FALLBACK does not change
+# the numbers and stays a quiet note. The two must never render the same way.
+# --------------------------------------------------------------------------
+
+
+class DeploymentWarningsTests(unittest.TestCase):
+    @staticmethod
+    def _deployments_tiles(out):
+        section = out[out.index('id="sec-eng-kpi"'):out.index('id="sec-eng-chart"')]
+        count_tile = section.split('kpi-label">Деплои<')[1].split("</article>")[0]
+        per_week_tile = section.split('kpi-label">Деплоев в неделю<')[1].split("</article>")[0]
+        return count_tile, per_week_tile
+
+    @staticmethod
+    def _eng_table_section(out):
+        start = out.index('id="sec-eng-table"')
+        return out[start:out.index("</table>", start)]
+
+    def _row(self, table_section, project):
+        start = table_section.index(f">{project}<")
+        return table_section[start:start + 800]
+
+    def test_no_deployment_warnings_renders_nothing(self):
+        report = build_multi_sprint_report(with_gitlab=True)
+        report["gitlab_fetch_issues"]["deployment_warnings"] = []
+        out = rh.render_html(report)
+        count_tile, per_week_tile = self._deployments_tiles(out)
+        self.assertNotIn("kpi-warn", count_tile)
+        self.assertNotIn("kpi-warn", per_week_tile)
+        self.assertNotIn("PAGINATION_LIMIT", out)
+        self.assertNotIn("FILTER_REJECTED_FALLBACK", out)
+        self.assertNotIn("неполно", self._eng_table_section(out))
+
+    def test_absent_deployment_warnings_key_renders_nothing(self):
+        # gitlab_fetch_issues defaults to {} for a no-GitLab run — the block
+        # must not turn into a permanently visible empty box.
+        report = build_multi_sprint_report(with_gitlab=True)
+        del report["gitlab_fetch_issues"]["deployment_warnings"]
+        out = rh.render_html(report)
+        self.assertNotIn("PAGINATION_LIMIT", out)
+        self.assertNotIn("неполно", self._eng_table_section(out))
+
+    def test_pagination_limit_marks_both_deployments_tiles(self):
+        report = build_multi_sprint_report(with_gitlab=True)
+        report["gitlab_fetch_issues"]["deployment_warnings"] = [
+            {"project": "group/proj", "code": "PAGINATION_LIMIT", "message": "page cap hit"}
+        ]
+        out = rh.render_html(report)
+        count_tile, per_week_tile = self._deployments_tiles(out)
+        for tile in (count_tile, per_week_tile):
+            self.assertIn("kpi-warn", tile)
+            self.assertIn("warn-badge", tile)
+            self.assertIn("PAGINATION_LIMIT", tile)
+            self.assertIn("group/proj", tile)
+
+    def test_pagination_limit_marks_the_affected_project_row(self):
+        report = build_multi_sprint_report(with_gitlab=True)
+        report["gitlab_fetch_issues"]["deployment_warnings"] = [
+            {"project": "group/proj", "code": "PAGINATION_LIMIT", "message": "page cap hit"}
+        ]
+        out = rh.render_html(report)
+        row = self._row(self._eng_table_section(out), "group/proj")
+        self.assertIn("неполно", row)
+        self.assertIn("warn-badge", row)
+
+    def test_multiple_affected_projects_are_all_named(self):
+        report = build_multi_sprint_report(with_gitlab=True)
+        report["engineering"]["data"]["deployments"]["per_project"].append(
+            {"project": "group/proj2", "count": 4, "failed": 1, "success_rate_pct": 75.0}
+        )
+        report["gitlab_fetch_issues"]["deployment_warnings"] = [
+            {"project": "group/proj", "code": "PAGINATION_LIMIT", "message": "page cap hit"},
+            {"project": "group/proj2", "code": "PAGINATION_LIMIT", "message": "deadline hit"},
+        ]
+        out = rh.render_html(report)
+        count_tile, _ = self._deployments_tiles(out)
+        self.assertIn("group/proj", count_tile)
+        self.assertIn("group/proj2", count_tile)
+        table_section = self._eng_table_section(out)
+        for proj in ("group/proj", "group/proj2"):
+            self.assertIn("неполно", self._row(table_section, proj), f"{proj} row missing pagination marker")
+
+    def test_filter_rejected_fallback_does_not_use_warn_badge(self):
+        report = build_multi_sprint_report(with_gitlab=True)
+        report["gitlab_fetch_issues"]["deployment_warnings"] = [
+            {"project": "group/proj", "code": "FILTER_REJECTED_FALLBACK", "message": "date filter rejected"}
+        ]
+        out = rh.render_html(report)
+        count_tile, per_week_tile = self._deployments_tiles(out)
+        self.assertNotIn("warn-badge", count_tile)
+        self.assertNotIn("warn-badge", per_week_tile)
+        self.assertNotIn("неполно", self._eng_table_section(out))
+        self.assertIn("group/proj", out)
+        self.assertIn("на итоговые числа это не влияет", out)
+
+    def test_both_codes_together_render_distinctly(self):
+        report = build_multi_sprint_report(with_gitlab=True)
+        report["engineering"]["data"]["deployments"]["per_project"].append(
+            {"project": "group/proj2", "count": 4, "failed": 1, "success_rate_pct": 75.0}
+        )
+        report["gitlab_fetch_issues"]["deployment_warnings"] = [
+            {"project": "group/proj", "code": "PAGINATION_LIMIT", "message": "page cap hit"},
+            {"project": "group/proj2", "code": "FILTER_REJECTED_FALLBACK", "message": "date filter rejected"},
+        ]
+        out = rh.render_html(report)
+        table_section = self._eng_table_section(out)
+        self.assertIn("неполно", self._row(table_section, "group/proj"))
+        self.assertNotIn("неполно", self._row(table_section, "group/proj2"))
+        self.assertIn("на итоговые числа это не влияет", out)
+
+
+# --------------------------------------------------------------------------
 # Full-render smoke tests
 # --------------------------------------------------------------------------
 
