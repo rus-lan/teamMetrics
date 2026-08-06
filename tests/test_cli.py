@@ -40,6 +40,7 @@ ITEM_STORY_POINT = "поле Story Points"
 ITEM_SPRINT_BOARD = "поиск спринта/доски"
 ITEM_GITLAB_CONN = "подключение к GitLab"
 ITEM_GITLAB_PROJECTS = "проекты GitLab"
+ITEM_GITLAB_DEPLOYMENTS = "запрос деплоев GitLab"
 
 PASS = "[УСПЕШНО]"
 FAIL = "[ОШИБКА]"
@@ -213,15 +214,21 @@ class _FailingJiraClient:
 
 
 class _OKGitLabClient:
-    def __init__(self, username="alice", project_ids=None):
+    def __init__(self, username="alice", project_ids=None, deployments_error=None):
         self._username = username
         self._project_ids = project_ids or {}
+        self._deployments_error = deployments_error
 
     def current_user(self):
         return {"username": self._username}
 
     def project_id(self, path):
         return self._project_ids.get(path)
+
+    def deployments(self, project_path, project_id, *, window=None):
+        if self._deployments_error is not None:
+            raise self._deployments_error
+        return []
 
 
 class _FailingGitLabClient:
@@ -501,6 +508,124 @@ class CheckCommandTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn(f"{FAIL} {ITEM_GITLAB_CONN}", out)
         self.assertIn(f"{SKIP} {ITEM_GITLAB_PROJECTS}", out)
+
+    # -- GitLab deployments probe (item 10) --------------------------------
+    #
+    # Calls gitlab_client.deployments() through the fake client rather than
+    # asserting anything about its internal query params — the probe's whole
+    # point is "send the same request `run` sends", which it gets for free
+    # by calling the same method; it never reimplements the param shape.
+
+    def test_deployments_probe_passes_when_the_request_is_accepted(self):
+        with _tempdir() as tmp:
+            (tmp / config_mod.DEFAULT_CONFIG_FILENAME).write_text(
+                json.dumps({"gitlab": {"projects": ["team/a"]}}), encoding="utf-8"
+            )
+            code, out, _err = self._check(
+                [], {**_jira_env(), **_gitlab_env()},
+                gitlab_cls=lambda: _OKGitLabClient(project_ids={"team/a": 1}),
+            )
+        self.assertEqual(code, 0)
+        self.assertIn(f"{PASS} {ITEM_GITLAB_DEPLOYMENTS}", out)
+        self.assertIn("team/a", out)
+
+    def test_deployments_probe_fails_on_400_bad_request(self):
+        error = glc.GitLabError("ListDeployments", "`finished_at` filter requires `finished_at` sort.", code="", status_code=400)
+        with _tempdir() as tmp:
+            (tmp / config_mod.DEFAULT_CONFIG_FILENAME).write_text(
+                json.dumps({"gitlab": {"projects": ["team/a"]}}), encoding="utf-8"
+            )
+            code, out, _err = self._check(
+                [], {**_jira_env(), **_gitlab_env()},
+                gitlab_cls=lambda: _OKGitLabClient(project_ids={"team/a": 1}, deployments_error=error),
+            )
+        self.assertEqual(code, 1, "a rejected request shape is exactly the 'this run will not work' signal check exists for")
+        self.assertIn(f"{FAIL} {ITEM_GITLAB_DEPLOYMENTS}", out)
+        self.assertIn("finished_at", out)
+
+    def test_deployments_probe_warns_not_fails_on_403(self):
+        error = glc.GitLabError("ListDeployments", "403 Forbidden", code="AUTH_FAILED", status_code=403)
+        with _tempdir() as tmp:
+            (tmp / config_mod.DEFAULT_CONFIG_FILENAME).write_text(
+                json.dumps({"gitlab": {"projects": ["team/a"]}}), encoding="utf-8"
+            )
+            code, out, _err = self._check(
+                [], {**_jira_env(), **_gitlab_env()},
+                gitlab_cls=lambda: _OKGitLabClient(project_ids={"team/a": 1}, deployments_error=error),
+            )
+        self.assertEqual(code, 0, "a permission problem on one project is not a malformed-request signal")
+        self.assertIn(f"{WARN} {ITEM_GITLAB_DEPLOYMENTS}", out)
+
+    def test_deployments_probe_warns_not_fails_on_404(self):
+        error = glc.GitLabError("ListDeployments", "404 Not Found", code="NOT_FOUND", status_code=404)
+        with _tempdir() as tmp:
+            (tmp / config_mod.DEFAULT_CONFIG_FILENAME).write_text(
+                json.dumps({"gitlab": {"projects": ["team/a"]}}), encoding="utf-8"
+            )
+            code, out, _err = self._check(
+                [], {**_jira_env(), **_gitlab_env()},
+                gitlab_cls=lambda: _OKGitLabClient(project_ids={"team/a": 1}, deployments_error=error),
+            )
+        self.assertEqual(code, 0)
+        self.assertIn(f"{WARN} {ITEM_GITLAB_DEPLOYMENTS}", out)
+
+    def test_deployments_probe_warns_not_fails_on_transient_5xx(self):
+        error = glc.GitLabError("ListDeployments", "503 Service Unavailable", code="", status_code=503)
+        with _tempdir() as tmp:
+            (tmp / config_mod.DEFAULT_CONFIG_FILENAME).write_text(
+                json.dumps({"gitlab": {"projects": ["team/a"]}}), encoding="utf-8"
+            )
+            code, out, _err = self._check(
+                [], {**_jira_env(), **_gitlab_env()},
+                gitlab_cls=lambda: _OKGitLabClient(project_ids={"team/a": 1}, deployments_error=error),
+            )
+        self.assertEqual(code, 0)
+        self.assertIn(f"{WARN} {ITEM_GITLAB_DEPLOYMENTS}", out)
+
+    def test_deployments_probe_uses_only_the_first_configured_project(self):
+        error = glc.GitLabError("ListDeployments", "bad request", code="", status_code=400)
+        with _tempdir() as tmp:
+            (tmp / config_mod.DEFAULT_CONFIG_FILENAME).write_text(
+                json.dumps({"gitlab": {"projects": ["team/first", "team/second"]}}), encoding="utf-8"
+            )
+            code, out, _err = self._check(
+                [], {**_jira_env(), **_gitlab_env()},
+                gitlab_cls=lambda: _OKGitLabClient(project_ids={"team/first": 1, "team/second": 2}, deployments_error=error),
+            )
+        self.assertIn("team/first", out)
+        self.assertNotIn("team/second", out)
+
+    def test_deployments_probe_skipped_with_no_gitlab_flag(self):
+        with _tempdir() as tmp:
+            (tmp / config_mod.DEFAULT_CONFIG_FILENAME).write_text(
+                json.dumps({"gitlab": {"projects": ["team/a"]}}), encoding="utf-8"
+            )
+            code, out, _err = self._check(["--no-gitlab"], _jira_env())
+        self.assertEqual(code, 0)
+        self.assertIn(f"{SKIP} {ITEM_GITLAB_DEPLOYMENTS}", out)
+
+    def test_deployments_probe_skipped_when_gitlab_not_configured(self):
+        code, out, _err = self._check([], _jira_env())
+        self.assertEqual(code, 0)
+        self.assertIn(f"{SKIP} {ITEM_GITLAB_DEPLOYMENTS}", out)
+
+    def test_deployments_probe_skipped_when_no_projects_configured(self):
+        code, out, _err = self._check([], {**_jira_env(), **_gitlab_env()})
+        self.assertEqual(code, 0)
+        self.assertIn(f"{SKIP} {ITEM_GITLAB_DEPLOYMENTS}", out)
+
+    def test_deployments_probe_never_prints_a_token(self):
+        environ = {**_jira_env(), **_gitlab_env()}
+        with _tempdir() as tmp:
+            (tmp / config_mod.DEFAULT_CONFIG_FILENAME).write_text(
+                json.dumps({"gitlab": {"projects": ["team/a"]}}), encoding="utf-8"
+            )
+            code, out, err = self._check(
+                [], environ, gitlab_cls=lambda: _OKGitLabClient(project_ids={"team/a": 1}),
+            )
+        self.assertIn(f"{PASS} {ITEM_GITLAB_DEPLOYMENTS}", out)
+        self.assertNotIn(environ["GITLAB_TOKEN"], out)
+        self.assertNotIn(environ["GITLAB_TOKEN"], err)
 
 
 # --------------------------------------------------------------------------

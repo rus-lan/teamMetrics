@@ -102,6 +102,7 @@ ITEM_STORY_POINT = "поле Story Points"
 ITEM_SPRINT_BOARD = "поиск спринта/доски"
 ITEM_GITLAB_CONN = "подключение к GitLab"
 ITEM_GITLAB_PROJECTS = "проекты GitLab"
+ITEM_GITLAB_DEPLOYMENTS = "запрос деплоев GitLab"
 
 PASS = "[УСПЕШНО]"
 FAIL = "[ОШИБКА]"
@@ -325,7 +326,7 @@ class CheckE2ETests(unittest.TestCase):
             self.assertEqual(code, 0, out + err)
             for name in (
                 ITEM_JIRA_ENV, ITEM_GITLAB_ENV, ITEM_CONFIG_FILE, ITEM_JIRA_CONN, ITEM_JIRA_VERSION,
-                ITEM_STORY_POINT, ITEM_SPRINT_BOARD, ITEM_GITLAB_CONN, ITEM_GITLAB_PROJECTS,
+                ITEM_STORY_POINT, ITEM_SPRINT_BOARD, ITEM_GITLAB_CONN, ITEM_GITLAB_PROJECTS, ITEM_GITLAB_DEPLOYMENTS,
             ):
                 self.assertIn(f"{PASS} {name}", out, out)
             self.assertIn("9.12.28", out)

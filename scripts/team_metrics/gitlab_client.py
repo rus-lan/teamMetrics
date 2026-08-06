@@ -720,10 +720,42 @@ class GitLabClient:
         updated_after/before would also match a deployment merely edited
         (e.g. retried) during the window without actually finishing in it.
         Bug fix vs the source skill: deployments were never window-filtered
-        there at all even though the endpoint supports it."""
+        there at all even though the endpoint supports it.
+
+        Regression fix (patch release): GitLab's own deployments API docs
+        (https://docs.gitlab.com/api/deployments/, "List project
+        deployments") say "When using finished_before or finished_after,
+        you should specify the order_by to be finished_at and status
+        should be success" — worded as a recommendation, but a live
+        GitLab 19.0 server enforces the ordering half as a hard 400:
+        `{"message":"400 Bad request - \`finished_at\` filter requires
+        \`finished_at\` sort."}`. `order_by=finished_at` (+ an explicit
+        `sort` so both readings of "requires ... sort" are covered) is
+        added whenever the finished_* filter is used; NOT applied
+        unconditionally, since order_by/sort are meaningless (and, per
+        GitLab's own docs, not required) without that filter.
+
+        Deliberately NOT adding `status=success` despite the docs
+        suggesting it alongside order_by: this endpoint fetches every
+        deployment status on purpose — team_deployment_metrics() needs
+        failed deployments to compute deploy_success_rate_pct at all, and
+        the live 400 only ever complained about sort, never status.
+
+        Downstream order-independence checked before adding this: every
+        consumer of these records (team_deployment_metrics(),
+        _weeks_in_span()) aggregates over the full list — counts, an
+        average, a min/max span — none of it depends on record order, so
+        forcing order_by=finished_at/sort=asc changes nothing downstream.
+        (coverage() is the one place in this file that DOES rely on
+        response order — GitLab's default pipeline ordering, to take
+        raw[:1] as "the newest" — but that's the pipelines endpoint, an
+        unrelated code path this change does not touch.)
+        """
         params: dict = {}
         if window is not None:
             params.update(window.params("finished_after", "finished_before"))
+            params["order_by"] = "finished_at"
+            params["sort"] = "asc"  # GitLab's own default; explicit so both readings of the API's "sort" requirement are satisfied
         raw = self._get_paginated(
             "ListDeployments", f"/api/v4/projects/{_qs(project_id)}/deployments", params, per_page=DEPLOYMENT_PAGE_SIZE
         )

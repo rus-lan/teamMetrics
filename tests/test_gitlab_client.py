@@ -446,6 +446,10 @@ class WindowFilterTests(unittest.TestCase):
         self.assertEqual(captured["params"]["finished_before"], "2026-01-31T23:59:59Z")
         self.assertNotIn("updated_after", captured["params"])
         self.assertNotIn("updated_before", captured["params"])
+        # Regression (patch release): GitLab requires order_by=finished_at
+        # alongside the finished_* filter — see DeploymentsFinishedAtSortRequirementTests.
+        self.assertEqual(captured["params"]["order_by"], "finished_at")
+        self.assertIn("sort", captured["params"])
 
     def test_deployments_without_window_sends_no_date_params(self):
         client = _client()
@@ -459,6 +463,10 @@ class WindowFilterTests(unittest.TestCase):
         client.deployments("group/project", 42, window=None)
         self.assertNotIn("finished_after", captured["params"])
         self.assertNotIn("finished_before", captured["params"])
+        # order_by/sort are meaningless (and per GitLab's docs, not
+        # required) without the finished_* filter that demands them.
+        self.assertNotIn("order_by", captured["params"])
+        self.assertNotIn("sort", captured["params"])
 
     def test_coverage_applies_window(self):
         client = _client()
@@ -523,6 +531,57 @@ class WindowFilterTests(unittest.TestCase):
         result_windowed = gc.fetch_team_data(client, projects=["g/p"], employees=["alice"], window=window)
         self.assertTrue(result_windowed["window_applied"]["deployments"])
         self.assertTrue(result_windowed["window_applied"]["coverage"])
+
+
+class DeploymentsFinishedAtSortRequirementTests(unittest.TestCase):
+    """Regression, patch release: a live GitLab 19.0 server rejected our
+    deployments request with
+
+        {"message":"400 Bad request - `finished_at` filter requires
+        `finished_at` sort."}
+
+    GitLab's own docs (https://docs.gitlab.com/api/deployments/, "List
+    project deployments") state: "When using finished_before or
+    finished_after, you should specify the order_by to be finished_at and
+    status should be success" — worded as "should", but the live server
+    enforces the ordering half as a hard requirement. `status=success` is
+    NOT added (see deployments()'s docstring: it would silently drop every
+    failed deployment, breaking deploy_success_rate_pct)."""
+
+    def _fake_attempt_enforcing_gitlab_rule(self, url):
+        """Reproduces the exact rejection a real GitLab 19.0 server
+        returned: 400 if a finished_* filter is present without
+        order_by=finished_at."""
+        if ("finished_after=" in url or "finished_before=" in url) and "order_by=finished_at" not in url:
+            body = b'{"message":"400 Bad request - `finished_at` filter requires `finished_at` sort."}'
+            return body, 400, {}, None
+        return b"[]", 200, {}, None
+
+    def test_current_client_request_does_not_trip_the_live_400_rule(self):
+        client = _client()
+        client._attempt = self._fake_attempt_enforcing_gitlab_rule
+        window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+        # Must not raise: deployments() always sends order_by=finished_at
+        # alongside finished_after/finished_before now.
+        result = client.deployments("group/project", 42, window=window)
+        self.assertEqual(result, [])
+
+    def test_fake_transport_is_not_a_tautology_it_really_rejects_the_old_shape(self):
+        """Sanity check on the fake itself: a request carrying the
+        finished_* filter WITHOUT order_by=finished_at (the pre-fix shape)
+        must still be rejected by the same fake, proving the previous test
+        passed because of the fix, not because the fake always accepts."""
+        client = _client()
+        client._attempt = self._fake_attempt_enforcing_gitlab_rule
+        with self.assertRaises(gc.GitLabError) as ctx:
+            client._get_paginated(
+                "ListDeployments",
+                "/api/v4/projects/42/deployments",
+                {"finished_after": "2026-01-01T00:00:00Z", "finished_before": "2026-01-31T23:59:59Z"},
+                per_page=gc.DEPLOYMENT_PAGE_SIZE,
+            )
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("finished_at", str(ctx.exception))
 
 
 class MissingDiffStatsTests(unittest.TestCase):

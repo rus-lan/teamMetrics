@@ -32,6 +32,7 @@ import re
 import shutil
 import sys
 import urllib.parse
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -504,6 +505,51 @@ def cmd_check(
             # mirrors fetch_team_data(), which lets AUTH_FAILED propagate
             # rather than folding it into skipped_projects.
             items.append(_CheckItem("проекты GitLab", "FAIL", str(e)))
+
+    # 10. GitLab deployments probe — issues the SAME request `run` will make
+    # (calls GitLabClient.deployments() itself, never reimplements its query
+    # params here) for the first configured project only, with the narrowest
+    # possible window. A project resolving (item 9) proves the project path
+    # is valid; it does NOT prove the deployments endpoint accepts the
+    # window-filtered request shape run actually sends — that gap is exactly
+    # what let a live GitLab Server 19.0 reject `run` mid-collection after
+    # `check` had already said everything was fine.
+    if args.no_gitlab:
+        items.append(_CheckItem("запрос деплоев GitLab", "SKIP", "--no-gitlab"))
+    elif gitlab_client_obj is None:
+        items.append(_CheckItem("запрос деплоев GitLab", "SKIP", "проверка подключения к GitLab не пройдена"))
+    elif file_config is None:
+        items.append(_CheckItem("запрос деплоев GitLab", "SKIP", "проверка файла настроек не пройдена"))
+    elif not file_config.gitlab_projects:
+        items.append(_CheckItem("запрос деплоев GitLab", "SKIP", "в gitlab.projects ничего не задано"))
+    else:
+        probe_project = file_config.gitlab_projects[0]
+        try:
+            pid = gitlab_client_obj.project_id(probe_project)
+            if pid is None:
+                items.append(
+                    _CheckItem("запрос деплоев GitLab", "WARN", f"{probe_project}: не разрешился — см. пункт «проекты GitLab»")
+                )
+            else:
+                now = datetime.now(timezone.utc)
+                probe_window = glc.Window(start=now - timedelta(minutes=1), end=now)
+                gitlab_client_obj.deployments(probe_project, pid, window=probe_window)
+                items.append(_CheckItem("запрос деплоев GitLab", "PASS", f"{probe_project}: запрос принят"))
+        except glc.GitLabError as e:
+            if e.status_code == 400:
+                # The request shape itself is rejected (e.g. a filter/sort
+                # coupling GitLab requires but we didn't send) — this is
+                # exactly "this run will not work", the whole point of the
+                # probe.
+                items.append(_CheckItem("запрос деплоев GitLab", "FAIL", f"{probe_project}: GitLab отклонил запрос — {e.message}"))
+            elif e.code == "AUTH_FAILED":
+                items.append(
+                    _CheckItem("запрос деплоев GitLab", "WARN", f"{probe_project}: нет доступа к проекту (роль токена?) — {e.message}")
+                )
+            elif e.code == "NOT_FOUND":
+                items.append(_CheckItem("запрос деплоев GitLab", "WARN", f"{probe_project}: проект не найден для этого запроса — {e.message}"))
+            else:
+                items.append(_CheckItem("запрос деплоев GitLab", "WARN", f"{probe_project}: пробный запрос не выполнен — {e.message}"))
 
     ok = _print_check_items(items)
     return 0 if ok else 1
