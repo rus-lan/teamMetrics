@@ -16,6 +16,7 @@ import os
 import socket
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from jira_metrics import cli
@@ -24,6 +25,7 @@ from jira_metrics import gitlab_client as glc
 from jira_metrics import jira_client as jc
 from jira_metrics import metrics as metrics_mod
 from jira_metrics import model, report_data
+from jira_metrics import render_html as render_html_mod
 
 from helpers import dt
 
@@ -41,6 +43,7 @@ ITEM_GITLAB_PROJECTS = "проекты GitLab"
 PASS = "[УСПЕШНО]"
 FAIL = "[ОШИБКА]"
 SKIP = "[ПРОПУЩЕНО]"
+WARN = "[ПРЕДУПРЕЖДЕНИЕ]"
 
 
 def _jira_env():
@@ -672,6 +675,176 @@ class InvocationNameTests(unittest.TestCase):
                 code = cli.main(["init"], environ=environ, invocation=absolute_argv0)
             self.assertEqual(code, 0)
             self.assertIn("дальше: jira-metrics check", out.getvalue())
+
+
+# --------------------------------------------------------------------------
+# --version / -v
+# --------------------------------------------------------------------------
+
+
+class VersionCommandTests(unittest.TestCase):
+    def _run_version(self, argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main(argv, environ={})
+        return ctx.exception.code, out.getvalue()
+
+    def test_reads_version_from_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            version_file = Path(tmp) / "VERSION"
+            version_file.write_text("9.9.9\n", encoding="utf-8")
+            with unittest.mock.patch.object(cli, "VERSION_PATH", version_file):
+                code, out = self._run_version(["--version"])
+        self.assertEqual(code, 0)
+        self.assertIn("jira-metrics 9.9.9", out)
+
+    def test_short_flag_also_works(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            version_file = Path(tmp) / "VERSION"
+            version_file.write_text("2.0.0", encoding="utf-8")
+            with unittest.mock.patch.object(cli, "VERSION_PATH", version_file):
+                code, out = self._run_version(["-v"])
+        self.assertEqual(code, 0)
+        self.assertIn("jira-metrics 2.0.0", out)
+
+    def test_survives_missing_version_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "no-such-subdir" / "VERSION"
+            with unittest.mock.patch.object(cli, "VERSION_PATH", missing):
+                code, out = self._run_version(["--version"])
+        self.assertEqual(code, 0, "a missing VERSION file must degrade gracefully, not crash")
+        self.assertIn("jira-metrics", out)
+        self.assertIn("не найден файл VERSION", out)
+
+    def test_survives_empty_version_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            version_file = Path(tmp) / "VERSION"
+            version_file.write_text("   \n", encoding="utf-8")
+            with unittest.mock.patch.object(cli, "VERSION_PATH", version_file):
+                code, out = self._run_version(["--version"])
+        self.assertEqual(code, 0)
+        self.assertIn("jira-metrics", out)
+
+
+# --------------------------------------------------------------------------
+# doctor
+# --------------------------------------------------------------------------
+
+
+class DoctorCommandTests(unittest.TestCase):
+    def _doctor(self, environ, *, template_exists=True, global_dir_exists=True, launcher_found=True, write_config=True):
+        with contextlib.ExitStack() as stack:
+            tmp = Path(stack.enter_context(tempfile.TemporaryDirectory()))
+
+            version_file = tmp / "VERSION_for_test"
+            version_file.write_text("1.2.3", encoding="utf-8")
+            stack.enter_context(unittest.mock.patch.object(cli, "VERSION_PATH", version_file))
+
+            if not template_exists:
+                stack.enter_context(
+                    unittest.mock.patch.object(render_html_mod, "TEMPLATE_PATH", tmp / "missing-dir" / "report.html")
+                )
+
+            global_dir = tmp / "global_skill_dir"
+            if global_dir_exists:
+                global_dir.mkdir()
+            stack.enter_context(unittest.mock.patch.object(cli, "GLOBAL_SKILL_DIR", global_dir))
+
+            stack.enter_context(
+                unittest.mock.patch.object(
+                    cli.shutil, "which", lambda name: f"/usr/local/bin/{name}" if launcher_found else None
+                )
+            )
+
+            workdir = tmp / "cwd"
+            workdir.mkdir()
+            if write_config:
+                (workdir / config_mod.DEFAULT_CONFIG_FILENAME).write_text("{}", encoding="utf-8")
+            old_cwd = os.getcwd()
+            os.chdir(workdir)
+            stack.callback(os.chdir, old_cwd)
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cli.main(["doctor"], environ=environ, invocation="jira-metrics")
+            return code, out.getvalue()
+
+    def test_healthy_checkout_all_pass(self):
+        code, out = self._doctor({**_jira_env(), **_gitlab_env()})
+        self.assertEqual(code, 0)
+        self.assertIn(f"{PASS} версия Python", out)
+        self.assertIn(f"{PASS} файлы skill", out)
+        self.assertIn(f"{PASS} установка skill", out)
+        self.assertIn(f"{PASS} команда jira-metrics в PATH", out)
+        self.assertIn(f"{PASS} файл настроек в текущей папке", out)
+        self.assertIn(f"{PASS} переменные окружения", out)
+        self.assertIn(f"{PASS} самопроверка шаблона отчёта", out)
+
+    def test_run_from_checkout_warns_not_fails(self):
+        code, out = self._doctor({}, global_dir_exists=False)
+        self.assertEqual(code, 0)
+        self.assertIn(f"{WARN} установка skill", out)
+        self.assertIn("локальная копия", out)
+
+    def test_no_config_file_warns_not_fails(self):
+        code, out = self._doctor({}, write_config=False)
+        self.assertEqual(code, 0)
+        self.assertIn(f"{WARN} файл настроек в текущей папке", out)
+        self.assertIn("jira-metrics init", out)
+
+    def test_launcher_not_on_path_warns_not_fails(self):
+        code, out = self._doctor({}, launcher_found=False)
+        self.assertEqual(code, 0)
+        self.assertIn(f"{WARN} команда jira-metrics в PATH", out)
+        self.assertIn("PATH", out)
+
+    def test_missing_template_fails(self):
+        code, out = self._doctor({}, template_exists=False)
+        self.assertNotEqual(code, 0, "a broken/truncated install is a real failure, doctor must exit non-zero")
+        self.assertIn(f"{FAIL} файлы skill", out)
+        self.assertIn(f"{FAIL} самопроверка шаблона отчёта", out)
+
+    def test_missing_jira_env_vars_warns_not_fails(self):
+        code, out = self._doctor({})
+        self.assertEqual(code, 0, "doctor must work with no tokens set at all — that is the point of the command")
+        self.assertIn(f"{WARN} переменные окружения", out)
+        self.assertIn("JIRA_BASE_URL: не задан", out)
+        self.assertIn("JIRA_TOKEN: не задан", out)
+
+    def test_half_configured_gitlab_env_warns(self):
+        environ = {**_jira_env(), "GITLAB_URL": "https://gitlab.example.com"}
+        code, out = self._doctor(environ)
+        self.assertEqual(code, 0)
+        self.assertIn(f"{WARN} переменные окружения", out)
+
+    def test_never_prints_a_token_value(self):
+        environ = {
+            "JIRA_BASE_URL": "https://jira.example.com",
+            "JIRA_TOKEN": "super-secret-jira-token-xyz",
+            "GITLAB_URL": "https://gitlab.example.com",
+            "GITLAB_TOKEN": "super-secret-gitlab-token-abc",
+        }
+        code, out = self._doctor(environ)
+        self.assertEqual(code, 0)
+        self.assertNotIn("super-secret-jira-token-xyz", out)
+        self.assertNotIn("super-secret-gitlab-token-abc", out)
+        self.assertIn("JIRA_TOKEN: задан", out)
+        self.assertIn("GITLAB_TOKEN: задан", out)
+
+    def test_python_too_old_fails(self):
+        """This suite only ever actually runs under >= 3.9 — faking
+        sys.version_info (its real type isn't user-constructible, so a
+        namedtuple with the same field names stands in) exercises the < 3.9
+        branch without needing an old interpreter."""
+        import collections
+
+        fake_version_info = collections.namedtuple("version_info", ["major", "minor", "micro", "releaselevel", "serial"])
+        with unittest.mock.patch.object(cli.sys, "version_info", fake_version_info(3, 8, 5, "final", 0)):
+            code, out = self._doctor({})
+        self.assertNotEqual(code, 0)
+        self.assertIn(f"{FAIL} версия Python", out)
+        self.assertIn("3.8.5", out)
 
 
 if __name__ == "__main__":

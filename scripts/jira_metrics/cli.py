@@ -1,4 +1,5 @@
-"""Command surface for the `jira-metrics` tool: init / check / run / report.
+"""Command surface for the `jira-metrics` tool: init / check / run / report /
+doctor, plus a top-level --version/-v.
 
 Two ways to reach this dispatcher — pick either, both call `main()` below:
 
@@ -12,10 +13,14 @@ flags, unchanged behavior) — this module only adds a layer on top:
     check   verify Jira/GitLab reachability + config, no report built
     run     fetch + compute + write BOTH the JSON data file and the HTML report
     report  render HTML from an existing JSON data file — zero network calls
+    doctor  check the environment/install (Python version, skill files, PATH,
+            config file, env var presence) — no network, no tokens required
 
 `report` never imports/constructs a Jira or GitLab client and never reads
 JIRA_BASE_URL/JIRA_TOKEN/GITLAB_URL/GITLAB_TOKEN — see tests/test_cli.py's
-ZeroNetworkTests for the enforcement.
+ZeroNetworkTests for the enforcement. `doctor` makes the same guarantee for
+the same reason: it is meant to run right after install, before any token is
+ever set.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -40,9 +46,23 @@ from . import report_data
 SKILL_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_CONFIG_FILENAME = ".jira-metrics.example.json"
 EXAMPLE_CONFIG_PATH = SKILL_ROOT / EXAMPLE_CONFIG_FILENAME
+VERSION_FILENAME = "VERSION"
+VERSION_PATH = SKILL_ROOT / VERSION_FILENAME
+GLOBAL_SKILL_DIR = Path.home() / ".claude" / "skills" / "jira-metrics-report"
 
 DEFAULT_RUN_HTML_OUT = "report.html"
 DEFAULT_RUN_JSON_OUT = "report.json"
+
+
+def _read_version() -> str:
+    """Single source of truth is the VERSION file at the skill root — never a
+    hardcoded string here. An installed copy with a missing/unreadable
+    VERSION file must still run (`--version` degrades, doesn't crash)."""
+    try:
+        text = VERSION_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "неизвестна (не найден файл VERSION)"
+    return text or "неизвестна (файл VERSION пуст)"
 
 # The set of report_data.py schema_version values `report`/render_html.py can
 # safely render. Bump alongside metrics.SCHEMA_VERSION when the report dict
@@ -86,6 +106,11 @@ def _translate_pipeline_help(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="jira-metrics", description="Отчёты по метрикам команды из Jira и GitLab")
+    # argparse's `version` action fires and exits immediately when it sees
+    # -v/--version, the same way -h/--help does — before the "command is
+    # required" check on the subparsers below, so `jira-metrics --version`
+    # (no subcommand) works.
+    parser.add_argument("-v", "--version", action="version", version=f"jira-metrics {_read_version()}")
     sub = parser.add_subparsers(dest="command", required=True, help="команда")
 
     p_init = sub.add_parser("init", help="Создать .jira-metrics.json в текущей папке")
@@ -108,6 +133,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("report_json", nargs="?", default=None, metavar="ПУТЬ", help="Путь к JSON-файлу report_data (по умолчанию: stdin)")
     p_report.add_argument("-o", "--out", default=None, metavar="ПУТЬ", help="Путь для HTML-файла (по умолчанию: stdout)")
     p_report.add_argument("--template", default=None, metavar="ПУТЬ", help="Свой путь к шаблону (по умолчанию: templates/report.html)")
+
+    sub.add_parser("doctor", help="Проверить окружение и установку skill — без сети, без токенов")
 
     return parser
 
@@ -173,12 +200,27 @@ class _CheckItem:
 
     def __init__(self, name: str, status: str, detail: str = ""):
         self.name = name
-        self.status = status  # "PASS" | "FAIL" | "SKIP" (internal only, never printed)
+        self.status = status  # "PASS" | "FAIL" | "SKIP" | "WARN" (internal only, never printed)
         self.detail = detail
 
 
 # internal status -> printed Russian label
-_STATUS_LABEL_RU = {"PASS": "УСПЕШНО", "FAIL": "ОШИБКА", "SKIP": "ПРОПУЩЕНО"}
+_STATUS_LABEL_RU = {"PASS": "УСПЕШНО", "FAIL": "ОШИБКА", "SKIP": "ПРОПУЩЕНО", "WARN": "ПРЕДУПРЕЖДЕНИЕ"}
+
+
+def _print_check_items(items: list[_CheckItem]) -> bool:
+    """Prints one `[СТАТУС] name — detail` line per item; returns True iff no
+    item FAILed. WARN/SKIP never flip the result — `check`/`doctor` both exit
+    non-zero only on a real FAIL, per their own contracts."""
+    ok = True
+    for item in items:
+        line = f"[{_STATUS_LABEL_RU[item.status]}] {item.name}"
+        if item.detail:
+            line += f" — {item.detail}"
+        print(line)
+        if item.status == "FAIL":
+            ok = False
+    return ok
 
 
 def cmd_check(
@@ -334,14 +376,7 @@ def cmd_check(
             # rather than folding it into skipped_projects.
             items.append(_CheckItem("проекты GitLab", "FAIL", str(e)))
 
-    ok = True
-    for item in items:
-        line = f"[{_STATUS_LABEL_RU[item.status]}] {item.name}"
-        if item.detail:
-            line += f" — {item.detail}"
-        print(line)
-        if item.status == "FAIL":
-            ok = False
+    ok = _print_check_items(items)
     return 0 if ok else 1
 
 
@@ -450,6 +485,102 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------
+# doctor
+# --------------------------------------------------------------------------
+
+
+def cmd_doctor(args: argparse.Namespace, environ: dict, invocation: str) -> int:
+    """Checks the ENVIRONMENT and the install, not Jira/GitLab credentials —
+    `check` covers connectivity/auth; `doctor` must work with no tokens set
+    and no network at all, right after a fresh install."""
+    items: list[_CheckItem] = []
+
+    # 1. Python version
+    v = sys.version_info
+    version_str = f"{v.major}.{v.minor}.{v.micro}"
+    if (v.major, v.minor) >= (3, 9):
+        items.append(_CheckItem("версия Python", "PASS", version_str))
+    else:
+        items.append(_CheckItem("версия Python", "FAIL", f"{version_str} — нужен Python 3.9 или новее"))
+
+    # 2. the skill's own files present and readable
+    skill_files = {
+        "templates/report.html": render_html_mod.TEMPLATE_PATH,
+        EXAMPLE_CONFIG_FILENAME: EXAMPLE_CONFIG_PATH,
+        VERSION_FILENAME: VERSION_PATH,
+    }
+    unreadable: list[str] = []
+    for label, path in skill_files.items():
+        try:
+            Path(path).read_text(encoding="utf-8")
+        except OSError as e:
+            unreadable.append(f"{label} ({e.strerror or e})")
+    if unreadable:
+        items.append(_CheckItem("файлы skill", "FAIL", "; ".join(unreadable)))
+    else:
+        items.append(_CheckItem("файлы skill", "PASS", ", ".join(skill_files)))
+
+    # 3. global skill install directory (informational — a checkout run is fine)
+    if GLOBAL_SKILL_DIR.is_dir():
+        items.append(_CheckItem("установка skill", "PASS", f"режим: глобальная установка ({GLOBAL_SKILL_DIR})"))
+    else:
+        items.append(
+            _CheckItem(
+                "установка skill",
+                "WARN",
+                f"режим: локальная копия (git checkout) — {GLOBAL_SKILL_DIR} не найдена; "
+                "это нормально для разработки, но команда jira-metrics не будет доступна из других папок без ./install.sh",
+            )
+        )
+
+    # 4. `jira-metrics` launcher reachable on PATH
+    launcher = shutil.which("jira-metrics")
+    if launcher:
+        items.append(_CheckItem("команда jira-metrics в PATH", "PASS", launcher))
+    else:
+        items.append(
+            _CheckItem(
+                "команда jira-metrics в PATH",
+                "WARN",
+                'не найдена; добавьте в PATH: export PATH="$HOME/.local/bin:$PATH" (и откройте новый терминал)',
+            )
+        )
+
+    # 5. config file in the current directory
+    cfg_path = Path(config_mod.DEFAULT_CONFIG_FILENAME)
+    if cfg_path.exists():
+        items.append(_CheckItem("файл настроек в текущей папке", "PASS", str(cfg_path)))
+    else:
+        items.append(
+            _CheckItem("файл настроек в текущей папке", "WARN", f"{cfg_path} не найден; запустите: {invocation} init")
+        )
+
+    # 6. env vars — presence only, никогда значение
+    def _state(name: str) -> str:
+        return "задан" if (environ.get(name) or "").strip() else "не задан"
+
+    jira_complete = bool((environ.get("JIRA_BASE_URL") or "").strip()) and bool((environ.get("JIRA_TOKEN") or "").strip())
+    gitlab_set_count = sum(1 for name in ("GITLAB_URL", "GITLAB_TOKEN") if (environ.get(name) or "").strip())
+    env_detail = ", ".join(f"{name}: {_state(name)}" for name in ("JIRA_BASE_URL", "JIRA_TOKEN", "GITLAB_URL", "GITLAB_TOKEN"))
+    if not jira_complete or gitlab_set_count == 1:
+        items.append(_CheckItem("переменные окружения", "WARN", env_detail))
+    else:
+        items.append(_CheckItem("переменные окружения", "PASS", env_detail))
+
+    # 7. renderer self-test — catches a broken/truncated install
+    try:
+        template_text = render_html_mod._load_template()
+        if not template_text.strip():
+            raise OSError("шаблон пуст")
+        items.append(_CheckItem("самопроверка шаблона отчёта", "PASS", f"{len(template_text)} байт прочитано"))
+    except OSError as e:
+        items.append(_CheckItem("самопроверка шаблона отчёта", "FAIL", str(e)))
+
+    ok = _print_check_items(items)
+    return 0 if ok else 1
+
+
+# --------------------------------------------------------------------------
 # top-level dispatch
 # --------------------------------------------------------------------------
 
@@ -501,6 +632,8 @@ def main(argv: Optional[list] = None, environ: Optional[dict] = None, invocation
         return cmd_run(args, environ)
     if args.command == "report":
         return cmd_report(args)
+    if args.command == "doctor":
+        return cmd_doctor(args, environ, invocation)
     parser.error(f"неизвестная команда {args.command!r}")
     return 2  # pragma: no cover - argparse.error() already exits
 
