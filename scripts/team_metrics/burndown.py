@@ -25,6 +25,10 @@ class BurndownPoint:
     remaining_items: int
     remaining_sp: float
     ideal_sp: float
+    # v2 addition (SPEC §C.4): same linear-burn rule as ideal_sp, over
+    # committed_items instead of committed_sp — needed for the burndown
+    # chart's Задачи/SP unit toggle.
+    ideal_items: float
 
 
 def _advance_day_status_index(days: list[model.DayStatus], from_idx: int, date_str: str) -> int:
@@ -75,12 +79,17 @@ def burndown_from_payload(payload: "metrics_mod.Payload", now: datetime) -> list
             remaining_items += 1
 
         if total_days == 0:
-            ideal = payload.metrics.committed_sp
+            ideal_sp = payload.metrics.committed_sp
+            ideal_items = float(payload.metrics.committed_items)
         else:
-            ideal = payload.metrics.committed_sp * (1 - k / total_days)
+            ideal_sp = payload.metrics.committed_sp * (1 - k / total_days)
+            ideal_items = payload.metrics.committed_items * (1 - k / total_days)
 
         out.append(
-            BurndownPoint(date=date_str, remaining_items=remaining_items, remaining_sp=remaining_sp, ideal_sp=ideal)
+            BurndownPoint(
+                date=date_str, remaining_items=remaining_items, remaining_sp=remaining_sp,
+                ideal_sp=ideal_sp, ideal_items=ideal_items,
+            )
         )
         k += 1
         d += timedelta(days=1)

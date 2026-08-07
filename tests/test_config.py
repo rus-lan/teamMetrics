@@ -118,6 +118,20 @@ class FileConfigTests(unittest.TestCase):
         cfg = config.load_file_config(path)
         self.assertEqual(cfg.cancelled_statuses, config.DEFAULT_CANCELLED_STATUSES)
 
+    def test_reads_status_labels(self):
+        path = self._write({"status_labels": {"Тестирование": "На тестировании"}})
+        cfg = config.load_file_config(path)
+        self.assertEqual(cfg.status_labels, {"Тестирование": "На тестировании"})
+
+    def test_status_labels_defaults_to_empty_dict(self):
+        path = self._write({})
+        cfg = config.load_file_config(path)
+        self.assertEqual(cfg.status_labels, {})
+
+    def test_status_labels_key_does_not_trip_the_token_guard(self):
+        path = self._write({"status_labels": {"Done": "Готово"}})
+        config.load_file_config(path)  # must not raise
+
 
 class CrlfTokenValidationTests(unittest.TestCase):
     """m1: a token with embedded CR/LF must be rejected before it can ever

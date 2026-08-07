@@ -1,6 +1,7 @@
 import _pathfix  # noqa: F401
 
 import email.message
+import http.client
 import json
 import socket
 import unittest
@@ -194,6 +195,59 @@ class RetryLoopTests(unittest.TestCase):
         client._attempt = fake_attempt
         client._do("Op", "/x")
         self.assertEqual(sleeps[0], 5.0)  # capped at max_retry_after, not the raw header value
+
+
+class InvalidUrlAndTokenRedactionTests(unittest.TestCase):
+    """A JIRA_BASE_URL embedding credentials (`user:pass@host`) makes urllib
+    raise http.client.InvalidURL deep inside `_attempt` -- its own message
+    quotes the mis-split host:port fragment verbatim, which can contain the
+    password. Separately, an upstream error body or transport-error message
+    that happens to echo the token back must never carry it into a
+    JiraError, since that reaches stdout via `check` and disk via
+    `out/raw/`."""
+
+    def _client(self, token="jira-super-secret-token"):
+        return jc.JiraClient("https://jira.example.com", token, sleep=lambda _d: None)
+
+    def test_invalid_url_becomes_a_clean_jira_error_without_the_credential(self):
+        client = self._client()
+
+        def fake_attempt(url):
+            raise http.client.InvalidURL("nonnumeric port: 'S3cr3tPass@jira.invalid-host-xyz.example'")
+
+        client._attempt = fake_attempt
+        with self.assertRaises(jc.JiraError) as ctx:
+            client._do("Op", "/x")
+        self.assertNotIn("S3cr3tPass", str(ctx.exception))
+        self.assertEqual(ctx.exception.code, jc.CODE_JIRA_UNREACHABLE)
+
+    def test_invalid_url_is_not_retried(self):
+        client = self._client()
+        calls = {"n": 0}
+
+        def fake_attempt(url):
+            calls["n"] += 1
+            raise http.client.InvalidURL("nonnumeric port: 'x'")
+
+        client._attempt = fake_attempt
+        with self.assertRaises(jc.JiraError):
+            client._do("Op", "/x")
+        self.assertEqual(calls["n"], 1)
+
+    def test_error_body_echoing_the_token_is_redacted(self):
+        client = self._client(token="jira-super-secret-token")
+        client._attempt = lambda url: (b"invalid auth: Bearer jira-super-secret-token", 401, "", None)
+        with self.assertRaises(jc.JiraError) as ctx:
+            client._do("Op", "/x")
+        self.assertNotIn("jira-super-secret-token", str(ctx.exception))
+        self.assertIn("***", str(ctx.exception))
+
+    def test_transport_error_text_containing_token_is_redacted(self):
+        client = self._client(token="jira-super-secret-token")
+        client._attempt = lambda url: (None, 0, "", ConnectionError("boom jira-super-secret-token leaked"))
+        with self.assertRaises(jc.JiraError) as ctx:
+            client._do("Op", "/x")
+        self.assertNotIn("jira-super-secret-token", str(ctx.exception))
 
 
 class SearchIssuesPaginationTests(unittest.TestCase):
@@ -736,6 +790,59 @@ class NoRedirectAcrossHostsTests(unittest.TestCase):
         # Only jira.example.com was ever contacted — evil.example.com never
         # received a request (and therefore never received the PAT).
         self.assertEqual(contacted_hosts, ["jira.example.com"])
+
+
+class AssigneeDisplayNameAndSummaryTests(unittest.TestCase):
+    """SPEC §B.13: RawIssue/IssueFacts gain assignee_display_name (from
+    fields.assignee.displayName) and summary (from fields.summary)."""
+
+    def _client(self):
+        return jc.JiraClient("https://jira.example.com", "tok", sleep=lambda _d: None)
+
+    def test_display_name_and_summary_captured_from_dto(self):
+        dto = _issue_dto("PROJ-1")
+        dto["fields"]["assignee"] = {"name": "amaksimenkov", "displayName": "Александр Максименков"}
+        dto["fields"]["summary"] = "Fix checkout timeout"
+        issue, skip = self._client()._issue_from_dto(dto)
+        self.assertFalse(skip)
+        self.assertEqual(issue.assignee, "amaksimenkov")
+        self.assertEqual(issue.assignee_display_name, "Александр Максименков")
+        self.assertEqual(issue.summary, "Fix checkout timeout")
+
+    def test_absent_assignee_gives_empty_display_name(self):
+        dto = _issue_dto("PROJ-2")
+        dto["fields"]["assignee"] = None
+        issue, _skip = self._client()._issue_from_dto(dto)
+        self.assertEqual(issue.assignee, "")
+        self.assertEqual(issue.assignee_display_name, "")
+
+    def test_missing_summary_field_gives_empty_string(self):
+        dto = _issue_dto("PROJ-3")
+        issue, _skip = self._client()._issue_from_dto(dto)
+        self.assertEqual(issue.summary, "")
+
+    def test_fetch_sprint_issues_carries_both_fields_into_issue_facts(self):
+        dto = _issue_dto("PROJ-4")
+        dto["fields"]["assignee"] = {"name": "bob", "displayName": "Bob Bobson"}
+        dto["fields"]["summary"] = "Some summary"
+        dto["fields"][jc.STORY_POINTS_FIELD_NAMES[0]] = None  # no story-points field resolved -> defaults apply
+        dto["fields"]["customfield_sprint"] = []
+
+        class _FakeOpener:
+            def open(self, request, timeout=None):
+                raise AssertionError("unexpected network call")
+
+        client = self._client()
+        with unittest.mock.patch.object(client, "field_ids", return_value={"Sprint": "customfield_sprint"}):
+            with unittest.mock.patch.object(client, "search_issues", return_value=[self._raw_issue_from(dto)]):
+                facts = client.fetch_sprint_issues([1])
+        self.assertEqual(len(facts), 1)
+        self.assertEqual(facts[0].assignee_display_name, "Bob Bobson")
+        self.assertEqual(facts[0].summary, "Some summary")
+
+    def _raw_issue_from(self, dto):
+        issue, _skip = self._client()._issue_from_dto(dto)
+        return issue
 
 
 if __name__ == "__main__":

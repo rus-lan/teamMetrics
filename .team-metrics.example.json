@@ -2,5 +2,7 @@
   "gitlab": {
     "projects": ["team/checkout-web", "team/checkout-api", "team/payments-mobile"]
   },
-  "employees": ["alice", "bob", "carol", "dave"]
+  "employees": ["alice", "bob", "carol", "dave"],
+  "out_dir": "out",
+  "status_labels": {}
 }

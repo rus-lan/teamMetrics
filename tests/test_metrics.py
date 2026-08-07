@@ -248,5 +248,78 @@ class BuildKpiTests(unittest.TestCase):
         self.assertTrue(kpi.forecast_available)  # exactly 2 non-zero points >= 2
 
 
+class SchemaVersionTests(unittest.TestCase):
+    def test_schema_version_is_2(self):
+        self.assertEqual(metrics.SCHEMA_VERSION, 2)
+
+
+def _issue(key, assignee, *, committed=False, delivered=False, story_points=1.0, day_statuses=None):
+    return model.Issue(
+        key=key, epic_key="", story_points=story_points, qa_estimation=0.0, role="", labels=[],
+        assignee=assignee, membership_intervals=[], day_statuses=day_statuses or [],
+        status_initial="", status_before_end="", status_end="",
+        committed=committed, added=False, removed=False, delivered=delivered,
+    )
+
+
+class PerAssigneeMetricsTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = make_cfg(jira_status_categories={"Done": "done"})
+
+    def test_groups_by_assignee(self):
+        issues = [
+            _issue("A-1", "alice", committed=True, delivered=True, story_points=3.0),
+            _issue("A-2", "alice", committed=True, delivered=False, story_points=2.0),
+            _issue("B-1", "bob", committed=True, delivered=True, story_points=5.0),
+        ]
+        rows = metrics.per_assignee_metrics(issues, self.cfg)
+        by_assignee = {r.assignee: r for r in rows}
+        self.assertEqual(set(by_assignee), {"alice", "bob"})
+        self.assertEqual(by_assignee["alice"].committed_sp, 5.0)
+        self.assertEqual(by_assignee["alice"].committed_items, 2)
+        self.assertEqual(by_assignee["alice"].delivered_sp, 3.0)
+        self.assertEqual(by_assignee["alice"].delivered_items, 1)
+        self.assertEqual(by_assignee["bob"].committed_sp, 5.0)
+        self.assertEqual(by_assignee["bob"].delivered_sp, 5.0)
+
+    def test_unassigned_is_its_own_group(self):
+        issues = [_issue("A-1", "", committed=True, delivered=True, story_points=2.0)]
+        rows = metrics.per_assignee_metrics(issues, self.cfg)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].assignee, "")
+        self.assertEqual(rows[0].delivered_sp, 2.0)
+
+    def test_performance_pct_division_by_zero_yields_zero_plus_warning(self):
+        issues = [_issue("A-1", "alice", committed=False, delivered=False, story_points=2.0)]
+        rows = metrics.per_assignee_metrics(issues, self.cfg)
+        self.assertEqual(rows[0].performance_pct, 0.0)
+        self.assertIn(model.WARN_DIVISION_BY_ZERO, rows[0].warnings)
+
+    def test_velocity_equals_delivered_sp(self):
+        issues = [_issue("A-1", "alice", committed=True, delivered=True, story_points=8.0)]
+        rows = metrics.per_assignee_metrics(issues, self.cfg)
+        self.assertEqual(rows[0].velocity_sp, rows[0].delivered_sp)
+        self.assertEqual(rows[0].velocity_sp, 8.0)
+
+    def test_throughput_only_counts_this_assignees_deliveries(self):
+        alice_done = _issue(
+            "A-1", "alice", committed=True, delivered=True, story_points=1.0,
+            day_statuses=[model.DayStatus(date="2026-01-05", status="Done", status_category="done")],
+        )
+        bob_open = _issue("B-1", "bob", committed=True, delivered=False, story_points=1.0)
+        rows = metrics.per_assignee_metrics([alice_done, bob_open], self.cfg)
+        by_assignee = {r.assignee: r for r in rows}
+        self.assertEqual(by_assignee["alice"].throughput_items, 1)
+        self.assertEqual(by_assignee["bob"].throughput_items, 0)
+
+    def test_empty_issue_list_returns_empty_list(self):
+        self.assertEqual(metrics.per_assignee_metrics([], self.cfg), [])
+
+    def test_sorted_by_assignee_ascending(self):
+        issues = [_issue("A-1", "carol"), _issue("A-2", "alice"), _issue("A-3", "bob")]
+        rows = metrics.per_assignee_metrics(issues, self.cfg)
+        self.assertEqual([r.assignee for r in rows], ["alice", "bob", "carol"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -56,6 +56,13 @@ def _gitlab_env():
     return {"GITLAB_URL": "https://gitlab.example.com", "GITLAB_TOKEN": "gitlab-secret-token"}
 
 
+def _forbidden_jira_client_cls(*_a, **_kw):
+    """Fails a test if `run` ever gets far enough to construct a Jira
+    client -- used to prove output-path validation happens before any
+    network work begins."""
+    raise AssertionError("must not construct a Jira client before output-path validation")
+
+
 @contextlib.contextmanager
 def _tempdir():
     cwd = os.getcwd()
@@ -411,6 +418,23 @@ class CheckCommandTests(unittest.TestCase):
         self.assertNotIn(environ["GITLAB_TOKEN"], out)
         self.assertNotIn(environ["GITLAB_TOKEN"], err)
 
+    def test_credentials_embedded_in_base_url_are_never_printed(self):
+        environ = {
+            "JIRA_BASE_URL": "https://svc_user:S3cr3tPass@jira.example.com",
+            "JIRA_TOKEN": "jira-secret-token",
+            "GITLAB_URL": "https://svc_user:AnotherSecret@gitlab.example.com",
+            "GITLAB_TOKEN": "gitlab-secret-token",
+        }
+        code, out, err = self._check([], environ)
+        for stream in (out, err):
+            self.assertNotIn("svc_user", stream)
+            self.assertNotIn("S3cr3tPass", stream)
+            self.assertNotIn("AnotherSecret", stream)
+            self.assertNotIn("@jira.example.com", stream, "host must survive, but not the userinfo separator")
+            self.assertNotIn("@gitlab.example.com", stream)
+        self.assertIn("jira.example.com", out)
+        self.assertIn("gitlab.example.com", out)
+
     def test_no_gitlab_projects_configured_is_skip(self):
         code, out, _err = self._check([], {**_jira_env(), **_gitlab_env()})
         self.assertEqual(code, 0)
@@ -694,8 +718,9 @@ class RunCommandTests(unittest.TestCase):
                 code = cli.cmd_run(args, _jira_env(), jira_client_cls=lambda *_a, **_kw: _FakeJiraClient())
             self.assertEqual(code, 0)
 
-            json_path = tmp / cli.DEFAULT_RUN_JSON_OUT
-            html_path = tmp / cli.DEFAULT_RUN_HTML_OUT
+            # v3: default out paths move into ./out/ (config_mod.DEFAULT_OUT_DIR).
+            json_path = tmp / config_mod.DEFAULT_OUT_DIR / cli.DEFAULT_RUN_JSON_OUT
+            html_path = tmp / config_mod.DEFAULT_OUT_DIR / cli.DEFAULT_RUN_HTML_OUT
             self.assertTrue(json_path.exists())
             self.assertTrue(html_path.exists())
 
@@ -705,7 +730,14 @@ class RunCommandTests(unittest.TestCase):
             self.assertIn(cli.DEFAULT_RUN_JSON_OUT, out.getvalue())
             self.assertIn(cli.DEFAULT_RUN_HTML_OUT, out.getvalue())
 
-    def test_custom_out_paths_honored(self):
+            # 18 CSVs + raw/ dumps also land under the same out dir.
+            self.assertTrue((tmp / config_mod.DEFAULT_OUT_DIR / "board.csv").exists())
+            self.assertTrue((tmp / config_mod.DEFAULT_OUT_DIR / "raw" / "jira_issue_facts.json").exists())
+
+    def test_custom_out_names_land_under_default_out_dir(self):
+        """A bare --out/--json-out filename (no directory component) has no
+        --out-dir override here either, so both still resolve under the
+        default out dir, not the current directory."""
         with _tempdir() as tmp:
             args = cli.build_parser().parse_args(
                 ["run", "--sprint-ids", "100", "--no-gitlab", "--out", "custom.html", "--json-out", "custom.json"]
@@ -713,8 +745,38 @@ class RunCommandTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 code = cli.cmd_run(args, _jira_env(), jira_client_cls=lambda *_a, **_kw: _FakeJiraClient())
             self.assertEqual(code, 0)
-            self.assertTrue((tmp / "custom.html").exists())
-            self.assertTrue((tmp / "custom.json").exists())
+            self.assertFalse((tmp / "custom.html").exists())
+            self.assertFalse((tmp / "custom.json").exists())
+            self.assertTrue((tmp / config_mod.DEFAULT_OUT_DIR / "custom.html").exists())
+            self.assertTrue((tmp / config_mod.DEFAULT_OUT_DIR / "custom.json").exists())
+
+    def test_custom_out_names_honor_out_dir_override(self):
+        with _tempdir() as tmp:
+            args = cli.build_parser().parse_args(
+                [
+                    "run", "--sprint-ids", "100", "--no-gitlab",
+                    "--out-dir", "custom-out", "--out", "custom.html", "--json-out", "custom.json",
+                ]
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = cli.cmd_run(args, _jira_env(), jira_client_cls=lambda *_a, **_kw: _FakeJiraClient())
+            self.assertEqual(code, 0)
+            self.assertTrue((tmp / "custom-out" / "custom.html").exists())
+            self.assertTrue((tmp / "custom-out" / "custom.json").exists())
+
+    def test_explicit_directory_in_out_path_is_honored_as_given(self):
+        """A path that names any directory at all (even a sibling of
+        out-dir) is a deliberate escape hatch -- unlike a bare filename, it
+        must NOT be redirected under --out-dir."""
+        with _tempdir() as tmp:
+            args = cli.build_parser().parse_args(
+                ["run", "--sprint-ids", "100", "--no-gitlab", "--out", "elsewhere/custom.html"]
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = cli.cmd_run(args, _jira_env(), jira_client_cls=lambda *_a, **_kw: _FakeJiraClient())
+            self.assertEqual(code, 0)
+            self.assertTrue((tmp / "elsewhere" / "custom.html").exists())
+            self.assertFalse((tmp / config_mod.DEFAULT_OUT_DIR / "custom.html").exists())
 
     def test_missing_env_vars_reports_config_error(self):
         with _tempdir():
@@ -794,22 +856,27 @@ class RunCommandTests(unittest.TestCase):
 
     # -- --no-mr-details / --no-pipeline-users / --light -----------------
 
-    def _run_with_spy(self, extra_argv, spy_return):
-        """Runs cmd_run with report_data.build_combined_report() replaced by
-        a spy that records its kwargs and returns `spy_return` — isolates
-        cli.py's own flag-wiring logic from report_data.py's actual behavior
-        (out of scope, another agent's file) while still letting
-        render_html.render_html() run for real against a fully valid report
-        dict (spy_return should come from _build_fixture_report_dict())."""
+    def _run_with_spy(self, extra_argv, spy_return, spy_return_raw=None):
+        """Runs cmd_run with report_data.build_combined_report_with_raw()
+        replaced by a spy that records its kwargs and returns
+        `(spy_return, spy_return_raw)` — isolates cli.py's own flag-wiring
+        logic from report_data.py's actual behavior (out of scope, another
+        agent's file) while still letting render_html.render_html() run for
+        real against a fully valid report dict (spy_return should come from
+        _build_fixture_report_dict()). `spy_return_raw` defaults to a
+        matching real raw bundle so csv_export.write_all()/out_writer never
+        see an inconsistent pair."""
+        if spy_return_raw is None:
+            spy_return_raw = _build_fixture_report_and_raw()[1]
         captured = {}
 
         def spy(*_a, **kw):
             captured.update(kw)
-            return spy_return
+            return spy_return, spy_return_raw
 
         with _tempdir():
             args = cli.build_parser().parse_args(["run", "--sprint-ids", "100", "--no-gitlab"] + extra_argv)
-            with unittest.mock.patch.object(cli.report_data, "build_combined_report", side_effect=spy):
+            with unittest.mock.patch.object(cli.report_data, "build_combined_report_with_raw", side_effect=spy):
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out):
                     code = cli.cmd_run(args, _jira_env(), jira_client_cls=lambda *_a, **_kw: _FakeJiraClient())
@@ -863,15 +930,118 @@ class RunCommandTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertNotIn("HTTP-запросов к GitLab", out)
 
+    # -- credential-bearing base URL never printed/logged -------------------
+
+    def test_log_never_contains_credentials_embedded_in_base_url(self):
+        with _tempdir():
+            environ = {"JIRA_BASE_URL": "https://svc_user:S3cr3tPass@jira.example.com", "JIRA_TOKEN": "jira-secret-token"}
+            args = cli.build_parser().parse_args(["run", "--sprint-ids", "100", "--no-gitlab"])
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertLogs("team_metrics.cli", level="INFO") as cm:
+                    code = cli.cmd_run(args, environ, jira_client_cls=lambda *_a, **_kw: _FakeJiraClient())
+            self.assertEqual(code, 0)
+            joined = "\n".join(cm.output)
+            self.assertNotIn("svc_user", joined)
+            self.assertNotIn("S3cr3tPass", joined)
+            self.assertIn("jira.example.com", joined)
+
+    # -- output-path validation happens before any network work -------------
+
+    def test_out_dir_already_a_plain_file_fails_before_any_network_call(self):
+        with _tempdir() as tmp:
+            (tmp / "out").write_text("not a directory", encoding="utf-8")
+            args = cli.build_parser().parse_args(["run", "--sprint-ids", "100", "--no-gitlab"])
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                code = cli.cmd_run(args, _jira_env(), jira_client_cls=_forbidden_jira_client_cls)
+            self.assertEqual(code, 2)
+            self.assertIn("ошибка настройки", err.getvalue())
+            self.assertEqual((tmp / "out").read_text(encoding="utf-8"), "not a directory")
+
+    def test_empty_out_value_fails_before_any_network_call(self):
+        with _tempdir():
+            args = cli.build_parser().parse_args(["run", "--sprint-ids", "100", "--no-gitlab", "--out", ""])
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                code = cli.cmd_run(args, _jira_env(), jira_client_cls=_forbidden_jira_client_cls)
+            self.assertEqual(code, 2)
+            self.assertIn("ошибка настройки", err.getvalue())
+
+    def test_dotdot_out_value_fails_before_any_network_call(self):
+        with _tempdir():
+            args = cli.build_parser().parse_args(["run", "--sprint-ids", "100", "--no-gitlab", "--json-out", ".."])
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                code = cli.cmd_run(args, _jira_env(), jira_client_cls=_forbidden_jira_client_cls)
+            self.assertEqual(code, 2)
+            self.assertIn("ошибка настройки", err.getvalue())
+
+    # -- write phase never leaves a stale mixture ----------------------------
+
+    def test_write_failure_leaves_previous_out_dir_completely_untouched(self):
+        with _tempdir() as tmp:
+            out_dir = tmp / "out"
+            out_dir.mkdir()
+            (out_dir / "report.json").write_text('{"marker": "previous-run"}', encoding="utf-8")
+            (out_dir / "board.csv").write_text("previous,csv\n", encoding="utf-8")
+
+            args = cli.build_parser().parse_args(["run", "--sprint-ids", "100", "--no-gitlab"])
+            err = io.StringIO()
+            with unittest.mock.patch.object(cli.csv_export, "write_all", side_effect=IsADirectoryError("boom")):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                    code = cli.cmd_run(args, _jira_env(), jira_client_cls=lambda *_a, **_kw: _FakeJiraClient())
+            self.assertEqual(code, 1)
+            self.assertIn("ошибка", err.getvalue())
+            self.assertEqual((out_dir / "report.json").read_text(encoding="utf-8"), '{"marker": "previous-run"}')
+            self.assertEqual((out_dir / "board.csv").read_text(encoding="utf-8"), "previous,csv\n")
+            leftovers = [p.name for p in tmp.iterdir() if p.name.startswith(".team-metrics-run-")]
+            self.assertEqual(leftovers, [], "a failed write must not leave a staging directory behind")
+
+    def test_successful_run_after_a_previous_run_replaces_out_dir_atomically(self):
+        with _tempdir() as tmp:
+            out_dir = tmp / "out"
+            out_dir.mkdir()
+            (out_dir / "stale.csv").write_text("stale\n", encoding="utf-8")
+
+            args = cli.build_parser().parse_args(["run", "--sprint-ids", "100", "--no-gitlab"])
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = cli.cmd_run(args, _jira_env(), jira_client_cls=lambda *_a, **_kw: _FakeJiraClient())
+            self.assertEqual(code, 0)
+            self.assertTrue((out_dir / "report.json").exists())
+            self.assertTrue((out_dir / "board.csv").exists())
+            # a fresh run's file set replaces the previous one wholesale
+            self.assertFalse((out_dir / "stale.csv").exists())
+
+    def test_symlinked_report_html_in_out_dir_is_not_overwritten_through(self):
+        with _tempdir() as tmp:
+            out_dir = tmp / "out"
+            out_dir.mkdir()
+            target = tmp / "IMPORTANT.txt"
+            target.write_text("do not touch", encoding="utf-8")
+            (out_dir / "report.html").symlink_to(target)
+
+            args = cli.build_parser().parse_args(["run", "--sprint-ids", "100", "--no-gitlab"])
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = cli.cmd_run(args, _jira_env(), jira_client_cls=lambda *_a, **_kw: _FakeJiraClient())
+            self.assertEqual(code, 0)
+            self.assertEqual(target.read_text(encoding="utf-8"), "do not touch")
+            self.assertFalse((out_dir / "report.html").is_symlink())
+
 
 # --------------------------------------------------------------------------
 # report
 # --------------------------------------------------------------------------
 
 
-def _build_fixture_report_dict():
+def _build_fixture_report_and_raw():
     client = _FakeJiraClient()
-    return report_data.build_report(client, sprint_ids=[100], history_sprint_count=5, target_items=7, now=dt(2026, 1, 24))
+    return report_data.build_combined_report_with_raw(
+        client, sprint_ids=[100], history_sprint_count=5, target_items=7, now=dt(2026, 1, 24)
+    )
+
+
+def _build_fixture_report_dict():
+    return _build_fixture_report_and_raw()[0]
 
 
 class ReportCommandTests(unittest.TestCase):
@@ -916,6 +1086,62 @@ class ReportCommandTests(unittest.TestCase):
                 code = cli.cmd_report(args)
             self.assertEqual(code, 1)
             self.assertIn("999", err.getvalue())
+
+    def test_missing_json_file_is_a_clean_error_not_a_traceback(self):
+        with _tempdir() as tmp:
+            args = cli.build_parser().parse_args(["report", str(tmp / "does-not-exist.json")])
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                code = cli.cmd_report(args)
+            self.assertEqual(code, 1)
+            self.assertIn("ошибка", err.getvalue())
+
+    def test_malformed_json_is_a_clean_error_not_a_traceback(self):
+        with _tempdir() as tmp:
+            src = tmp / "data.json"
+            src.write_text("{not valid json", encoding="utf-8")
+            args = cli.build_parser().parse_args(["report", str(src)])
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                code = cli.cmd_report(args)
+            self.assertEqual(code, 1)
+            self.assertIn("ошибка", err.getvalue())
+            self.assertIn(str(src), err.getvalue())
+
+    def test_json_that_is_not_an_object_is_a_clean_error(self):
+        with _tempdir() as tmp:
+            src = tmp / "data.json"
+            src.write_text("[1, 2, 3]", encoding="utf-8")
+            args = cli.build_parser().parse_args(["report", str(src)])
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                code = cli.cmd_report(args)
+            self.assertEqual(code, 1)
+            self.assertIn("ошибка", err.getvalue())
+
+    def test_refuses_to_write_through_a_symlink(self):
+        with _tempdir() as tmp:
+            report = _build_fixture_report_dict()
+            src = tmp / "data.json"
+            src.write_text(json.dumps(report), encoding="utf-8")
+            target = tmp / "IMPORTANT.txt"
+            target.write_text("do not touch", encoding="utf-8")
+            (tmp / "out.html").symlink_to(target)
+
+            args = cli.build_parser().parse_args(["report", str(src), "-o", "out.html"])
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                code = cli.cmd_report(args)
+            self.assertEqual(code, 1)
+            self.assertEqual(target.read_text(encoding="utf-8"), "do not touch")
+
+
+class InitCommandBundledExampleTests(unittest.TestCase):
+    def test_corrupted_bundled_example_is_a_clean_error_not_a_traceback(self):
+        with _tempdir(), unittest.mock.patch.object(cli, "EXAMPLE_CONFIG_PATH", Path("/nonexistent/example.json")):
+            code, out, err = _run_main(["init"], environ={})
+            self.assertEqual(code, 1)
+            self.assertIn("ошибка", err + out)
 
 
 class ZeroNetworkTests(unittest.TestCase):
@@ -1389,6 +1615,35 @@ class DoctorCommandTests(unittest.TestCase):
         self.assertIn("GitLab", out)
         self.assertIn("--no-proxy", out)
         self.assertNotIn("не поддерживает", out)
+
+
+class RedactBaseUrlTests(unittest.TestCase):
+    def test_strips_userinfo_keeps_everything_else(self):
+        redacted = cli._redact_base_url("https://svc_user:S3cr3tPass@jira.example.com:8443/base/path")
+        self.assertEqual(redacted, "https://jira.example.com:8443/base/path")
+
+    def test_url_without_credentials_is_unchanged(self):
+        self.assertEqual(cli._redact_base_url("https://jira.example.com"), "https://jira.example.com")
+
+    def test_never_raises_on_unparseable_input(self):
+        cli._redact_base_url("::::not a url::::")  # must not raise
+
+
+class ResolveOutPathTests(unittest.TestCase):
+    def test_none_resolves_to_out_dir_and_default_name(self):
+        self.assertEqual(cli._resolve_out_path(None, "out", "report.html"), ("out", "report.html"))
+
+    def test_bare_filename_resolves_under_out_dir(self):
+        self.assertEqual(cli._resolve_out_path("custom.html", "out", "report.html"), ("out", "custom.html"))
+
+    def test_relative_path_with_directory_is_honored_as_given(self):
+        self.assertEqual(cli._resolve_out_path("sub/custom.html", "out", "report.html"), ("sub", "custom.html"))
+
+    def test_dotdot_path_is_honored_as_given(self):
+        self.assertEqual(cli._resolve_out_path("../custom.html", "out", "report.html"), ("..", "custom.html"))
+
+    def test_absolute_path_is_honored_as_given(self):
+        self.assertEqual(cli._resolve_out_path("/tmp/custom.html", "out", "report.html"), ("/tmp", "custom.html"))
 
 
 if __name__ == "__main__":

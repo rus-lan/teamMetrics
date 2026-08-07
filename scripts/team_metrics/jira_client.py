@@ -9,7 +9,9 @@ both use Bearer, not Basic; this file follows that authoritative source.
 
 from __future__ import annotations
 
+import http.client
 import json
+import logging
 import re
 import socket
 import threading
@@ -21,7 +23,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+from . import logging_setup
 from . import model
+
+log = logging_setup.get_logger("jira_client")
 
 UTC = timezone.utc
 
@@ -145,6 +150,20 @@ def _retryable_status(status: int) -> bool:
     return status == 429 or status >= 500
 
 
+# No query param this client sends today carries a token/secret — every
+# request authenticates via the Authorization header, never a query string —
+# but a per-request debug log is exactly the kind of line that would leak
+# one straight into a log file if that ever changed, so redact on the way
+# out rather than trust it never will.
+_TOKEN_LIKE_QUERY_KEYS = ("token", "password", "secret", "authorization", "apikey", "credential")
+
+
+def _redact_query(query: Optional[dict]) -> dict:
+    if not query:
+        return {}
+    return {k: ("***" if any(sub in str(k).lower() for sub in _TOKEN_LIKE_QUERY_KEYS) else v) for k, v in query.items()}
+
+
 def _err_body(data: bytes) -> str:
     s = (data or b"").decode("utf-8", errors="replace").replace("\n", " ").strip()
     max_len = 500
@@ -253,6 +272,10 @@ class RawIssue:
     fields: dict[str, Any]  # field id -> raw decoded JSON value
     changelog: list[ChangelogEntry]
     resolutiondate: Optional[datetime] = None
+    # fields.assignee.displayName — the human name schema v2 shows instead of
+    # the bare login (empty when the issue has no assignee).
+    assignee_display_name: str = ""
+    summary: str = ""
 
 
 @dataclass
@@ -294,6 +317,10 @@ class IssueFacts:
     # _parse_optional_datetime_or_none.
     resolutiondate: Optional[datetime] = None
     membership_by_sprint: dict[int, list["model.Interval"]] = field(default_factory=dict)
+    # fields.assignee.displayName / fields.summary — schema v2's display-name
+    # resolution (§B.13) and CSV export (jira_issues.csv) read these.
+    assignee_display_name: str = ""
+    summary: str = ""
 
 
 def _sprint_from_dto(dto: dict) -> Sprint:
@@ -679,6 +706,17 @@ class JiraClient:
         finally:
             self._sem.release()
 
+    def _redact_token(self, text: str) -> str:
+        """Drops any occurrence of this client's own token from `text` before
+        it can leave the client in an exception message — an upstream error
+        body that happens to echo back the Authorization header value (some
+        servers do, on a malformed-auth response) must not carry the token
+        into stdout (`check`) or `out/raw/` (JiraError text embedded in a
+        skipped-item message)."""
+        if self._token and self._token in text:
+            return text.replace(self._token, "***")
+        return text
+
     def _do(self, op: str, path: str, query: Optional[dict] = None) -> bytes:
         full_url = self.base_url + path
         if query:
@@ -686,12 +724,35 @@ class JiraClient:
 
         attempt = 0
         while True:
-            data, status, retry_after, transport_err = self._attempt(full_url)
+            if log.isEnabledFor(logging.DEBUG):
+                log.debug("Jira запрос: GET %s %s (попытка %d)", path, _redact_query(query), attempt + 1)
+            try:
+                data, status, retry_after, transport_err = self._attempt(full_url)
+            except http.client.InvalidURL:
+                # Raised deep inside urllib/http.client while opening the
+                # connection, before any request is sent -- observed when
+                # JIRA_BASE_URL embeds credentials (a colon in the userinfo
+                # makes http.client's own host:port split misparse the
+                # password as a "port"). The exception text quotes the
+                # mis-split fragment verbatim, which can contain that
+                # password -- never pass it through, raise a fixed message
+                # instead of str(e).
+                raise JiraError(
+                    op,
+                    "некорректный URL Jira (проверьте JIRA_BASE_URL — учётные данные вида user:pass@host в адресе "
+                    "не поддерживаются, токен передаётся отдельно через JIRA_TOKEN)",
+                    code=CODE_JIRA_UNREACHABLE,
+                )
 
             if transport_err is not None:
                 if attempt >= self.max_retries:
-                    raise JiraError(op, str(transport_err), code=CODE_JIRA_UNREACHABLE)
-                self._sleep(self._backoff_delay(attempt))
+                    raise JiraError(op, self._redact_token(str(transport_err)), code=CODE_JIRA_UNREACHABLE)
+                delay = self._backoff_delay(attempt)
+                log.info(
+                    "Jira: повтор через %.2fs (попытка %d/%d) — %s",
+                    delay, attempt + 1, self.max_retries, self._redact_token(str(transport_err)),
+                )
+                self._sleep(delay)
                 attempt += 1
                 continue
 
@@ -699,7 +760,7 @@ class JiraClient:
                 return data
 
             if not _retryable_status(status) or attempt >= self.max_retries:
-                raise JiraError(op, _err_body(data), code=_classify_status(status), status_code=status)
+                raise JiraError(op, self._redact_token(_err_body(data)), code=_classify_status(status), status_code=status)
 
             delay = self._backoff_delay(attempt)
             if status == 429:
@@ -709,6 +770,7 @@ class JiraClient:
                         ra = self.max_retry_after
                     if ra > delay:
                         delay = ra
+            log.info("Jira: повтор через %.2fs (попытка %d/%d) — HTTP %d", delay, attempt + 1, self.max_retries, status)
             self._sleep(delay)
             attempt += 1
 
@@ -828,8 +890,10 @@ class JiraClient:
 
         assignee_obj = fields.get("assignee")
         assignee = assignee_obj.get("name", "") if assignee_obj else ""
+        assignee_display_name = assignee_obj.get("displayName", "") if assignee_obj else ""
         labels = list(fields.get("labels") or [])
         resolutiondate = _parse_optional_datetime_or_none(fields.get("resolutiondate"))
+        summary = fields.get("summary") or ""
 
         changelog_raw = dto.get("changelog") or {}
         entries = _entries_from_histories(changelog_raw.get("histories", []) or [])
@@ -852,11 +916,14 @@ class JiraClient:
             fields=fields,
             changelog=entries,
             resolutiondate=resolutiondate,
+            assignee_display_name=assignee_display_name,
+            summary=summary,
         )
         return issue, False
 
     def search_issues(self, jql: str, fields: list[str]) -> list[RawIssue]:
         """GET /rest/api/2/search, paginated by actual returned count vs total (SPEC §2.1)."""
+        log.info("JQL: %s", jql)
         out: list[RawIssue] = []
         start_at = 0
         deadline = time.monotonic() + MAX_PAGINATION_SECONDS
@@ -879,6 +946,7 @@ class JiraClient:
                 if not skip and issue is not None:
                     out.append(issue)
             got = len(issues)
+            log.info("Jira: получено %d из %d задач", start_at + got, total)
             if got == 0 or start_at + got >= total:
                 break
             start_at += got
@@ -933,6 +1001,8 @@ class JiraClient:
                     current_status_category_key=ri.status_category_key,
                     resolutiondate=ri.resolutiondate,
                     membership_by_sprint=membership_by_sprint,
+                    assignee_display_name=ri.assignee_display_name,
+                    summary=ri.summary,
                 )
             )
         return out

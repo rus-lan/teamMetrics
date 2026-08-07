@@ -31,17 +31,24 @@ import os
 import re
 import shutil
 import sys
+import tempfile
+import time
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import config as config_mod
+from . import csv_export
 from . import gitlab_client as glc
 from . import jira_client as jc
+from . import logging_setup
 from . import metrics as metrics_mod
+from . import out_writer
 from . import render_html as render_html_mod
 from . import report_data
+
+log = logging_setup.get_logger("cli")
 
 # scripts/team_metrics/cli.py -> scripts/team_metrics -> scripts -> <skill-dir>
 # Same derivation render_html.py uses for TEMPLATE_PATH — never an absolute,
@@ -98,6 +105,9 @@ _RU_PIPELINE_ARG_HELP = {
     "config": f"Путь к JSON-файлу настроек (по умолчанию: ./{config_mod.DEFAULT_CONFIG_FILENAME}, если есть)",
     "no_gitlab": "Пропустить обе вкладки GitLab, даже если заданы GITLAB_URL/GITLAB_TOKEN",
     "no_personal": "Пропустить только вкладку персональных метрик; инженерная вкладка продолжит работать",
+    "out_dir": f"Папка для собранных данных и отчётов (по умолчанию: ./{config_mod.DEFAULT_OUT_DIR})",
+    "verbose": "Подробные логи (уровень DEBUG)",
+    "quiet": "Только ошибки (уровень ERROR)",
 }
 
 
@@ -172,8 +182,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run", help="Собрать данные из Jira/GitLab, посчитать метрики, записать JSON и HTML")
     config_mod.add_pipeline_args(p_run)
     _translate_pipeline_help(p_run)
-    p_run.add_argument("--out", default=DEFAULT_RUN_HTML_OUT, metavar="ПУТЬ", help=f"Путь для HTML-отчёта (по умолчанию: {DEFAULT_RUN_HTML_OUT})")
-    p_run.add_argument("--json-out", default=DEFAULT_RUN_JSON_OUT, metavar="ПУТЬ", help=f"Путь для JSON-файла с данными (по умолчанию: {DEFAULT_RUN_JSON_OUT})")
+    p_run.add_argument(
+        "--out", default=None, metavar="ПУТЬ",
+        help=f"Путь для HTML-отчёта (по умолчанию: <папка вывода>/{DEFAULT_RUN_HTML_OUT})",
+    )
+    p_run.add_argument(
+        "--json-out", default=None, metavar="ПУТЬ",
+        help=f"Путь для JSON-файла с данными (по умолчанию: <папка вывода>/{DEFAULT_RUN_JSON_OUT})",
+    )
     p_run.add_argument("--no-proxy", action="store_true", help=NO_PROXY_HELP)
     p_run.add_argument("--no-mr-details", action="store_true", help=NO_MR_DETAILS_HELP)
     p_run.add_argument("--no-pipeline-users", action="store_true", help=NO_PIPELINE_USERS_HELP)
@@ -215,8 +231,15 @@ def cmd_init(args: argparse.Namespace, environ: dict, invocation: str) -> int:
         print(f"{dest} уже существует; укажите --force для перезаписи", file=sys.stderr)
         return 1
 
-    example_text = EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
-    example_obj = json.loads(example_text)
+    try:
+        example_text = EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
+        example_obj = json.loads(example_text)
+    except OSError as e:
+        print(f"ошибка: не удалось прочитать встроенный пример конфига {EXAMPLE_CONFIG_PATH} — похоже, установка повреждена: {e.strerror or e}", file=sys.stderr)
+        return 1
+    except json.JSONDecodeError as e:
+        print(f"ошибка: встроенный пример конфига {EXAMPLE_CONFIG_PATH} повреждён (не JSON) — похоже, установка повреждена: {e}", file=sys.stderr)
+        return 1
     # Defense in depth: the bundled example never carries a token-shaped key,
     # but never write one to disk even if that ever regressed.
     config_mod._check_no_token_keys(example_obj)
@@ -324,7 +347,7 @@ def cmd_check(
     env = None
     try:
         env = config_mod.load_env(environ)
-        items.append(_CheckItem("переменные окружения Jira", "PASS", f"JIRA_BASE_URL={env.base_url}"))
+        items.append(_CheckItem("переменные окружения Jira", "PASS", f"JIRA_BASE_URL={_redact_base_url(env.base_url)}"))
     except config_mod.ConfigError as e:
         items.append(_CheckItem("переменные окружения Jira", "FAIL", str(e)))
 
@@ -338,7 +361,7 @@ def cmd_check(
             if gitlab_env is None:
                 items.append(_CheckItem("переменные окружения GitLab", "SKIP", "GITLAB_URL/GITLAB_TOKEN не заданы"))
             else:
-                items.append(_CheckItem("переменные окружения GitLab", "PASS", f"GITLAB_URL={gitlab_env.base_url}"))
+                items.append(_CheckItem("переменные окружения GitLab", "PASS", f"GITLAB_URL={_redact_base_url(gitlab_env.base_url)}"))
         except config_mod.ConfigError as e:
             items.append(_CheckItem("переменные окружения GitLab", "FAIL", str(e)))
 
@@ -560,6 +583,163 @@ def cmd_check(
 # --------------------------------------------------------------------------
 
 
+def _format_run_targets(run_cfg: config_mod.RunConfig) -> str:
+    if run_cfg.sprint_ids:
+        return ", ".join(str(i) for i in run_cfg.sprint_ids)
+    return ", ".join(run_cfg.sprint_names)
+
+
+def _resolve_out_path(explicit: Optional[str], out_dir: str, default_name: str) -> tuple:
+    """Splits an explicit `--out`/`--json-out` value into (dir, filename) so
+    it can go through `out_writer` (which only accepts a bare filename, never
+    a path). `explicit=None` resolves to `<out_dir>/<default_name>`.
+
+    A BARE filename (no `/` or `\\` anywhere in the string, e.g. "myreport.
+    html") resolves under `--out-dir` the same way — it is not a relative
+    path escaping to the current directory. A value that names any directory
+    at all (relative, absolute, or starting with "..") is honored exactly as
+    given: `--out`/`--json-out` are a deliberate escape hatch to write
+    somewhere other than `out_dir`, and out_writer.py's own filename-safety
+    guarantee is unaffected by that choice — it covers the `filename`
+    argument passed to its writers, not the `out_dir` argument, which every
+    caller in this module (including this one) supplies as a trusted path."""
+    if explicit is None:
+        return out_dir, default_name
+    if "/" not in explicit and "\\" not in explicit:
+        return out_dir, explicit
+    p = Path(explicit)
+    parent = str(p.parent) if str(p.parent) not in ("", ".") else "."
+    return parent, p.name
+
+
+def _same_path(a: str, b: str) -> bool:
+    return os.path.abspath(a) == os.path.abspath(b)
+
+
+def _validate_run_output_paths(out_dir: str, out_arg: Optional[str], json_out_arg: Optional[str]) -> tuple:
+    """Resolves and validates every path `run` will write to — all BEFORE
+    any client is built or any request sent. An `--out-dir` that already
+    exists as a plain file, or an unsafe `--out`/`--json-out` filename, must
+    fail fast here instead of only surfacing after a full fetch (up to
+    ~1660 GitLab requests) has already completed.
+
+    Returns `(json_dir, json_name, html_dir, html_name)`; raises `ValueError`
+    with a ready-to-print Russian message on any problem."""
+    if Path(out_dir).exists() and not Path(out_dir).is_dir():
+        raise ValueError(f"«{out_dir}» уже существует и не является папкой — укажите другой --out-dir")
+
+    json_dir, json_name = _resolve_out_path(json_out_arg, out_dir, DEFAULT_RUN_JSON_OUT)
+    html_dir, html_name = _resolve_out_path(out_arg, out_dir, DEFAULT_RUN_HTML_OUT)
+
+    for flag, name in (("--json-out", json_name), ("--out", html_name)):
+        try:
+            out_writer.check_safe_filename(name)
+        except ValueError:
+            raise ValueError(f"{flag}: недопустимое имя файла {name!r} — укажите простое имя файла без каталогов") from None
+
+    for target_dir in (json_dir, html_dir):
+        if not _same_path(target_dir, out_dir) and Path(target_dir).exists() and not Path(target_dir).is_dir():
+            raise ValueError(f"«{target_dir}» уже существует и не является папкой")
+
+    return json_dir, json_name, html_dir, html_name
+
+
+def _swap_dir_into_place(staging: Path, out_dir: Path) -> None:
+    """Atomically replaces `out_dir` with the fully-written `staging`
+    directory. `os.rename` cannot rename onto a non-empty existing
+    directory on POSIX, so an existing `out_dir` is renamed aside first,
+    `staging` takes its place, and the old copy is removed last. If the
+    final rename fails, the old `out_dir` is put back so a half-finished
+    swap never leaves `out_dir` missing."""
+    backup = None
+    if out_dir.exists():
+        backup = out_dir.parent / f".{out_dir.name}.previous-{os.getpid()}"
+        os.rename(out_dir, backup)
+    try:
+        os.rename(staging, out_dir)
+    except OSError:
+        if backup is not None:
+            os.rename(backup, out_dir)
+        raise
+    if backup is not None:
+        shutil.rmtree(backup, ignore_errors=True)
+
+
+def _atomic_write(write_fn: Callable[..., Path], out_dir: str, filename: str, payload: Any) -> Path:
+    """Writes through `write_fn` (`out_writer.write_json`/`write_text`) to a
+    hidden temp name in `out_dir`, then renames it over `filename` — used
+    only when the target directory is NOT the run's own `out_dir` (which
+    gets its own whole-directory staged swap instead), so report.json/
+    report.html redirected elsewhere by an explicit --out/--json-out never
+    exist on disk half-written."""
+    out_writer.check_safe_filename(filename)
+    tmp_name = f".{filename}.tmp-{os.getpid()}"
+    write_fn(out_dir, tmp_name, payload)
+    final = out_writer.ensure_out_dir(out_dir) / filename
+    os.replace(Path(out_dir) / tmp_name, final)
+    return final
+
+
+def _write_run_outputs(out_dir: str, json_dir: str, json_name: str, html_dir: str, html_name: str, report: dict, raw: dict) -> tuple:
+    """Writes raw dumps + 18 CSVs (always under `out_dir`) plus report.json/
+    report.html, so that a failure partway through never leaves `out_dir`
+    holding a mixture of this run's and a previous run's files (proven
+    failure mode: `out/some.csv` turning into a directory, or the disk
+    filling up, mid-list — see the review this fixes).
+
+    Everything that belongs under `out_dir` is first written into a staging
+    directory (a sibling of `out_dir`, guaranteed to share its filesystem)
+    and swapped in with a single directory rename only once every write to
+    it has succeeded — a failure before the swap leaves the previous
+    `out_dir` completely untouched, and the incomplete staging directory is
+    removed rather than left behind under a name that could be mistaken for
+    a real result. report.json/report.html get the same staged-swap
+    treatment when they land inside `out_dir` (the default, no --out/
+    --json-out given); when redirected elsewhere by an explicit path they
+    get their own independent atomic (temp-file + rename) write instead.
+
+    Returns `(json_path, html_path, raw_written, csv_written)`; raises
+    `OSError`/`ValueError` on any write failure."""
+    out_dir_path = Path(out_dir).absolute()
+    json_in_out_dir = _same_path(json_dir, out_dir)
+    html_in_out_dir = _same_path(html_dir, out_dir)
+
+    out_dir_path.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".team-metrics-run-", dir=str(out_dir_path.parent)))
+    try:
+        raw_written: list = [
+            out_writer.write_raw(staging, "jira_issue_facts.json", report_data._to_jsonable(raw["facts"])),
+            out_writer.write_raw(staging, "jira_sprints.json", report_data._to_jsonable(raw["axis"])),
+        ]
+        if raw["gitlab_configured"]:
+            raw_written.append(out_writer.write_raw(staging, "gitlab_merge_requests.json", raw["mrs"]))
+            raw_written.append(out_writer.write_raw(staging, "gitlab_pipelines.json", raw["pipelines"]))
+            raw_written.append(out_writer.write_raw(staging, "gitlab_deployments.json", raw["deployments"]))
+            raw_written.append(out_writer.write_raw(staging, "gitlab_coverage.json", raw["coverage"]))
+            raw_written.append(out_writer.write_raw(staging, "gitlab_fetch_issues.json", report["gitlab_fetch_issues"]))
+
+        csv_written = csv_export.write_all(staging, report, raw)
+
+        if json_in_out_dir:
+            out_writer.write_json(staging, json_name, report)
+        if html_in_out_dir:
+            out_writer.write_text(staging, html_name, render_html_mod.render_html(report))
+    except (OSError, ValueError):
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+    _swap_dir_into_place(staging, out_dir_path)
+
+    json_path = out_dir_path / json_name if json_in_out_dir else _atomic_write(out_writer.write_json, json_dir, json_name, report)
+    html_path = (
+        out_dir_path / html_name
+        if html_in_out_dir
+        else _atomic_write(out_writer.write_text, html_dir, html_name, render_html_mod.render_html(report))
+    )
+
+    return json_path, html_path, raw_written, csv_written
+
+
 def cmd_run(
     args: argparse.Namespace,
     environ: dict,
@@ -567,6 +747,9 @@ def cmd_run(
     jira_client_cls: Callable[..., Any] = jc.JiraClient,
     gitlab_client_cls: Callable[..., Any] = glc.GitLabClient,
 ) -> int:
+    logging_setup.setup_logging(verbose=args.verbose, quiet=args.quiet)
+    started_at = time.monotonic()
+
     # Strip the run-specific --out/--json-out before handing the namespace to
     # build_run_config_from_args(): that function falls back to args.out for
     # RunConfig.out_path (report_data.py's own JSON-path meaning), which would
@@ -578,9 +761,22 @@ def cmd_run(
         print(f"ошибка настройки: {e}", file=sys.stderr)
         return 2
 
+    try:
+        json_dir, json_name, html_dir, html_name = _validate_run_output_paths(run_cfg.out_dir, args.out, args.json_out)
+    except ValueError as e:
+        print(f"ошибка настройки: {e}", file=sys.stderr)
+        return 2
+
+    log.info(
+        "Запуск run: целевые спринты [%s], история %d предыдущих спринтов",
+        _format_run_targets(run_cfg), run_cfg.history_sprint_count,
+    )
+
+    log.info("Подключение к Jira: %s", _redact_base_url(run_cfg.env.base_url))
     client = jira_client_cls(run_cfg.env.base_url, run_cfg.env.token, trust_env_proxy=not args.no_proxy)
     gitlab_cli = None
     if run_cfg.gitlab_env is not None and not run_cfg.no_gitlab:
+        log.info("Подключение к GitLab: %s", _redact_base_url(run_cfg.gitlab_env.base_url))
         gitlab_cli = gitlab_client_cls(run_cfg.gitlab_env.base_url, run_cfg.gitlab_env.token, trust_env_proxy=not args.no_proxy)
 
     # run_cfg.fetch_mr_details/fetch_pipeline_user already fold in
@@ -592,8 +788,15 @@ def cmd_run(
     fetch_mr_details = run_cfg.fetch_mr_details and not args.light
     fetch_pipeline_user = run_cfg.fetch_pipeline_user and not args.light
 
+    # report_data.build_combined_report_with_raw() owns sprint resolution,
+    # issue fetch, and every metrics computation as one call, logging one
+    # INFO line per pipeline stage itself (resolving sprints / fetching
+    # issues / computing sprint metrics / fetching GitLab / computing
+    # personal metrics / computing engineering metrics / building series /
+    # assembling the report) — this dispatcher only logs the file-writing
+    # stage that happens after it returns.
     try:
-        report = report_data.build_combined_report(
+        report, raw = report_data.build_combined_report_with_raw(
             client,
             sprint_ids=run_cfg.sprint_ids,
             sprint_names=run_cfg.sprint_names,
@@ -612,18 +815,29 @@ def cmd_run(
             include_personal=not run_cfg.no_personal,
             fetch_mr_details=fetch_mr_details,
             fetch_pipeline_user=fetch_pipeline_user,
+            out_dir=run_cfg.out_dir,
+            no_gitlab=run_cfg.no_gitlab,
+            status_labels=run_cfg.file_config.status_labels,
         )
     except (report_data.ReportError, jc.JiraError, glc.GitLabError) as e:
         print(f"ошибка: {e}", file=sys.stderr)
         return 1
 
-    json_text = json.dumps(report, ensure_ascii=False, indent=2)
-    json_path = Path(args.json_out)
-    json_path.write_text(json_text, encoding="utf-8")
+    log.info("Запись файлов результата")
+    out_dir = run_cfg.out_dir
 
-    html_text = render_html_mod.render_html(report)
-    html_path = Path(args.out)
-    html_path.write_text(html_text, encoding="utf-8")
+    try:
+        json_path, html_path, raw_written, csv_written = _write_run_outputs(
+            out_dir, json_dir, json_name, html_dir, html_name, report, raw
+        )
+    except (OSError, ValueError) as e:
+        print(f"ошибка записи результатов: {e}", file=sys.stderr)
+        return 1
+
+    log.info("Сырые данные API записаны: %d файлов в %s/raw", len(raw_written), out_dir)
+    log.info("CSV-файлы записаны: %d файлов в %s", len(csv_written), out_dir)
+    log.info("Файл report.json записан: %s", json_path)
+    log.info("Файл report.html записан: %s", html_path)
 
     print(f"файл с данными JSON записан: {json_path}")
     print(f"HTML-отчёт записан: {html_path}")
@@ -635,6 +849,12 @@ def cmd_run(
     gitlab_request_count = report.get("params", {}).get("gitlab_request_count")
     if gitlab_request_count is not None:
         print(f"HTTP-запросов к GitLab: {gitlab_request_count} (без учёта Jira — там счётчик пока не ведётся)")
+
+    elapsed = time.monotonic() - started_at
+    log.info(
+        "Готово за %.1fs; запросов к GitLab: %s",
+        elapsed, gitlab_request_count if gitlab_request_count is not None else "н/д",
+    )
     return 0
 
 
@@ -647,8 +867,8 @@ def _check_schema_version(report: dict) -> None:
     got = report.get("schema_version")
     if got not in SUPPORTED_SCHEMA_VERSIONS:
         raise CliError(
-            f"schema_version {got!r} в JSON-файле не поддерживается этой версией инструмента "
-            f"(поддерживается: {sorted(SUPPORTED_SCHEMA_VERSIONS)}); пересоздайте JSON командой `run` или report_data.py"
+            f"schema_version {got!r} в JSON-файле не поддерживается этой версией инструмента (нужна схема v2). "
+            "Этот JSON создан старой версией team-metrics — пересоздайте его командой `team-metrics run`."
         )
 
 
@@ -656,10 +876,21 @@ def cmd_report(args: argparse.Namespace) -> int:
     """Renders HTML from an existing JSON data file. Makes zero network calls
     and never touches JIRA_*/GITLAB_* — no jira_client/gitlab_client import
     site anywhere in this function."""
-    if args.report_json:
-        report = json.loads(Path(args.report_json).read_text(encoding="utf-8"))
-    else:
-        report = json.loads(sys.stdin.read())
+    source = args.report_json or "stdin"
+    try:
+        text = Path(args.report_json).read_text(encoding="utf-8") if args.report_json else sys.stdin.read()
+    except OSError as e:
+        print(f"ошибка: не удалось прочитать {source!r}: {e.strerror or e}", file=sys.stderr)
+        return 1
+
+    try:
+        report = json.loads(text)
+    except json.JSONDecodeError as e:
+        print(f"ошибка: {source!r} не похож на корректный JSON: {e}", file=sys.stderr)
+        return 1
+    if not isinstance(report, dict):
+        print(f"ошибка: {source!r} должен быть JSON-объектом, получено {type(report).__name__}", file=sys.stderr)
+        return 1
 
     try:
         _check_schema_version(report)
@@ -671,7 +902,11 @@ def cmd_report(args: argparse.Namespace) -> int:
     html_text = render_html_mod.render_html(report, template_path=template_path)
 
     if args.out:
-        Path(args.out).write_text(html_text, encoding="utf-8")
+        out_path = Path(args.out)
+        if out_path.is_symlink():
+            print(f"ошибка: отказ писать сквозь symlink: {out_path}", file=sys.stderr)
+            return 1
+        out_path.write_text(html_text, encoding="utf-8")
         print(f"HTML-отчёт записан: {args.out}")
     else:
         sys.stdout.write(html_text)
@@ -708,6 +943,26 @@ def _proxy_host_only(url: str) -> str:
     except ValueError:
         host = None
     return host or "хост не определён"
+
+
+def _redact_base_url(url: str) -> str:
+    """Strips embedded userinfo (`user:pass@`) from a Jira/GitLab base URL
+    before it is ever printed or logged, keeping everything else (scheme,
+    host, port, path) verbatim — the same "never shown whole" rule
+    `_proxy_host_only` applies to a proxy URL, except a base URL keeps more
+    than just the host, since that (not just the host) is exactly the
+    diagnostic information `check`/`run` output needs. Never raises: an
+    unparseable value degrades to a fixed placeholder rather than risking a
+    partially-redacted string reaching stdout/logs."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return "URL не определён (не удалось разобрать)"
+    netloc = parts.netloc.rsplit("@", 1)[-1] if "@" in parts.netloc else parts.netloc
+    try:
+        return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    except ValueError:
+        return "URL не определён (не удалось разобрать)"
 
 
 def _host_bypassed_by_no_proxy(host: str, no_proxy_value: str) -> bool:

@@ -2,6 +2,7 @@ screenshots/
 .playwright-mcp/
 .research/
 .team-metrics.json
+out/
 __pycache__/
 *.py[cod]
 dist/

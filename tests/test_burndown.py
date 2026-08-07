@@ -98,5 +98,47 @@ class BurndownWeekendCarryForwardTests(unittest.TestCase):
         self.assertEqual(points[0].ideal_sp, 13.0)
 
 
+class IdealItemsTests(unittest.TestCase):
+    """v2 addition (SPEC §C.4): ideal_items is the same linear-burn rule as
+    ideal_sp, over committed_items instead of committed_sp."""
+
+    def test_linear_burn_of_committed_items(self):
+        start = dt(2026, 1, 5)
+        schedule_end = dt(2026, 1, 9)
+        complete_at = dt(2026, 1, 12)
+        tl = model.SprintTimeline(start=start, schedule_end=schedule_end, classify_end=complete_at)
+        cfg = make_cfg(jira_status_categories={"In Progress": "indeterminate"})
+        issues = [
+            metrics.SprintIssue(make_issue("PROJ-1", initial_status="In Progress"), [model.Interval(from_=dt(2025, 12, 1), until=None)]),
+            metrics.SprintIssue(make_issue("PROJ-2", initial_status="In Progress"), [model.Interval(from_=dt(2025, 12, 1), until=None)]),
+        ]
+        sprint_input = metrics.SprintInput(
+            id=1, name="Sprint 1", board_id=1, board_name="Board", state="closed", timeline=tl, complete_at=complete_at,
+        )
+        payload, _ = metrics.build_payload(sprint_input, issues, cfg, velocity_history=[])
+        points = burndown.burndown_from_payload(payload, now=complete_at)
+
+        committed_items = payload.metrics.committed_items
+        self.assertEqual(committed_items, 2)
+        total_days = 7
+        for k, p in enumerate(points):
+            self.assertAlmostEqual(p.ideal_items, committed_items * (1 - k / total_days))
+        self.assertAlmostEqual(points[0].ideal_items, 2.0)
+        self.assertAlmostEqual(points[-1].ideal_items, 0.0)
+
+    def test_one_day_sprint_gives_full_committed_items(self):
+        tl = model.SprintTimeline(start=dt(2026, 2, 2), schedule_end=dt(2026, 2, 2), classify_end=dt(2026, 2, 2))
+        issue = make_issue("PROJ-9", initial_status="In Progress")
+        cfg = make_cfg(jira_status_categories={"In Progress": "indeterminate"})
+        sprint_input = metrics.SprintInput(
+            id=2, name="Sprint 2", board_id=1, board_name="Board", state="closed", timeline=tl, complete_at=dt(2026, 2, 2)
+        )
+        issues = [metrics.SprintIssue(issue, [model.Interval(from_=dt(2026, 1, 1), until=None)])]
+        payload, _ = metrics.build_payload(sprint_input, issues, cfg, velocity_history=[])
+        points = burndown.burndown_from_payload(payload, now=dt(2026, 2, 2))
+        self.assertEqual(len(points), 1)
+        self.assertEqual(points[0].ideal_items, 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

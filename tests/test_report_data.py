@@ -3,14 +3,24 @@ Jira client — no urllib/network involvement anywhere in this file."""
 
 import _pathfix  # noqa: F401
 
+import contextlib
 import dataclasses
+import io
+import json
+import os
+import tempfile
 import unittest
+import unittest.mock
+from datetime import datetime, timezone
+from pathlib import Path
 
 from team_metrics import jira_client as jc
 from team_metrics import metrics as metrics_mod
 from team_metrics import model, report_data
 
 from helpers import dt, make_cfg
+
+UTC = timezone.utc
 
 
 class FakeJiraClient:
@@ -133,17 +143,17 @@ class BuildReportIntegrationTests(unittest.TestCase):
         )
 
     def _target_entry(self):
-        return next(s for s in self.report["sprints"] if s["payload"]["sprint"]["id"] == 100)
+        return next(s for s in self.report["sprints"] if s["meta"]["id"] == 100)
 
     def test_board_identity(self):
         self.assertEqual(self.report["board"], {"id": 1, "name": "Team Board"})
 
     def test_all_three_sprints_present_ascending_by_start_and_target_flagged(self):
-        ids_and_targets = [(s["payload"]["sprint"]["id"], s["target"]) for s in self.report["sprints"]]
+        ids_and_targets = [(s["meta"]["id"], s["target"]) for s in self.report["sprints"]]
         self.assertEqual(ids_and_targets, [(98, False), (99, False), (100, True)])
 
     def test_target_sprint_metrics(self):
-        m = self._target_entry()["payload"]["metrics"]
+        m = self._target_entry()["metrics"]
         self.assertEqual(m["committed_sp"], 7.0)
         self.assertEqual(m["committed_items"], 2)
         self.assertEqual(m["delivered_sp"], 5.0)
@@ -157,37 +167,43 @@ class BuildReportIntegrationTests(unittest.TestCase):
         self.assertAlmostEqual(m["closure_pct_sp"], 62.5)
 
     def test_board_kpi_over_base_sprints_only(self):
-        kpi = self.report["kpi"]
-        self.assertEqual(kpi["velocity_sma5_sp"], 5.0)
-        self.assertEqual(kpi["avg_performance_pct"], 100.0)
-        self.assertEqual(kpi["avg_scope_change_pct"], 0.0)
-        self.assertEqual(kpi["avg_closure_pct_items"], 100.0)
-        self.assertEqual(kpi["avg_closure_pct_sp"], 100.0)
-        self.assertEqual(kpi["throughput_avg_items"], 5.0)
-        self.assertTrue(kpi["forecast_available"])  # exactly 10 non-zero daily points
+        # v2 only publishes the board-level velocity_sma5_sp/throughput_avg_items
+        # KPI aggregates (as tiles) — performance/scope-change/closure KPI
+        # averages over base sprints are a v1-only concept, not part of the
+        # schema-v2 contract (SPEC §C.2).
+        tiles_by_key = {t["key"]: t for t in self.report["board_kpi"]["tiles"]}
+        self.assertEqual(tiles_by_key["velocity_sma5_sp"]["value"], 5.0)
+        self.assertEqual(tiles_by_key["throughput_avg_items"]["value"], 5.0)
+        self.assertTrue(self.report["board_kpi"]["forecast_available"])  # exactly 10 non-zero daily points
 
     def test_baseline_short_warning_present_no_spurious_division_warning(self):
-        self.assertIn(model.WARN_BASELINE_SHORT, self.report["warnings"])
-        self.assertNotIn(model.WARN_DIVISION_BY_ZERO, self.report["warnings"])
-        self.assertNotIn(model.WARN_SPRINT_ACTIVE_PARTIAL, self.report["warnings"])
+        codes = {w["code"] for w in self.report["warnings"]}
+        for w in self.report["warnings"]:
+            self.assertIn("code", w)
+            self.assertIn("message_ru", w)
+            self.assertIn("detail", w)
+        self.assertIn(model.WARN_BASELINE_SHORT, codes)
+        self.assertNotIn(model.WARN_DIVISION_BY_ZERO, codes)
+        self.assertNotIn(model.WARN_SPRINT_ACTIVE_PARTIAL, codes)
 
     def test_forecast_succeeds_with_enough_nonzero_points(self):
         # Forecast's own population (B1) is the board's closed sprints
         # ordered by end_at, capped at 5, target-inclusive — so it's sprints
         # 98+99+100 here (all three are closed), NOT just the 2 non-target
         # base sprints --history would show on the board table.
-        self.assertIsNone(self.report["forecast_error"])
         forecast = self.report["forecast"]
+        self.assertTrue(forecast["available"])
+        self.assertIsNone(forecast["error"])
         self.assertEqual(forecast["sample_sprints"], 3)
         self.assertEqual(forecast["sample_days"], 15)
         self.assertEqual(forecast["target_items"], 7)
         self.assertEqual(len(forecast["percentiles"]), 3)
 
     def test_heatmap_and_burndown_built_for_target_sprint_only(self):
-        self.assertEqual(len(self.report["heatmaps"]), 1)
-        self.assertEqual(len(self.report["burndowns"]), 1)
+        self.assertEqual(len(self.report["heatmap"]), 1)
+        self.assertEqual(len(self.report["burndown"]), 1)
 
-        hm = self.report["heatmaps"][0]
+        hm = self.report["heatmap"][0]
         self.assertEqual(hm["sprint_id"], 100)
         self.assertEqual(hm["days"], ["2026-01-19", "2026-01-20", "2026-01-21", "2026-01-22", "2026-01-23"])
         rows_by_key = {r["issue_key"]: r["cells"] for r in hm["rows"]}
@@ -202,13 +218,14 @@ class BuildReportIntegrationTests(unittest.TestCase):
         # T3: removed Jan 22 09:00 -> last cell is Jan 21, none after.
         self.assertEqual([c["date"] for c in rows_by_key["T3"]], ["2026-01-19", "2026-01-20", "2026-01-21"])
 
-        bd = self.report["burndowns"][0]
+        bd = self.report["burndown"][0]
         self.assertEqual(bd["sprint_id"], 100)
         points_by_date = {p["date"]: p for p in bd["points"]}
         # Jan 19: only T1 (5sp) + T3 (2sp) are members yet (T2 joins Jan 20).
         self.assertEqual(points_by_date["2026-01-19"]["remaining_items"], 2)
         self.assertEqual(points_by_date["2026-01-19"]["remaining_sp"], 7.0)
         self.assertEqual(points_by_date["2026-01-19"]["ideal_sp"], 7.0)
+        self.assertEqual(points_by_date["2026-01-19"]["ideal_items"], 2.0)
         # Jan 20: T2 has joined -> all three members, none delivered yet.
         self.assertEqual(points_by_date["2026-01-20"]["remaining_items"], 3)
         self.assertEqual(points_by_date["2026-01-20"]["remaining_sp"], 10.0)
@@ -217,10 +234,11 @@ class BuildReportIntegrationTests(unittest.TestCase):
         self.assertEqual(points_by_date["2026-01-21"]["remaining_sp"], 5.0)
         # Jan 23 (last day): ideal line reaches exactly 0.
         self.assertEqual(points_by_date["2026-01-23"]["ideal_sp"], 0.0)
+        self.assertEqual(points_by_date["2026-01-23"]["ideal_items"], 0.0)
 
     def test_export_tables(self):
-        export = self.report["export"]
-        board = export["board_table"]
+        export_tables = self.report["export_tables"]
+        board = export_tables["board"]
         self.assertEqual(
             board["header"],
             [
@@ -231,6 +249,8 @@ class BuildReportIntegrationTests(unittest.TestCase):
                 "throughput_count", "closure_rate_count_pct", "closure_rate_sp_pct",
             ],
         )
+        self.assertEqual(board["csv_filename"], "board.csv")
+        self.assertEqual(len(board["header_ru"]), len(board["header"]))
         self.assertEqual(len(board["rows"]), 3)
         # Sprint 100 (the target) — every column value, not just row count.
         self.assertEqual(
@@ -239,7 +259,7 @@ class BuildReportIntegrationTests(unittest.TestCase):
              "7", "5", "3", "2", "0", "71.42857142857143", "140", "71.42857142857143", "5", "5", "1", "50", "62.5"],
         )
 
-        heatmap = export["heatmap_table"]
+        heatmap = export_tables["heatmap"]
         self.assertEqual(
             heatmap["header"],
             [
@@ -248,6 +268,9 @@ class BuildReportIntegrationTests(unittest.TestCase):
                 "100 / 2026-01-22 / чт", "100 / 2026-01-23 / пт", "End",
             ],
         )
+        self.assertEqual(heatmap["csv_filename"], "heatmap.csv")
+        self.assertEqual(heatmap["header_ru"][0], "Эпик")
+        self.assertEqual(heatmap["header_ru"][6], "До спринта")
         rows_by_key = {r[1]: r for r in heatmap["rows"]}
         self.assertEqual(
             rows_by_key["T1"],
@@ -257,11 +280,6 @@ class BuildReportIntegrationTests(unittest.TestCase):
             rows_by_key["T3"],
             ["", "T3", "2", "0", "", "", "In Progress", "In Progress", "In Progress", "In Progress", "", "", "In Progress"],
         )
-
-        # heatmap_csv: UTF-8 BOM, `;` separator, same column order as the table.
-        self.assertTrue(export["heatmap_csv"].startswith("﻿"))
-        csv_lines = export["heatmap_csv"].lstrip("﻿").rstrip("\n").split("\n")
-        self.assertEqual(csv_lines[0], ";".join(heatmap["header"]))
 
     def test_params_echo(self):
         params = self.report["params"]
@@ -466,23 +484,31 @@ class CsvGuardTests(unittest.TestCase):
         self.assertEqual(report_data._sanitize_csv("plain text"), "plain text")
 
 
-class SafeCellTests(unittest.TestCase):
-    """M2: board_table's formula-injection guard — mirrors Go's safeCell."""
+class BoardTableGuardRetiredTests(unittest.TestCase):
+    """out_writer.write_csv guards every board.csv cell centrally now, so
+    _build_board_table no longer runs its own (redundant) formula guard --
+    that removed guard used to also corrupt export_tables.board.rows, which
+    render_html.py's tab 08 shows verbatim: a value starting with a
+    formula-trigger char must reach this row unprefixed."""
 
-    def test_prefixes_single_quote_for_each_dangerous_leading_char(self):
-        for ch in "=+-@\t\r":
-            self.assertEqual(report_data._safe_cell(f"{ch}x"), f"'{ch}x")
+    def _payload(self, sprint_name: str, performance_pct: float) -> metrics_mod.Payload:
+        sprint = metrics_mod.SprintMeta(
+            id=1, name=sprint_name, board_id=1, board_name="Board", state="closed",
+            start_at=dt(2026, 1, 5), end_at=dt(2026, 1, 9), complete_at=dt(2026, 1, 9),
+            working_days=[],
+        )
+        metrics = metrics_mod.Metrics(committed_sp=5.0, delivered_sp=5.0, performance_pct=performance_pct)
+        return metrics_mod.Payload(
+            schema_version=2, sprint=sprint, issues=[], sets=model.Sets(), metrics=metrics, throughput_daily=[],
+        )
 
-    def test_leaves_normal_text_alone(self):
-        self.assertEqual(report_data._safe_cell("Sprint 1"), "Sprint 1")
+    def test_hostile_sprint_name_reaches_the_row_unprefixed(self):
+        header, rows = report_data._build_board_table([{"payload": self._payload("=1+1", 0.0)}])
+        self.assertEqual(rows[0][header.index("sprint")], "=1+1")
 
-    def test_empty_string_unchanged(self):
-        self.assertEqual(report_data._safe_cell(""), "")
-
-    def test_negative_number_string_also_gets_guarded(self):
-        # Uniform application, same as Go: a negative numeric cell's leading
-        # '-' is guarded too, not just text columns.
-        self.assertEqual(report_data._safe_cell("-5"), "'-5")
+    def test_negative_percentage_reaches_the_row_unprefixed(self):
+        header, rows = report_data._build_board_table([{"payload": self._payload("Sprint 1", -12.5)}])
+        self.assertEqual(rows[0][header.index("performance_pct")], "-12.5")
 
 
 class MissingSprintDatesNoTracebackTests(unittest.TestCase):
@@ -500,9 +526,9 @@ class MissingSprintDatesNoTracebackTests(unittest.TestCase):
         )
         report = report_data.build_report(client, sprint_ids=[200], now=dt(2026, 6, 1))
 
-        entry = next(s for s in report["sprints"] if s["payload"]["sprint"]["id"] == 200)
-        self.assertEqual(len(entry["payload"]["sprint"]["working_days"]), 1)
-        board_row = report["export"]["board_table"]["rows"][0]
+        entry = next(s for s in report["sprints"] if s["meta"]["id"] == 200)
+        self.assertEqual(len(entry["meta"]["working_days"]), 1)
+        board_row = report["export_tables"]["board"]["rows"][0]
         self.assertEqual(board_row[2], "0001-01-01")  # start
         self.assertEqual(board_row[3], "0001-01-01")  # end
 
@@ -648,11 +674,10 @@ class BuildCombinedReportTests(unittest.TestCase):
 
     def test_gitlab_absent_degrades_to_unavailable_never_a_hard_failure(self):
         report = report_data.build_combined_report(self.client, sprint_ids=[500], now=dt(2026, 2, 7), gitlab_client_obj=None)
-        self.assertFalse(report["personal"]["available"])
-        self.assertIsNone(report["personal"]["data"])
+        self.assertFalse(report["people_available"])
+        self.assertEqual(report["people"], [])
         self.assertFalse(report["engineering"]["available"])
-        self.assertIsNone(report["engineering"]["data"])
-        self.assertEqual(len(report["semantics_notes"]), 4)
+        self.assertEqual(len(report["semantics_notes"]), 5)
         self.assertIn("board", report)  # tab 1 still fully built
 
     def test_gitlab_present_builds_personal_and_engineering(self):
@@ -660,19 +685,18 @@ class BuildCombinedReportTests(unittest.TestCase):
             self.client, sprint_ids=[500], now=dt(2026, 2, 7),
             gitlab_client_obj=self.gitlab, gitlab_projects=["group/proj"], employees=["alice", "bob"],
         )
-        self.assertTrue(report["personal"]["available"])
+        self.assertTrue(report["people_available"])
         self.assertTrue(report["engineering"]["available"])
-        people = {p["user"]: p for p in report["personal"]["data"]["people"]}
+        people = {p["login"]: p for p in report["people"]}
         self.assertIn("alice", people)
-        # New per-person fields (rework_tasks/rework_share/issue_count) flow
+        # New per-person fields (rework_tasks/rework_rate_pct/issue_count) flow
         # straight through from personal_metrics()'s own dict — no wiring
-        # needed beyond calling it. pipeline_success_rate does need explicit
-        # wiring (build_personal_report() has no pipelines= parameter), so
-        # it is asserted precisely: 1 success of 2 pipelines for alice.
-        self.assertEqual(people["alice"]["issue_count"], 1)
-        self.assertEqual(people["alice"]["rework_tasks"], 0)
-        self.assertIn("rework_share", people["alice"])
-        self.assertEqual(people["alice"]["pipeline_success_rate"], 0.5)
+        # needed beyond calling it. pipeline_success_rate_pct is asserted
+        # precisely: 1 success of 2 pipelines for alice.
+        self.assertEqual(people["alice"]["metrics"]["issue_count"], 1)
+        self.assertEqual(people["alice"]["metrics"]["rework_tasks"], 0)
+        self.assertIn("rework_rate_pct", people["alice"]["metrics"])
+        self.assertEqual(people["alice"]["metrics"]["pipeline_success_rate_pct"], 50.0)
 
     def test_pipeline_success_rate_is_none_without_pipeline_data(self):
         gitlab_no_pipelines = FakeGitLabClient(
@@ -685,19 +709,18 @@ class BuildCombinedReportTests(unittest.TestCase):
             self.client, sprint_ids=[500], now=dt(2026, 2, 7),
             gitlab_client_obj=gitlab_no_pipelines, gitlab_projects=["group/proj"], employees=["alice"],
         )
-        people = {p["user"]: p for p in report["personal"]["data"]["people"]}
-        self.assertIsNone(people["alice"]["pipeline_success_rate"])
+        people = {p["login"]: p for p in report["people"]}
+        self.assertIsNone(people["alice"]["metrics"]["pipeline_success_rate_pct"])
 
     def test_personal_uses_current_story_points_sprint_tab_uses_end_of_membership(self):
         report = report_data.build_combined_report(
             self.client, sprint_ids=[500], now=dt(2026, 2, 7),
             gitlab_client_obj=self.gitlab, gitlab_projects=["group/proj"], employees=["alice"],
         )
-        sprint_entry = next(s for s in report["sprints"] if s["payload"]["sprint"]["id"] == 500)
-        p1 = next(i for i in sprint_entry["payload"]["issues"] if i["key"] == "P-1")
-        people = {p["user"]: p for p in report["personal"]["data"]["people"]}
-        self.assertEqual(p1["story_points"], 5.0)  # sprint tab: end-of-membership
-        self.assertEqual(people["alice"]["story_points_total"], 8.0)  # personal: current value
+        heatmap_row = next(r for r in report["heatmap"][0]["rows"] if r["issue_key"] == "P-1")
+        people = {p["login"]: p for p in report["people"]}
+        self.assertEqual(heatmap_row["story_points"], 5.0)  # sprint tab: end-of-membership
+        self.assertEqual(people["alice"]["metrics"]["story_points_total"], 8.0)  # personal: current value
 
     def test_no_personal_skips_the_mr_fetch_but_keeps_engineering(self):
         report = report_data.build_combined_report(
@@ -705,8 +728,8 @@ class BuildCombinedReportTests(unittest.TestCase):
             gitlab_client_obj=self.gitlab, gitlab_projects=["group/proj"], employees=["alice", "bob"],
             include_personal=False,
         )
-        self.assertFalse(report["personal"]["available"])
-        self.assertEqual(report["personal"]["reason"], "--no-personal")
+        self.assertFalse(report["people_available"])
+        self.assertEqual(report["people_reason_ru"], "Отключено флагом --no-personal")
         self.assertTrue(report["engineering"]["available"])
         self.assertEqual(self.gitlab.mr_calls[0][1], ())  # no authors -> no MR fetch
 
@@ -785,6 +808,269 @@ class BuildCombinedReportTests(unittest.TestCase):
         for note in report["semantics_notes"]:
             self.assertGreater(len(note), 20)
             self.assertTrue(any(ord(c) > 127 for c in note))  # contains Cyrillic
+
+
+class ZeroPipelinesNoFalseRiskTests(unittest.TestCase):
+    """Finding #1: engineering_metrics.team_pipeline_metrics([]) correctly
+    returns success_rate_pct=0.0 + WARN_DIVISION_BY_ZERO for a genuinely
+    empty pipeline list (frozen, unchanged) — report_data must not then read
+    that measured-looking 0.0 as a real rate when CI simply never ran."""
+
+    def setUp(self):
+        self.target = jc.Sprint(id=600, name="Sprint 600", state="closed", board_id=9,
+                                 start_at=dt(2026, 3, 2), end_at=dt(2026, 3, 6, 18), complete_at=dt(2026, 3, 6, 18))
+        fact = jc.IssueFacts(
+            key="Z-1", epic_key="", type="Story", role="", labels=[], assignee="alice",
+            story_points=3.0, qa_estimation=0.0, created=dt(2026, 2, 1),
+            initial_status="In Progress", initial_status_id="2",
+            status_history=[jc.RawStatusChange(at=dt(2026, 3, 4, 10, 0), from_name="In Progress", to_name="Done", from_id="2", to_id="3")],
+            sp_events=[], current_status="Done", current_status_category_key="done",
+            resolutiondate=dt(2026, 3, 4, 10, 0),
+            membership_by_sprint={600: [model.Interval(from_=dt(2026, 2, 15), until=None)]},
+        )
+        self.client = FakeJiraClient(
+            sprints={600: self.target}, board=jc.Board(id=9, name="Team Board", type="scrum"),
+            closed_ids=[600], active_ids=[], facts=[fact], statuses=STATUSES,
+        )
+        # GitLab configured, a merged MR with a real cycle time -- but CI is
+        # simply not enabled, so pipelines() returns nothing at all.
+        self.gitlab = FakeGitLabClient(
+            project_ids={"group/proj": 42},
+            mrs_by_project={"group/proj": [
+                {"author": "alice", "state": "merged", "created_at": "2026-03-03T00:00:00Z",
+                 "merged_at": "2026-03-04T00:00:00Z", "cycle_time_hours": 24.0},
+            ]},
+        )
+
+    def _report(self):
+        return report_data.build_combined_report(
+            self.client, sprint_ids=[600], now=dt(2026, 3, 7),
+            gitlab_client_obj=self.gitlab, gitlab_projects=["group/proj"], employees=["alice"],
+        )
+
+    def test_overview_pipeline_and_deploy_rates_are_null_not_zero(self):
+        report = self._report()
+        self.assertEqual(report["engineering"]["pipelines"]["count"], 0)
+        self.assertIsNotNone(report["overview"]["pr_cycle_time_avg_hours"])
+        self.assertIsNone(report["overview"]["pipeline_success_rate_pct"])
+        self.assertIsNone(report["overview"]["deploy_success_rate_pct"])
+
+    def test_speed_vs_quality_risk_does_not_fire_on_zero_pipelines(self):
+        report = self._report()
+        risk_keys = {r["key"] for r in report["risks"]}
+        self.assertNotIn("speed_vs_quality", risk_keys)
+
+
+class ForecastNoActiveSprintErrorCodeTests(unittest.TestCase):
+    """Finding #2: the "no active sprint" degradation must carry a real code
+    + Russian message, and target_items must stay an int (never null, per §B)."""
+
+    def test_no_active_sprint_and_no_target_items_yields_real_error_code(self):
+        sprint = jc.Sprint(id=700, name="Sprint 700", state="closed", board_id=1,
+                            start_at=dt(2026, 1, 5), end_at=dt(2026, 1, 9, 18), complete_at=dt(2026, 1, 9, 18))
+        client = FakeJiraClient(
+            sprints={700: sprint}, board=jc.Board(id=1, name="Board", type="scrum"),
+            closed_ids=[700], active_ids=[], facts=[], statuses=STATUSES,
+        )
+        report = report_data.build_report(client, sprint_ids=[700], now=dt(2026, 1, 10))
+        forecast = report["forecast"]
+        self.assertFalse(forecast["available"])
+        self.assertEqual(forecast["error"]["code"], "ERR_FORECAST_NO_ACTIVE_SPRINT")
+        self.assertNotIn("target_items", forecast["error"]["message_ru"])  # no raw snake_case/English leak
+        self.assertTrue(any(ord(c) > 127 for c in forecast["error"]["message_ru"]))  # Russian prose
+        self.assertIsInstance(forecast["target_items"], int)
+        self.assertEqual(forecast["target_items"], 0)
+
+
+class SprintActivePartialWarningDedupeTests(unittest.TestCase):
+    """Finding #3: WARN_SPRINT_ACTIVE_PARTIAL must appear exactly once, with
+    the sprint-name detail — not once bare and once named."""
+
+    def test_active_target_sprint_warns_exactly_once_with_sprint_name_detail(self):
+        sprint = jc.Sprint(id=800, name="Sprint 800", state="active", board_id=1,
+                            start_at=dt(2026, 1, 5), end_at=dt(2026, 1, 9, 18), complete_at=model.ZERO_TIME)
+        client = FakeJiraClient(
+            sprints={800: sprint}, board=jc.Board(id=1, name="Board", type="scrum"),
+            closed_ids=[], active_ids=[800], facts=[], statuses=STATUSES,
+        )
+        report = report_data.build_report(client, sprint_ids=[800], now=dt(2026, 1, 10))
+        matches = [w for w in report["warnings"] if w["code"] == model.WARN_SPRINT_ACTIVE_PARTIAL]
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0]["detail"], "Sprint 800")
+
+
+class PipelineAttributionNotFalselyMissingTests(unittest.TestCase):
+    """Finding #4: a person with zero pipelines of their own must not be
+    told attribution "was not collected" when it plainly was (proven by
+    another person's pipelines all carrying real attribution)."""
+
+    def test_zero_pipelines_for_one_person_does_not_warn_when_others_are_attributed(self):
+        target = jc.Sprint(id=900, name="Sprint 900", state="closed", board_id=9,
+                            start_at=dt(2026, 2, 2), end_at=dt(2026, 2, 6, 18), complete_at=dt(2026, 2, 6, 18))
+        fact_alice = jc.IssueFacts(
+            key="P-1", epic_key="", type="Story", role="", labels=[], assignee="alice",
+            story_points=3.0, qa_estimation=0.0, created=dt(2026, 1, 1),
+            initial_status="In Progress", initial_status_id="2",
+            status_history=[jc.RawStatusChange(at=dt(2026, 2, 4, 10, 0), from_name="In Progress", to_name="Done", from_id="2", to_id="3")],
+            sp_events=[], current_status="Done", current_status_category_key="done",
+            resolutiondate=dt(2026, 2, 4, 10, 0),
+            membership_by_sprint={900: [model.Interval(from_=dt(2026, 1, 15), until=None)]},
+        )
+        fact_bob = jc.IssueFacts(
+            key="P-2", epic_key="", type="Story", role="", labels=[], assignee="bob",
+            story_points=2.0, qa_estimation=0.0, created=dt(2026, 1, 1),
+            initial_status="In Progress", initial_status_id="2",
+            status_history=[jc.RawStatusChange(at=dt(2026, 2, 5, 10, 0), from_name="In Progress", to_name="Done", from_id="2", to_id="3")],
+            sp_events=[], current_status="Done", current_status_category_key="done",
+            resolutiondate=dt(2026, 2, 5, 10, 0),
+            membership_by_sprint={900: [model.Interval(from_=dt(2026, 1, 15), until=None)]},
+        )
+        client = FakeJiraClient(
+            sprints={900: target}, board=jc.Board(id=9, name="Team Board", type="scrum"),
+            closed_ids=[900], active_ids=[], facts=[fact_alice, fact_bob], statuses=STATUSES,
+        )
+        gitlab = FakeGitLabClient(
+            project_ids={"group/proj": 42},
+            pipelines_by_project={"group/proj": [
+                {"user_username": "alice", "status": "success"},
+                {"user_username": "alice", "status": "failed"},
+            ]},
+        )
+        report = report_data.build_combined_report(
+            client, sprint_ids=[900], now=dt(2026, 2, 7),
+            gitlab_client_obj=gitlab, gitlab_projects=["group/proj"], employees=["alice", "bob"],
+        )
+        people = {p["login"]: p for p in report["people"]}
+        self.assertIsNone(people["bob"]["metrics"]["pipeline_success_rate_pct"])
+        bob_codes = {w["code"] for w in people["bob"]["warnings"]}
+        self.assertNotIn("WARN_PIPELINE_SUCCESS_UNAVAILABLE", bob_codes)
+        # alice's own attribution (proven real, not None) is unaffected.
+        self.assertEqual(people["alice"]["metrics"]["pipeline_success_rate_pct"], 50.0)
+
+
+class ToJsonableTimestampTests(unittest.TestCase):
+    """Finding #5: §B rule 5 timestamps are YYYY-MM-DDTHH:MM:SSZ, no
+    sub-second part."""
+
+    def test_microseconds_stripped_from_datetime_serialization(self):
+        d = datetime(2026, 8, 7, 2, 4, 24, 498443, tzinfo=UTC)
+        self.assertEqual(report_data._to_jsonable(d), "2026-08-07T02:04:24Z")
+
+    def test_generated_at_in_a_real_report_has_no_microseconds(self):
+        sprint = jc.Sprint(id=1000, name="Sprint 1000", state="closed", board_id=1,
+                            start_at=dt(2026, 1, 5), end_at=dt(2026, 1, 9, 18), complete_at=dt(2026, 1, 9, 18))
+        client = FakeJiraClient(
+            sprints={1000: sprint}, board=jc.Board(id=1, name="Board", type="scrum"),
+            closed_ids=[1000], active_ids=[], facts=[], statuses=STATUSES,
+        )
+        now = datetime(2026, 1, 24, 10, 15, 30, 123456, tzinfo=UTC)
+        report = report_data.build_report(client, sprint_ids=[1000], now=now)
+        self.assertEqual(report["params"]["generated_at"], "2026-01-24T10:15:30Z")
+
+
+class OverviewIssueTypeDistConsistencyTests(unittest.TestCase):
+    """Finding #6: when people are unavailable, employees/mr_total/
+    tasks_done_total are all 0 -- issue_type_dist must not still show slices
+    built from a wider (GitLab-independent) Jira set."""
+
+    def test_issue_type_dist_empty_when_people_unavailable(self):
+        target = jc.Sprint(id=1100, name="Sprint 1100", state="closed", board_id=9,
+                            start_at=dt(2026, 2, 2), end_at=dt(2026, 2, 6, 18), complete_at=dt(2026, 2, 6, 18))
+        fact = jc.IssueFacts(
+            key="P-9", epic_key="", type="Story", role="", labels=[], assignee="alice",
+            story_points=3.0, qa_estimation=0.0, created=dt(2026, 1, 1),
+            initial_status="In Progress", initial_status_id="2",
+            status_history=[jc.RawStatusChange(at=dt(2026, 2, 4, 10, 0), from_name="In Progress", to_name="Done", from_id="2", to_id="3")],
+            sp_events=[], current_status="Done", current_status_category_key="done",
+            resolutiondate=dt(2026, 2, 4, 10, 0),
+            membership_by_sprint={1100: [model.Interval(from_=dt(2026, 1, 15), until=None)]},
+        )
+        client = FakeJiraClient(
+            sprints={1100: target}, board=jc.Board(id=9, name="Team Board", type="scrum"),
+            closed_ids=[1100], active_ids=[], facts=[fact], statuses=STATUSES,
+        )
+        report = report_data.build_combined_report(client, sprint_ids=[1100], now=dt(2026, 2, 7), gitlab_client_obj=None)
+        self.assertFalse(report["people_available"])
+        self.assertEqual(report["overview"]["tasks_done_total"], 0)
+        self.assertEqual(report["overview"]["issue_type_dist"], {})
+
+
+class DivZeroDetailNamesAllAffectedMetricsTests(unittest.TestCase):
+    """Finding #11: compute_metrics()/dedupe_warnings() collapse any number
+    of individual division-by-zero ratios into ONE bare WARN_DIVISION_BY_ZERO
+    per sprint -- the single resulting warning's detail must name every
+    affected metric, not just the first one found."""
+
+    def test_empty_sprint_warning_detail_lists_every_affected_metric(self):
+        sprint = jc.Sprint(id=1200, name="Sprint 1200", state="closed", board_id=1,
+                            start_at=dt(2026, 4, 6), end_at=dt(2026, 4, 10, 18), complete_at=dt(2026, 4, 10, 18))
+        client = FakeJiraClient(
+            sprints={1200: sprint}, board=jc.Board(id=1, name="Board", type="scrum"),
+            closed_ids=[1200], active_ids=[], facts=[], statuses=STATUSES,
+        )
+        report = report_data.build_report(client, sprint_ids=[1200], history_sprint_count=5, now=dt(2026, 4, 11))
+        entry = next(s for s in report["sprints"] if s["meta"]["id"] == 1200)
+        div0_warnings = [w for w in entry["warnings"] if w["code"] == model.WARN_DIVISION_BY_ZERO]
+        self.assertEqual(len(div0_warnings), 1)
+        detail = div0_warnings[0]["detail"]
+        for label in ("Performance, %", "Загрузка, %", "Изменение объёма, %", "% закрытия (задачи)", "% закрытия (SP)"):
+            self.assertIn(label, detail)
+
+
+class MainCliWiringTests(unittest.TestCase):
+    """report_data.main() used to accept --out-dir/--verbose/--quiet (parsed
+    correctly by config.parse_args into RunConfig) but never read them back:
+    no logging_setup.setup_logging() call at all, and build_combined_report()
+    was called without out_dir=. Patches build_combined_report itself (so no
+    Jira/GitLab network or fixture wiring is needed) and spies on
+    logging_setup.setup_logging to prove main() now wires all three
+    through."""
+
+    def _run(self, argv, extra_environ=None):
+        environ = {"JIRA_BASE_URL": "https://jira.example.com", "JIRA_TOKEN": "tok"}
+        environ.update(extra_environ or {})
+        captured: dict = {}
+
+        def fake_build_combined_report(client, **kwargs):
+            captured["kwargs"] = kwargs
+            return {"schema_version": 2}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "cfg.json"
+            cfg_path.write_text(json.dumps({"employees": []}), encoding="utf-8")
+            full_argv = argv + ["--config", str(cfg_path)]
+            with unittest.mock.patch.object(report_data, "build_combined_report", fake_build_combined_report), \
+                 unittest.mock.patch.object(report_data.logging_setup, "setup_logging") as fake_setup_logging, \
+                 unittest.mock.patch.dict(os.environ, environ, clear=True):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    code = report_data.main(full_argv)
+        return code, out.getvalue(), captured, fake_setup_logging
+
+    def test_out_dir_flag_reaches_build_combined_report(self):
+        code, _out, captured, _fake_setup_logging = self._run(["--sprint-ids", "100", "--out-dir", "custom-artifacts"])
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["kwargs"]["out_dir"], "custom-artifacts")
+
+    def test_default_out_dir_is_still_wired_through(self):
+        code, _out, captured, _fake_setup_logging = self._run(["--sprint-ids", "100"])
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["kwargs"]["out_dir"], "out")
+
+    def test_verbose_flag_reaches_setup_logging(self):
+        code, _out, _captured, fake_setup_logging = self._run(["--sprint-ids", "100", "--verbose"])
+        self.assertEqual(code, 0)
+        fake_setup_logging.assert_called_once_with(verbose=True, quiet=False)
+
+    def test_quiet_flag_reaches_setup_logging(self):
+        code, _out, _captured, fake_setup_logging = self._run(["--sprint-ids", "100", "--quiet"])
+        self.assertEqual(code, 0)
+        fake_setup_logging.assert_called_once_with(verbose=False, quiet=True)
+
+    def test_default_verbosity_still_calls_setup_logging(self):
+        code, _out, _captured, fake_setup_logging = self._run(["--sprint-ids", "100"])
+        self.assertEqual(code, 0)
+        fake_setup_logging.assert_called_once_with(verbose=False, quiet=False)
 
 
 if __name__ == "__main__":

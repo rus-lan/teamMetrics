@@ -110,6 +110,60 @@ class RetryLoopTests(unittest.TestCase):
         self.assertEqual(client._backoff_delay(10), 8.0)  # far above cap -> clamped
 
 
+class InvalidUrlAndTokenRedactionTests(unittest.TestCase):
+    """A GITLAB_URL embedding credentials (`user:pass@host`) makes urllib
+    raise http.client.InvalidURL deep inside `_attempt` -- its own message
+    quotes the mis-split host:port fragment verbatim, which can contain the
+    password. Separately, an upstream error body or transport-error message
+    that happens to echo the token back must never carry it into a
+    GitLabError, since that reaches stdout via `check` and disk via
+    `out/raw/gitlab_fetch_issues.json`. Mirrors
+    test_jira_client.InvalidUrlAndTokenRedactionTests."""
+
+    def _client(self, token="gitlab-super-secret-token"):
+        return gc.GitLabClient("https://gitlab.example.com", token, sleep=lambda _d: None)
+
+    def test_invalid_url_becomes_a_clean_gitlab_error_without_the_credential(self):
+        client = self._client()
+
+        def fake_attempt(url):
+            raise http.client.InvalidURL("nonnumeric port: 'S3cr3tPass@gitlab.invalid-host-xyz.example'")
+
+        client._attempt = fake_attempt
+        with self.assertRaises(gc.GitLabError) as ctx:
+            client._do("Op", "/x")
+        self.assertNotIn("S3cr3tPass", str(ctx.exception))
+        self.assertEqual(ctx.exception.code, "UNREACHABLE")
+
+    def test_invalid_url_is_not_retried(self):
+        client = self._client()
+        calls = {"n": 0}
+
+        def fake_attempt(url):
+            calls["n"] += 1
+            raise http.client.InvalidURL("nonnumeric port: 'x'")
+
+        client._attempt = fake_attempt
+        with self.assertRaises(gc.GitLabError):
+            client._do("Op", "/x")
+        self.assertEqual(calls["n"], 1)
+
+    def test_error_body_echoing_the_token_is_redacted(self):
+        client = self._client(token="gitlab-super-secret-token")
+        client._attempt = lambda url: (b"invalid auth: PRIVATE-TOKEN gitlab-super-secret-token", 401, {}, None)
+        with self.assertRaises(gc.GitLabError) as ctx:
+            client._do("Op", "/x")
+        self.assertNotIn("gitlab-super-secret-token", str(ctx.exception))
+        self.assertIn("***", str(ctx.exception))
+
+    def test_transport_error_text_containing_token_is_redacted(self):
+        client = self._client(token="gitlab-super-secret-token")
+        client._attempt = lambda url: (None, 0, {}, ConnectionError("boom gitlab-super-secret-token leaked"))
+        with self.assertRaises(gc.GitLabError) as ctx:
+            client._do("Op", "/x")
+        self.assertNotIn("gitlab-super-secret-token", str(ctx.exception))
+
+
 class RetryAfterTests(unittest.TestCase):
     """Audit finding 1: a 429 used to sleep our own backoff regardless of
     what the server asked for. Mirrors jira_client.py's Retry-After rule:
@@ -1565,6 +1619,28 @@ class FetchTeamDataTests(unittest.TestCase):
         self.assertEqual(len(result["mr_fetch_errors"]), 1)
         self.assertEqual(result["mr_fetch_errors"][0]["author"], "renamed-user")
 
+    def test_duplicate_employee_login_deduped_before_mr_fetch(self):
+        """A login listed twice in config must not fetch (and therefore not
+        count) that person's MRs twice."""
+        client = _client()
+        client.project_id = lambda path: 1
+        calls = []
+
+        def fake_merge_requests(path, pid, authors, **kw):
+            calls.append(tuple(authors))
+            return [{"project": path, "author": a} for a in authors]
+
+        client.merge_requests = fake_merge_requests
+        client.pipelines = lambda path, pid, **kw: []
+        client.deployments = lambda path, pid, window=None: []
+        client.coverage = lambda path, pid, window=None: []
+        result = gc.fetch_team_data(client, projects=["g/a"], employees=["alice", "alice", "bob"])
+        self.assertEqual(calls, [("alice", "bob")])
+        self.assertEqual(len(result["merge_requests"]), 2)
+
+    def test_duplicate_employee_login_preserves_first_seen_order(self):
+        self.assertEqual(gc._dedupe_preserve_order(["bob", "alice", "bob", "carol", "alice"]), ["bob", "alice", "carol"])
+
 
 class _FakeResp:
     def __init__(self, status, body):
@@ -1639,6 +1715,44 @@ class RequestCountTests(unittest.TestCase):
         )
         client.project_id("g/p")
         self.assertEqual(client.request_count, 3)  # 2 failed attempts + 1 success, all real HTTP round trips
+
+
+class AuthorNameCaptureTests(unittest.TestCase):
+    """SPEC §B.13: _build_mr_record gains author_name (mr.author.name),
+    the GitLab-side display-name fallback next to the existing author
+    (username) key."""
+
+    def _mr(self, **overrides):
+        base = {
+            "iid": 7, "created_at": "2026-01-01T00:00:00Z", "merged_at": "2026-01-02T00:00:00Z",
+            "title": "x", "description": "", "author": {"username": "alice", "name": "Alice A"},
+            "state": "merged", "web_url": "https://x",
+        }
+        base.update(overrides)
+        return base
+
+    def test_author_name_captured_next_to_author_username(self):
+        client = _client()
+        client._mr_detail = lambda pid, iid: {}
+        client._mr_commit_count = lambda pid, iid: None
+        record = client._build_mr_record("group/project", 42, self._mr())
+        self.assertEqual(record["author"], "alice")
+        self.assertEqual(record["author_name"], "Alice A")
+
+    def test_absent_author_gives_empty_strings(self):
+        client = _client()
+        client._mr_detail = lambda pid, iid: {}
+        client._mr_commit_count = lambda pid, iid: None
+        record = client._build_mr_record("group/project", 42, self._mr(author=None))
+        self.assertEqual(record["author"], None)
+        self.assertEqual(record["author_name"], "")
+
+    def test_author_present_but_no_name_gives_empty_string(self):
+        client = _client()
+        client._mr_detail = lambda pid, iid: {}
+        client._mr_commit_count = lambda pid, iid: None
+        record = client._build_mr_record("group/project", 42, self._mr(author={"username": "bob"}))
+        self.assertEqual(record["author_name"], "")
 
 
 if __name__ == "__main__":

@@ -1,1523 +1,745 @@
-"""Tests for render_html.py — the self-contained HTML report renderer.
+"""Tests for render_html.py — the schema-v2, 9-tab HTML report renderer.
 
-No network involvement anywhere: every fixture here is a duck-typed fake
-Jira/GitLab client, same pattern as test_report_data.py.
+Built and tested exclusively against tests/fixtures/report_v2.json (a copy
+of .research/v3-redesign/fixture-report-v2.json — the fixture IS the
+contract between the data track and this one, per SPEC.md §F). No network,
+no report_data/jira_client/gitlab_client involvement anywhere in this file.
 """
 
 import _pathfix  # noqa: F401
 
-import dataclasses
-import html
+import copy
+import json
+import os
 import re
 import unittest
 from html.parser import HTMLParser
 
-from team_metrics import jira_client as jc
-from team_metrics import model, report_data
 from team_metrics import render_html as rh
 
-from helpers import dt
+_FIXTURE_PATH = os.path.join(os.path.dirname(__file__), "fixtures", "report_v2.json")
 
-TOKEN_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
 
-STATUSES = [
-    jc.Status(id="1", name="To Do", category_key="new"),
-    jc.Status(id="2", name="In Progress", category_key="indeterminate"),
-    jc.Status(id="3", name="Done", category_key="done"),
-]
+def load_fixture() -> dict:
+    with open(_FIXTURE_PATH, encoding="utf-8") as f:
+        return json.load(f)
 
 
 # --------------------------------------------------------------------------
-# Fake clients (self-contained — do not depend on test_report_data.py)
+# Structural HTML helpers (tag balance, chart/hint DOM adjacency)
 # --------------------------------------------------------------------------
 
-
-class FakeJiraClient:
-    def __init__(self, sprints, board, closed_ids, active_ids, facts, statuses):
-        self._sprints = sprints
-        self._board = board
-        self._closed_ids = closed_ids
-        self._active_ids = active_ids
-        self._facts = facts
-        self._statuses = statuses
-
-    def sprint(self, sprint_id):
-        return self._sprints[sprint_id]
-
-    def board(self, board_id):
-        return self._board
-
-    def closed_sprints(self, board_id):
-        return [self._sprints[i] for i in self._closed_ids]
-
-    def board_sprints(self, board_id, state=None):
-        if state == "active":
-            return [self._sprints[i] for i in self._active_ids]
-        if state == "closed":
-            return [self._sprints[i] for i in self._closed_ids]
-        return list(self._sprints.values())
-
-    def fetch_sprint_issues(self, sprint_ids, story_points_field_id=""):
-        out = []
-        for f in self._facts:
-            filtered = {sid: f.membership_by_sprint.get(sid, []) for sid in sprint_ids}
-            if not any(filtered.values()):
-                continue
-            out.append(dataclasses.replace(f, membership_by_sprint=filtered))
-        return out
-
-    def list_statuses(self):
-        return self._statuses
-
-    def suggest_sprints(self, query):
-        return []
+_VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 
 
-class FakeGitLabClient:
-    """Duck-typed stub matching gitlab_client.GitLabClient's public surface —
-    only what glc.fetch_team_data() calls. No network involvement. Kept in
-    the same shape as tests/test_report_data.py's double so the two stay
-    consistent rather than drifting into two different fakes."""
-
-    def __init__(self, project_ids, mrs_by_project=None, pipelines_by_project=None, deployments_by_project=None, coverage_by_project=None):
-        self._project_ids = project_ids
-        self._mrs = mrs_by_project or {}
-        self._pipelines = pipelines_by_project or {}
-        self._deployments = deployments_by_project or {}
-        self._coverage = coverage_by_project or {}
-        self.mr_calls = []  # [(path, authors_tuple, window)]
-        # fetch_team_data() reads client.request_count before and after its
-        # own call and reports the delta — one "request" per stubbed method
-        # call is a fine duck-typed stand-in since this fake never does real
-        # HTTP.
-        self.request_count = 0
-
-    def project_id(self, path):
-        self.request_count += 1
-        return self._project_ids.get(path)
-
-    def merge_requests(self, path, project_id, authors, *, states=(), window=None, errors=None, fetch_mr_details=True):
-        self.mr_calls.append((path, tuple(authors), window))
-        self.request_count += 1
-        if not authors:
-            return []
-        return list(self._mrs.get(path, []))
-
-    def pipelines(self, path, project_id, *, window=None, fetch_pipeline_user=True):
-        self.request_count += 1
-        return list(self._pipelines.get(path, []))
-
-    def deployments(self, path, project_id, *, window=None):
-        self.request_count += 1
-        return list(self._deployments.get(path, []))
-
-    def coverage(self, path, project_id, *, window=None):
-        self.request_count += 1
-        return list(self._coverage.get(path, []))
-
-
-def _make_fact(key, sprint_id, interval, story_points, done_at=None, assignee="", labels=None, issue_type="Story"):
-    history = []
-    if done_at is not None:
-        history.append(jc.RawStatusChange(at=done_at, from_name="In Progress", to_name="Done", from_id="2", to_id="3"))
-    return jc.IssueFacts(
-        key=key, epic_key="", type=issue_type, role="", labels=labels or [], assignee=assignee,
-        story_points=story_points, qa_estimation=0.0,
-        created=dt(2025, 12, 1),
-        initial_status="In Progress", initial_status_id="2",
-        status_history=history, sp_events=[],
-        current_status="Done" if done_at else "In Progress",
-        current_status_category_key="done" if done_at else "indeterminate",
-        membership_by_sprint={sprint_id: [interval]},
-    )
-
-
-def _base_sprint_facts(prefix, sprint_id, days, story_points=6.0):
-    out = []
-    for i, day in enumerate(days, start=1):
-        interval = model.Interval(from_=dt(2025, 12, 1), until=None)
-        out.append(_make_fact(f"{prefix}-{i}", sprint_id, interval, story_points, done_at=day.replace(hour=15)))
-    return out
-
-
-def build_multi_sprint_report(*, with_gitlab=True, target_items=None):
-    """4 closed base sprints + 1 closed target sprint, enough throughput
-    history for a real forecast, and (optionally) a small GitLab-derived
-    personal/engineering half — a report shaped enough to exercise the KPI
-    good/warn/bad thresholds and every chart."""
-    base_days = {
-        90: [dt(2025, 12, 1), dt(2025, 12, 2), dt(2025, 12, 3), dt(2025, 12, 4), dt(2025, 12, 5)],
-        91: [dt(2025, 12, 8), dt(2025, 12, 9), dt(2025, 12, 10), dt(2025, 12, 11), dt(2025, 12, 12)],
-        92: [dt(2025, 12, 15), dt(2025, 12, 16), dt(2025, 12, 17), dt(2025, 12, 18), dt(2025, 12, 19)],
-        93: [dt(2025, 12, 22), dt(2025, 12, 23), dt(2025, 12, 24), dt(2025, 12, 25), dt(2025, 12, 26)],
-    }
-    sprints = {}
-    for sid, days in base_days.items():
-        start = days[0]
-        end = days[-1].replace(hour=18)
-        sprints[sid] = jc.Sprint(id=sid, name=f"Sprint {sid}", state="closed", board_id=1,
-                                  start_at=start, end_at=end, complete_at=end)
-    target = jc.Sprint(id=100, name="Sprint 100", state="closed", board_id=1,
-                        start_at=dt(2025, 12, 29), end_at=dt(2026, 1, 2, 18), complete_at=dt(2026, 1, 2, 18))
-    sprints[100] = target
-
-    facts = []
-    for sid, days in base_days.items():
-        facts.extend(_base_sprint_facts(f"S{sid}", sid, days, story_points=6.0))
-
-    t1 = _make_fact("T1", 100, model.Interval(from_=dt(2025, 12, 1), until=None), 5.0,
-                     done_at=dt(2025, 12, 30, 10, 0), assignee="alice")
-    t2 = _make_fact("T2", 100, model.Interval(from_=dt(2025, 12, 1), until=None), 3.0,
-                     done_at=dt(2025, 12, 31, 10, 0), assignee="bob")
-    t3 = jc.IssueFacts(
-        key="T3", epic_key="", type="Story", role="", labels=[], assignee="alice",
-        story_points=2.0, qa_estimation=0.0, created=dt(2025, 12, 1),
-        initial_status="In Progress", initial_status_id="2", status_history=[], sp_events=[],
-        current_status="In Progress", current_status_category_key="indeterminate",
-        membership_by_sprint={100: [model.Interval(from_=dt(2025, 12, 30, 9, 0), until=None)]},
-    )
-    facts.extend([t1, t2, t3])
-
-    client = FakeJiraClient(
-        sprints=sprints, board=jc.Board(id=1, name="Team Board", type="scrum"),
-        closed_ids=list(base_days) + [100], active_ids=[], facts=facts, statuses=STATUSES,
-    )
-
-    kwargs = dict(
-        sprint_ids=[100], history_sprint_count=5, now=dt(2026, 1, 3),
-        target_items=target_items if target_items is not None else 15,
-    )
-
-    if not with_gitlab:
-        return report_data.build_combined_report(client, gitlab_client_obj=None, **kwargs)
-
-    gitlab = FakeGitLabClient(
-        project_ids={"group/proj": 42},
-        mrs_by_project={"group/proj": [
-            {"author": "alice", "state": "merged", "created_at": "2025-12-29T00:00:00Z", "merged_at": "2025-12-30T00:00:00Z",
-             "cycle_time_hours": 12.0, "diff_stats_available": True, "additions": 10, "deletions": 5,
-             "commits_count_available": True, "commits_count": 3, "changes_count_available": True, "changes_count": 2,
-             "jira_key": "T1"},
-            {"author": "bob", "state": "closed", "created_at": "2025-12-30T00:00:00Z", "merged_at": None,
-             "cycle_time_hours": None, "diff_stats_available": False, "commits_count_available": False,
-             "changes_count_available": False, "jira_key": None},
-        ]},
-        pipelines_by_project={"group/proj": [
-            {"project": "group/proj", "status": "success", "created_at": "2025-12-29T00:00:00Z", "user_username": "alice"},
-            {"project": "group/proj", "status": "failed", "created_at": "2025-12-30T00:00:00Z", "user_username": "bob"},
-        ]},
-        deployments_by_project={"group/proj": [
-            {"project": "group/proj", "status": "success", "finished_at": "2025-12-29T00:00:00Z"},
-        ]},
-        coverage_by_project={"group/proj": [
-            {"project": "group/proj", "coverage": 82.5},
-        ]},
-    )
-    return report_data.build_combined_report(
-        client, gitlab_client_obj=gitlab, gitlab_projects=["group/proj"], employees=["alice", "bob"], **kwargs
-    )
-
-
-def assert_tag_balance(testcase, html_text):
-    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
-
-    class _P(HTMLParser):
-        def __init__(self):
-            super().__init__()
-            self.stack = []
-            self.mismatches = []
-
-        def handle_starttag(self, tag, attrs):
-            if tag not in VOID:
-                self.stack.append(tag)
-
-        def handle_endtag(self, tag):
-            if tag in VOID:
-                return
-            if not self.stack or self.stack[-1] != tag:
-                self.mismatches.append(tag)
-                if tag in self.stack:
-                    while self.stack and self.stack[-1] != tag:
-                        self.stack.pop()
-                    if self.stack:
-                        self.stack.pop()
-            else:
-                self.stack.pop()
-
-    p = _P()
-    p.feed(html_text)
-    testcase.assertEqual(p.mismatches, [], f"mismatched close tags: {p.mismatches}")
-    testcase.assertEqual(p.stack, [], f"unclosed tags at EOF: {p.stack}")
-
-
-# --------------------------------------------------------------------------
-# Template completeness — the drift-catcher
-# --------------------------------------------------------------------------
-
-
-class TemplateCompletenessTests(unittest.TestCase):
-    def test_full_gitlab_report_leaves_no_token_unsubstituted(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        out = rh.render_html(report)
-        leftover = TOKEN_RE.findall(out)
-        self.assertEqual(leftover, [], f"unsubstituted tokens: {leftover}")
-
-    def test_no_gitlab_report_leaves_no_token_unsubstituted(self):
-        report = build_multi_sprint_report(with_gitlab=False)
-        out = rh.render_html(report)
-        leftover = TOKEN_RE.findall(out)
-        self.assertEqual(leftover, [], f"unsubstituted tokens: {leftover}")
-
-    def test_forecast_error_report_leaves_no_token_unsubstituted(self):
-        # A single closed sprint with almost no throughput history triggers
-        # ERR_FORECAST_NOT_ENOUGH_DATA (< 10 non-zero daily points).
-        sprint = jc.Sprint(id=1, name="Solo Sprint", state="closed", board_id=1,
-                            start_at=dt(2026, 1, 5), end_at=dt(2026, 1, 9, 18), complete_at=dt(2026, 1, 9, 18))
-        fact = _make_fact("A-1", 1, model.Interval(from_=dt(2026, 1, 5), until=None), 3.0, done_at=dt(2026, 1, 7, 10))
-        client = FakeJiraClient(
-            sprints={1: sprint}, board=jc.Board(id=1, name="B", type="scrum"),
-            closed_ids=[1], active_ids=[], facts=[fact], statuses=STATUSES,
-        )
-        report = report_data.build_combined_report(
-            client, sprint_ids=[1], now=dt(2026, 1, 10), target_items=5, gitlab_client_obj=None,
-        )
-        self.assertIsNotNone(report["forecast_error"])
-        out = rh.render_html(report)
-        leftover = TOKEN_RE.findall(out)
-        self.assertEqual(leftover, [], f"unsubstituted tokens: {leftover}")
-
-
-class MarkerCommentDeduplicationTests(unittest.TestCase):
-    def test_scalar_values_are_not_duplicated_inside_their_own_marker_comment(self):
-        # m9 — finalize()/sub_tokens() used to substitute {{TOKEN}} both
-        # inside its own documentation-only `<!-- {{TOKEN}} -->` marker and
-        # at the real content position, doubling every value's payload.
-        report = build_multi_sprint_report(with_gitlab=True)
-        out = rh.render_html(report)
-        self.assertEqual(out.count("team-metrics"), 1)
-
-
-# --------------------------------------------------------------------------
-# Table structure — column consistency (rowspan/colspan-aware)
-# --------------------------------------------------------------------------
-
-
-class _TableCellParser(HTMLParser):
-    """Collects, per <table> in document order, one list of rows where each
-    row is a list of (colspan, rowspan) for the cells it explicitly emits."""
-
+class _TagBalanceParser(HTMLParser):
     def __init__(self):
-        super().__init__()
-        self.tables: list = []
-        self._tables_stack: list = []
-        self._rows_stack: list = []
+        super().__init__(convert_charrefs=True)
+        self.stack = []
+        self.errors = []
 
     def handle_starttag(self, tag, attrs):
-        a = dict(attrs)
-        if tag == "table":
-            self._tables_stack.append([])
-            self._rows_stack.append(None)
-        elif tag == "tr" and self._tables_stack:
-            self._rows_stack[-1] = []
-        elif tag in ("td", "th") and self._tables_stack and self._rows_stack[-1] is not None:
-            colspan = int(a.get("colspan") or 1)
-            rowspan = int(a.get("rowspan") or 1)
-            self._rows_stack[-1].append((colspan, rowspan))
+        if tag not in _VOID_TAGS:
+            self.stack.append(tag)
+
+    def handle_startendtag(self, tag, attrs):
+        pass
 
     def handle_endtag(self, tag):
-        if tag == "tr" and self._tables_stack and self._rows_stack[-1] is not None:
-            self._tables_stack[-1].append(self._rows_stack[-1])
-            self._rows_stack[-1] = None
-        elif tag == "table" and self._tables_stack:
-            self.tables.append(self._tables_stack.pop())
-            self._rows_stack.pop()
+        if tag in _VOID_TAGS:
+            return
+        if not self.stack or self.stack[-1] != tag:
+            self.errors.append(f"</{tag}> does not match top of stack {self.stack[-3:]}")
+            return
+        self.stack.pop()
 
 
-def _row_widths(rows):
-    """Total occupied column width per row, carrying rowspan'd cells from
-    earlier rows forward — the same check §1 of DESIGN-NOTES describes as
-    "column-consistent under a rowspan-aware check", and the one that would
-    have caught M3 (Table A's footer colspan short by 4)."""
-    active: list = []  # [rows_left, colspan] for cells still covering the row being processed
-    widths = []
-    for cells in rows:
-        carried = sum(colspan for rows_left, colspan in active if rows_left > 0)
-        own = sum(colspan for colspan, _rowspan in cells)
-        widths.append(carried + own)
-        active = [[rows_left - 1, colspan] for rows_left, colspan in active if rows_left - 1 > 0]
-        for colspan, rowspan in cells:
-            if rowspan > 1:
-                active.append([rowspan - 1, colspan])
-    return widths
+def assert_tags_balanced(testcase: unittest.TestCase, html_text: str):
+    parser = _TagBalanceParser()
+    parser.feed(html_text)
+    parser.close()
+    testcase.assertEqual(parser.errors, [], f"HTML tag mismatches: {parser.errors}")
+    testcase.assertEqual(parser.stack, [], f"unclosed tags at end of document: {parser.stack}")
 
 
-class TableColumnConsistencyTests(unittest.TestCase):
-    def test_every_table_has_the_same_row_width_across_thead_tbody_tfoot(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        out = rh.render_html(report)
-        parser = _TableCellParser()
-        parser.feed(out)
-        tables = [rows for rows in parser.tables if rows]
-        self.assertGreater(len(tables), 0, "no <table> found in the rendered report")
-        for i, rows in enumerate(tables):
-            widths = _row_widths(rows)
-            self.assertEqual(
-                len(set(widths)), 1,
-                f"table #{i} is column-inconsistent — row widths: {widths}",
-            )
+class _TreeBuilder(HTMLParser):
+    """Builds a plain nested-dict tree (tag/class/children) so tests can walk
+    parent/sibling relationships — html.parser gives only a linear event
+    stream, and the chart/hint adjacency rule (§H.8) needs siblings."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.stack = []
+        self.roots = []
+
+    def _push(self, tag, attrs):
+        node = {"tag": tag, "class": dict(attrs).get("class", ""), "children": []}
+        (self.stack[-1]["children"] if self.stack else self.roots).append(node)
+        return node
+
+    def handle_starttag(self, tag, attrs):
+        node = self._push(tag, attrs)
+        if tag not in _VOID_TAGS:
+            self.stack.append(node)
+
+    def handle_startendtag(self, tag, attrs):
+        self._push(tag, attrs)
+
+    def handle_endtag(self, tag):
+        if tag in _VOID_TAGS:
+            return
+        for i in range(len(self.stack) - 1, -1, -1):
+            if self.stack[i]["tag"] == tag:
+                del self.stack[i:]
+                return
 
 
-# --------------------------------------------------------------------------
-# Escaping — every user-controlled string must be neutralized
-# --------------------------------------------------------------------------
+def build_tree(html_text: str):
+    p = _TreeBuilder()
+    p.feed(html_text)
+    p.close()
+    return p.roots
 
 
-class EscapingTests(unittest.TestCase):
-    XSS = '<script>alert(1)</script>"\'&javascript:alert(2)'
-    ESCAPED_XSS = html.escape(XSS, quote=True)
-
-    def _render_with_xss_names(self):
-        sprint = jc.Sprint(id=500, name=self.XSS, state="closed", board_id=9,
-                            start_at=dt(2026, 2, 2), end_at=dt(2026, 2, 6, 18), complete_at=dt(2026, 2, 6, 18))
-        fact = jc.IssueFacts(
-            key="P-1", epic_key="", type="Story", role="", labels=[self.XSS], assignee=self.XSS,
-            story_points=8.0, qa_estimation=0.0, created=dt(2026, 1, 1),
-            initial_status="In Progress", initial_status_id="2",
-            status_history=[jc.RawStatusChange(at=dt(2026, 2, 4, 10, 0), from_name="In Progress", to_name="Done", from_id="2", to_id="3")],
-            sp_events=[],
-            current_status="Done", current_status_category_key="done",
-            resolutiondate=dt(2026, 2, 4, 10, 0),
-            membership_by_sprint={500: [model.Interval(from_=dt(2026, 1, 15), until=None)]},
-        )
-        client = FakeJiraClient(
-            sprints={500: sprint}, board=jc.Board(id=9, name=self.XSS, type="scrum"),
-            closed_ids=[500], active_ids=[], facts=[fact], statuses=STATUSES,
-        )
-        gitlab = FakeGitLabClient(
-            project_ids={"group/proj": 42},
-            mrs_by_project={"group/proj": [
-                {"author": self.XSS, "state": "merged", "created_at": "2026-02-03T00:00:00Z", "merged_at": "2026-02-04T00:00:00Z", "jira_key": None},
-            ]},
-            pipelines_by_project={"group/proj": [{"project": self.XSS, "status": "success", "created_at": "2026-02-03T00:00:00Z", "user_username": self.XSS}]},
-        )
-        report = report_data.build_combined_report(
-            client, sprint_ids=[500], now=dt(2026, 2, 7),
-            gitlab_client_obj=gitlab, gitlab_projects=["group/proj"], employees=[self.XSS],
-        )
-        return rh.render_html(report)
-
-    def test_script_tag_never_appears_unescaped(self):
-        out = self._render_with_xss_names()
-        self.assertNotIn("<script>alert(1)</script>", out)
-        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", out)
-
-    def test_quotes_and_ampersand_escaped(self):
-        # The FULL payload must appear escaped as one contiguous block —
-        # not just each entity type turning up somewhere unrelated in a
-        # 150KB document, which any unrelated quote would also satisfy.
-        out = self._render_with_xss_names()
-        self.assertIn(self.ESCAPED_XSS, out)
-
-    def test_javascript_url_text_never_lands_in_a_live_href(self):
-        out = self._render_with_xss_names()
-        self.assertNotRegex(out, r'href="javascript:')
-
-    def test_only_script_tag_in_document_is_the_static_theme_switch(self):
-        out = self._render_with_xss_names()
-        script_tags = re.findall(r"<script[^>]*>", out)
-        # Exactly the one static <script> block copied verbatim from the
-        # prototype (theme switch + section collapse) — none injected.
-        self.assertEqual(script_tags, ["<script>"])
-
-    def test_document_title_tag_carries_the_escaped_payload_not_raw(self):
-        out = self._render_with_xss_names()
-        m = re.search(r"<title>(.*?)</title>", out, re.S)
-        self.assertIsNotNone(m)
-        self.assertIn(self.ESCAPED_XSS, m.group(1))
-        self.assertNotIn("<script>", m.group(1))
-
-    def test_no_raw_angle_bracket_inside_any_title_or_aria_label_attribute(self):
-        # A real per-context escaping check: every title="..." and
-        # aria-label="..." attribute in the whole document, wherever it
-        # comes from, must never contain an unescaped '<' — the invariant
-        # a leaking name/label/author string would actually break.
-        out = self._render_with_xss_names()
-        found_any = False
-        for m in re.finditer(r'\b(?:title|aria-label)="([^"]*)"', out):
-            found_any = True
-            self.assertNotIn("<", m.group(1), f"unescaped '<' inside {m.group(0)[:120]}")
-        self.assertTrue(found_any, "no title=/aria-label= attributes found — test would pass vacuously")
+def has_class(node: dict, cls: str) -> bool:
+    return cls in (node.get("class") or "").split()
 
 
-class NoExternalResourceTests(unittest.TestCase):
-    def test_full_report_makes_zero_external_resource_references(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        out = rh.render_html(report)
-        self.assertNotIn("<script src", out)
-        self.assertNotRegex(out, r'<link[^>]+href="https?://')
-        self.assertNotIn("@import", out)
-        self.assertNotIn("http://", out)
-        self.assertNotIn("https://", out)
-        self.assertNotRegex(out, r"fetch\(|XMLHttpRequest")
-
-    def test_no_var_inside_svg_presentation_attributes(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        out = rh.render_html(report)
-        for attr in ("fill", "stroke", "stop-color"):
-            self.assertNotRegex(out, rf'{attr}="var\(')
+def walk(nodes):
+    for n in nodes:
+        yield n
+        yield from walk(n["children"])
 
 
 # --------------------------------------------------------------------------
-# Chart geometry
+# Full-render tests against the fixture
 # --------------------------------------------------------------------------
 
 
-class RuPluralTests(unittest.TestCase):
-    def test_one_few_many_selection(self):
-        self.assertEqual(rh.ru_plural(1, "участник", "участника", "участников"), "участник")
-        self.assertEqual(rh.ru_plural(2, "участник", "участника", "участников"), "участника")
-        self.assertEqual(rh.ru_plural(4, "участник", "участника", "участников"), "участника")
-        self.assertEqual(rh.ru_plural(5, "участник", "участника", "участников"), "участников")
-        self.assertEqual(rh.ru_plural(0, "участник", "участника", "участников"), "участников")
-
-    def test_11_to_14_exception_uses_many_not_one_or_few(self):
-        # browser-verified bug: "21 дней" (should be "21 день"). The 11-14
-        # exception is the one most implementations forget.
-        for n in (11, 12, 13, 14):
-            with self.subTest(n=n):
-                self.assertEqual(rh.ru_plural(n, "день", "дня", "дней"), "дней")
-        self.assertEqual(rh.ru_plural(21, "день", "дня", "дней"), "день")
-        self.assertEqual(rh.ru_plural(22, "день", "дня", "дней"), "дня")
-        self.assertEqual(rh.ru_plural(25, "день", "дня", "дней"), "дней")
-        self.assertEqual(rh.ru_plural(111, "день", "дня", "дней"), "дней")  # 111 % 100 == 11
-
-
-class NiceStepTests(unittest.TestCase):
-    def test_every_tick_is_round_not_just_the_axis_max(self):
-        # Browser-verified bug: nice_max(12)/6 ticks gave 0, 3, 7, 10, 13,
-        # 17, 20 (gaps of 3,4,3,3,4,3) — the max was round, the ticks
-        # weren't. nice_step picks the STEP first so every tick is round.
-        step = rh.nice_step(12.0, 6)
-        self.assertEqual(step, 2.0)
-        top = step * 6
-        ticks = [round(step * i) for i in range(7)]
-        self.assertEqual(ticks, [0, 2, 4, 6, 8, 10, 12])
-        self.assertGreaterEqual(top, 12.0)
-
-    def test_step_covers_the_value_with_at_most_one_step_of_headroom(self):
-        step = rh.nice_step(58.0, 6)
-        top = step * 6
-        self.assertGreaterEqual(top, 58.0)
-        self.assertLess(top - 58.0, step)
-
-    def test_zero_or_negative_value_falls_back_to_one(self):
-        self.assertEqual(rh.nice_step(0.0, 6), 1.0)
-        self.assertEqual(rh.nice_step(-5.0, 6), 1.0)
-
-
-class SparkSvgTests(unittest.TestCase):
-    def test_known_series_produces_expected_points(self):
-        svg = rh.build_spark_svg([0.0, 10.0, 20.0], "good")
-        # min=0 -> y=27 (bottom), max=20 -> y=5 (top), mid=10 -> y=16
-        self.assertIn('points="2.00,27.00 50.00,16.00 98.00,5.00"', svg)
-        self.assertIn('cx="98.00" cy="5.00"', svg)
-        self.assertIn("sp-line sp-good", svg)
-
-    def test_empty_series_renders_bare_svg_no_polyline(self):
-        svg = rh.build_spark_svg([], "mute")
-        self.assertNotIn("<polyline", svg)
-        self.assertNotIn("<circle", svg)
-        self.assertIn("<svg", svg)
-
-    def test_single_point_renders_a_dot_not_a_line(self):
-        svg = rh.build_spark_svg([42.0], "warn")
-        self.assertNotIn("<polyline", svg)
-        self.assertIn('cx="98"', svg)
-        self.assertIn("sp-dot-warn", svg)
-
-    def test_all_equal_series_does_not_divide_by_zero(self):
-        svg = rh.build_spark_svg([5.0, 5.0, 5.0], "good")
-        self.assertIn('points="2.00,16.00 50.00,16.00 98.00,16.00"', svg)
-
-
-class BurndownSvgTests(unittest.TestCase):
-    def test_known_points_produce_expected_path_coordinates(self):
-        points = [
-            {"date": "2026-01-05", "remaining_items": 2, "remaining_sp": 10.0, "ideal_sp": 10.0},
-            {"date": "2026-01-06", "remaining_items": 1, "remaining_sp": 5.0, "ideal_sp": 5.0},
-            {"date": "2026-01-07", "remaining_items": 0, "remaining_sp": 0.0, "ideal_sp": 0.0},
-        ]
-        aria, svg, _weekend = rh.build_burndown_svg(points)
-        # nice_step(10, 6) = 2 -> top = 12 (a round step through every tick,
-        # not just nice_max(10)=10 divided into 6 uneven-looking fractions);
-        # y_of(v) = 288 - v/12*264. v=10 -> y=68; v=5 -> y=178; v=0 -> y=288.
-        self.assertIn("56.00,68.00", svg)
-        self.assertIn("393.00,178.00", svg)
-        self.assertIn("730.00,288.00", svg)
-        self.assertIn("остаток: 10, 5, 0 SP", aria)
-        self.assertIn("осталось 0 SP", aria)
-
-    def test_empty_points_render_no_data_message_not_a_broken_chart(self):
-        aria, svg, _weekend = rh.build_burndown_svg([])
-        self.assertIn("недоступен", aria)
-        self.assertIn("нет данных", svg)
-        self.assertNotIn("<polyline", svg)
-
-    def test_single_point_does_not_crash_and_places_one_dot(self):
-        points = [{"date": "2026-01-05", "remaining_items": 3, "remaining_sp": 12.0, "ideal_sp": 12.0}]
-        aria, svg, _weekend = rh.build_burndown_svg(points)
-        self.assertIn("<circle", svg)
-        self.assertIn("12 SP", aria)
-
-    def test_single_point_weekend_band_does_not_cover_the_whole_plot(self):
-        # nit — day_width used to fall back to the full plot width (x1-x0)
-        # for a single-day chart, shading the entire plot area.
-        points = [{"date": "2026-01-10", "remaining_items": 1, "remaining_sp": 4.0, "ideal_sp": 4.0}]  # Saturday
-        aria, svg, _weekend = rh.build_burndown_svg(points)
-        m = re.search(r'<rect class="c-weekend"[^/]*width="([\d.]+)"', svg)
-        self.assertIsNotNone(m)
-        self.assertLess(float(m.group(1)), 674.0)  # x1 - x0
-
-    def test_weekend_band_is_centered_on_the_day_tick_not_drifted(self):
-        # m3 — day_width used /n instead of /(n-1) and bands anchored at
-        # x0 + i*day_width instead of centring on xs[i], drifting a full
-        # column by the last day.
-        points = [
-            {"date": "2026-01-05", "remaining_items": 3, "remaining_sp": 12.0, "ideal_sp": 12.0},
-            {"date": "2026-01-06", "remaining_items": 2, "remaining_sp": 8.0, "ideal_sp": 8.0},
-            {"date": "2026-01-10", "remaining_items": 1, "remaining_sp": 4.0, "ideal_sp": 4.0},  # Saturday
-            {"date": "2026-01-11", "remaining_items": 0, "remaining_sp": 0.0, "ideal_sp": 0.0},  # Sunday, last day
-        ]
-        aria, svg, _weekend = rh.build_burndown_svg(points)
-        # Saturday (index 2 of 4): xs[2] = 505.33, day_width = 674/3 = 224.67
-        # -> centred band from 393.0 to 617.7.
-        self.assertIn('x="393.0"', svg)
-        self.assertIn('width="224.7"', svg)
-        # Sunday is the last day: the band is clamped at the right edge
-        # (x1=730) instead of overflowing past the plot.
-        self.assertIn('x="617.7"', svg)
-        self.assertIn('width="112.3"', svg)
-
-    def test_all_zero_series_does_not_divide_by_zero(self):
-        points = [
-            {"date": "2026-01-05", "remaining_items": 0, "remaining_sp": 0.0, "ideal_sp": 0.0},
-            {"date": "2026-01-06", "remaining_items": 0, "remaining_sp": 0.0, "ideal_sp": 0.0},
-        ]
-        aria, svg, _weekend = rh.build_burndown_svg(points)
-        self.assertIn("<svg", svg)
-        self.assertNotIn("nan", svg.lower())
-
-    def test_has_weekend_flag_is_false_for_a_pure_weekday_sprint(self):
-        points = [
-            {"date": "2026-01-05", "remaining_items": 2, "remaining_sp": 10.0, "ideal_sp": 10.0},  # Mon
-            {"date": "2026-01-09", "remaining_items": 0, "remaining_sp": 0.0, "ideal_sp": 0.0},  # Fri
-        ]
-        _aria, _svg, has_weekend = rh.build_burndown_svg(points)
-        self.assertFalse(has_weekend)
-
-    def test_has_weekend_flag_is_true_when_a_point_lands_on_a_weekend(self):
-        points = [
-            {"date": "2026-01-05", "remaining_items": 2, "remaining_sp": 10.0, "ideal_sp": 10.0},  # Mon
-            {"date": "2026-01-10", "remaining_items": 0, "remaining_sp": 0.0, "ideal_sp": 0.0},  # Sat
-        ]
-        _aria, _svg, has_weekend = rh.build_burndown_svg(points)
-        self.assertTrue(has_weekend)
-
-    def test_full_render_omits_weekend_legend_for_a_mon_fri_sprint(self):
-        # Browser-verified — the legend advertised "выходные" even when
-        # the demo sprint (Mon-Fri) had zero weekend days.
-        report = build_multi_sprint_report(with_gitlab=True)
-        points = report["burndowns"][-1]["points"]
-        any_weekend = any(rh._weekday(p["date"]) >= 5 for p in points)
-        out = rh.render_html(report)
-        # scope to the legend itself — the section-desc paragraph mentions
-        # "выходные" generically (it explains the axis convention) even
-        # when this particular chart has no weekend band.
-        legend = out[out.index('<div class="legend">'):out.index('id="sec-heatmap"')]
-        if any_weekend:
-            self.assertIn("выходные", legend)
-        else:
-            self.assertNotIn("выходные", legend)
-
-
-class ForecastSvgTests(unittest.TestCase):
-    def test_known_histogram_bar_heights_scale_to_nice_max(self):
-        forecast = {
-            "target_items": 10,
-            "sample_sprints": 3,
-            "sample_days": 15,
-            "throughput_cv_pct": 12.0,
-            "percentiles": [{"percentile": 50, "days": 5}, {"percentile": 85, "days": 6}, {"percentile": 95, "days": 7}],
-            "histogram": [{"days": 5, "count": 50}, {"days": 6, "count": 100}, {"days": 7, "count": 25}],
-            "warnings": [],
-        }
-        aria, svg = rh.build_forecast_svg(forecast)
-        # top = nice_max(100) = 100; y_of(c) = 232 - c/100*212
-        self.assertIn(f'y="{232 - 50/100*212:.2f}"', svg)
-        self.assertIn(f'y="{232 - 100/100*212:.2f}"', svg)
-        self.assertIn("c-bar-strong", svg)  # p50/mode bar highlighted
-        self.assertIn("p50 на 5 днях", aria)
-
-    def test_empty_histogram_renders_no_data_message(self):
-        forecast = {"target_items": 1, "sample_sprints": 0, "sample_days": 0, "throughput_cv_pct": 0.0,
-                     "percentiles": [], "histogram": [], "warnings": []}
-        aria, svg = rh.build_forecast_svg(forecast)
-        self.assertIn("недоступна", aria)
-        self.assertIn("нет данных", svg)
-
-
-class ChartViewBoxTests(unittest.TestCase):
-    """BUG 2 (browser-verified) — the forecast chart reused the engineering
-    chart's 760x260 viewBox, clipping its own p50/p85/p95 labels and hiding
-    the x-axis title entirely. Every <text> baseline must land inside its
-    own <svg viewBox>."""
-
-    SVG_RE = re.compile(r'<svg\b[^>]*\bviewBox="0 0 ([\d.]+) ([\d.]+)"[^>]*>(.*?)</svg>', re.S)
-    TEXT_Y_RE = re.compile(r'<text\b[^>]*\by="(-?[\d.]+)"')
-
-    def _assert_all_text_within_viewbox(self, out):
-        checked = 0
-        for m in self.SVG_RE.finditer(out):
-            width, height, body = float(m.group(1)), float(m.group(2)), m.group(3)
-            for tm in self.TEXT_Y_RE.finditer(body):
-                checked += 1
-                y = float(tm.group(1))
-                self.assertTrue(
-                    -2.0 <= y <= height + 2.0,
-                    f"<text y=\"{y}\"> falls outside viewBox height {height}",
-                )
-        self.assertGreater(checked, 0, "no <text> elements found — test would pass vacuously")
-
-    def test_forecast_chart_labels_stay_inside_its_viewbox(self):
-        forecast = {
-            "target_items": 10, "sample_sprints": 5, "sample_days": 60, "throughput_cv_pct": 12.0,
-            "percentiles": [{"percentile": 50, "days": 17}, {"percentile": 85, "days": 21}, {"percentile": 95, "days": 24}],
-            "histogram": [{"days": d, "count": c} for d, c in zip(range(11, 26), [25, 78, 180, 330, 520, 660, 710, 630, 520, 400, 300, 215, 150, 100, 70])],
-            "warnings": [],
-        }
-        aria, svg = rh.build_forecast_svg(forecast)
-        self._assert_all_text_within_viewbox(f"<div>{svg}</div>")
-
-    def test_every_chart_in_a_full_render_stays_inside_its_own_viewbox(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        out = rh.render_html(report)
-        self._assert_all_text_within_viewbox(out)
-
-
-# --------------------------------------------------------------------------
-# Four empty-value states (DESIGN-NOTES §5)
-# --------------------------------------------------------------------------
-
-
-class EmptyValueStateTests(unittest.TestCase):
-    def test_div0_state_renders_zero_plus_badge(self):
-        text, cls = rh._cell_state(0.0, ["WARN_DIVISION_BY_ZERO:mr_merge_rate_pct"], None, "WARN_DIVISION_BY_ZERO:mr_merge_rate_pct")
-        self.assertEqual(cls, " cell-nodata")
-        self.assertIn("DIV0", text)
-        self.assertIn("warn-badge", text)
-
-    def test_unavail_state_renders_dash_plus_na_badge(self):
-        text, cls = rh._cell_state(None, ["WARN_DIFF_STATS_UNAVAILABLE"], "WARN_DIFF_STATS_UNAVAILABLE", None)
-        self.assertEqual(cls, " cell-unavail")
-        self.assertIn("нет данных", text)
-        self.assertIn("badge-na", text)
-
-    def test_nosample_state_renders_bare_dash_with_title(self):
-        text, cls = rh._cell_state(None, [], "WARN_DIFF_STATS_UNAVAILABLE", None)
-        self.assertEqual(cls, " cell-nosample")
-        self.assertIn("title=", text)
-        self.assertNotIn("badge-na", text)
-        self.assertNotIn("warn-badge", text)
-
-    def test_nosample_title_is_column_specific_not_one_generic_string(self):
-        # browser-verified — the same "нет исходных значений" wording was
-        # reused on 26 cells while the specific "ни одного MR" wording the
-        # prototype uses appeared exactly once. mr_* and task_* columns
-        # describe different empty populations and must say so.
-        person = {
-            "mr_count": 0, "mr_merged_count": 0, "mr_closed_count": 0,
-            "mr_merge_rate_pct": 0.0, "mr_cycle_time_avg_hours": None, "mr_cycle_time_median_hours": None,
-            "mr_diff_size_avg": None, "mr_diff_size_available_count": 0,
-            "mr_commits_avg": None, "mr_commits_sum": None,
-            "mr_changes_count_avg": None, "mr_changes_count_sum": None,
-            "tasks_done": 0, "bug_count": 0, "defect_rate_pct": 0.0,
-            "task_cycle_time_avg_hours": None, "task_cycle_time_median_hours": None,
-            "rework_total": 0, "story_points_total": None, "story_points_avg": None,
-            "qa_estimation_total": None, "qa_estimation_avg": None,
-            "linked_tasks": 0, "mr_with_jira_key": 0, "mr_per_task": None,
-            "warnings": [],
-        }
-        m = rh._person_cell_map(person)
-        self.assertIn("ни одного MR", m["PERSON_MR_CYCLE_TIME_AVG_HOURS"])
-        self.assertIn("ни одной закрытой задачи", m["PERSON_TASK_CYCLE_TIME_AVG_HOURS"])
-        self.assertNotIn("нет исходных значений", m["PERSON_MR_CYCLE_TIME_AVG_HOURS"])
-        self.assertNotIn("нет исходных значений", m["PERSON_TASK_CYCLE_TIME_AVG_HOURS"])
-
-    def test_all_four_states_appear_with_correct_titles_in_a_full_render(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        # bob's MR has no cycle_time/diff/commits/changes stats and never merged
-        out = rh.render_html(report)
-        self.assertIn("cell-nodata", out)
-        self.assertIn("cell-unavail", out)
-        self.assertIn('title="null по контракту: linked_tasks = 0"', out)
-        # the state legend explains all four
-        self.assertIn("null по контракту", out)
-        self.assertIn("знаменатель равен нулю", out)
-        self.assertIn("источник не вернул статистику", out)
-        self.assertIn("пустая выборка", out)
-
-    def test_person_totals_diff_size_denom_is_real_markup_not_double_escaped(self):
-        # M1 — esc() used to wrap the whole "<span class=denom>...</span>"
-        # string, so the totals cell printed the literal tag text instead
-        # of rendering the span.
-        report = build_multi_sprint_report(with_gitlab=True)
-        out = rh.render_html(report)
-        self.assertIn('<span class="denom">/', out)
-        self.assertNotIn("&lt;span class=", out)
-
-
-class BoardTableDiv0Tests(unittest.TestCase):
-    """m1 — every DIV0'd board_table ratio (not just load_pct/velocity_sma5_sp)
-    must carry both the badge and the cell-nodata class."""
-
-    @staticmethod
-    def _all_div0_row_html():
-        text = rh.strip_scalar_marker_comments(rh._load_template())
-        inner = rh.extract_inner(text, "LOOP_BOARD_ROWS_START", "LOOP_BOARD_ROWS_END")
-        metrics = {
-            "committed_sp": 0.0, "committed_items": 0, "scope_added_items": 0, "scope_removed_items": 0,
-            "scope_added_sp": 0.0, "scope_removed_sp": 0.0, "scope_change_pct": 0.0,
-            "performance_pct": 0.0, "load_pct": 0.0, "velocity_sp": 0.0, "velocity_sma5_sp": 0.0,
-            "throughput_items": 0, "closure_pct_items": 0.0, "closure_pct_sp": 0.0,
-            "scope_estimation_change_sp": 0.0, "delivered_sp": 0.0, "delivered_items": 0,
-        }
-        sprint = {
-            "target": True,
-            "payload": {
-                "sprint": {"name": "S1", "state": "closed", "start_at": "2026-01-05", "end_at": "2026-01-09"},
-                "metrics": metrics,
-            },
-        }
-        return rh.build_board_row_html(inner, (0, sprint), [sprint])
-
-    def test_all_six_div0_ratios_get_the_badge_and_the_nodata_class(self):
-        row_html = self._all_div0_row_html()
-        self.assertEqual(row_html.count("DIV0"), 6)
-        self.assertEqual(row_html.count("cell-nodata"), 6)
-
-
-class MetricGroupDiv0StatusClassTests(unittest.TestCase):
-    def test_performance_and_scope_change_class_is_none_not_a_fake_band_on_div0(self):
-        # m2 — the CSS status class used to be computed from the div0'd 0.0
-        # value itself, so a real div0 read as a red "critical" band.
-        metrics = {
-            "committed_sp": 0.0, "committed_items": 0, "scope_added_items": 0, "scope_removed_items": 0,
-            "scope_added_sp": 0.0, "scope_removed_sp": 0.0, "scope_change_pct": 0.0,
-            "performance_pct": 0.0, "load_pct": 0.0, "velocity_sp": 0.0, "velocity_sma5_sp": 0.0,
-            "throughput_items": 0, "closure_pct_items": 0.0, "closure_pct_sp": 0.0,
-            "scope_estimation_change_sp": 0.0, "delivered_sp": 0.0, "delivered_items": 0,
-        }
-        report = {"sprints": [{"target": True, "payload": {"metrics": metrics}}], "kpi": {}}
-        ctx: dict = {}
-        rh.build_metric_groups(report, ctx)
-        self.assertEqual(ctx["METRIC_PERFORMANCE_PCT_CLASS"], "is-none")
-        self.assertEqual(ctx["METRIC_SCOPE_CHANGE_PCT_CLASS"], "is-none")
-        self.assertEqual(ctx["METRIC_CLOSURE_PCT_ITEMS_CLASS"], "is-none")
-        self.assertEqual(ctx["METRIC_CLOSURE_PCT_SP_CLASS"], "is-none")
-
-
-class PersonCardExtraStatsTests(unittest.TestCase):
-    """m8 — rework_share and pipeline_success_rate have no home on the
-    person table (its column budget is print-width constrained) but the
-    card has room; render them there."""
-
-    @staticmethod
-    def _card_html(person_extra):
-        text = rh.strip_scalar_marker_comments(rh._load_template())
-        inner = rh.extract_inner(text, "PERSON_CARD_START", "PERSON_CARD_END")
-        person = {
-            "user": "alice", "mr_count": 3, "mr_merge_rate_pct": 66.7,
-            "mr_cycle_time_median_hours": 10.0, "tasks_done": 2,
-            "mr_with_jira_key": 1, "warnings": [], "sprints": [],
-        }
-        person.update(person_extra)
-        return rh.build_person_card(inner, person)
-
-    def test_rework_share_and_pipeline_success_render_as_percentages(self):
-        html = self._card_html({"rework_share": 0.25, "pipeline_success_rate": 0.875})
-        self.assertIn("доля переработок", html)
-        self.assertIn("25", html)
-        self.assertIn("успешность пайплайнов", html)
-        self.assertIn("87.5", html)
-
-    def test_both_show_none_state_when_null(self):
-        html = self._card_html({"rework_share": None, "pipeline_success_rate": None})
-        self.assertIn('data-status="none"><div class="stat-label">доля переработок', html)
-        self.assertIn('data-status="none"><div class="stat-label">успешность пайплайнов', html)
-
-    @staticmethod
-    def _pipeline_stat_block(html):
-        # Scope to just the pipeline-success .stat div, by walking balanced
-        # <div>/</div> tags from its opening tag — the card's MR bar chart
-        # also says "нет данных" in its own aria-label whenever the
-        # fixture's sprints list is empty, which would false-positive a
-        # fixed-window or unscoped substring check.
-        label_at = html.index('<div class="stat-label">успешность пайплайнов')
-        start = html.rindex('<div class="stat"', 0, label_at)
-        depth = 0
-        end = start
-        for m in re.finditer(r"<div\b[^>]*>|</div>", html[start:]):
-            end = start + m.end()
-            depth += 1 if m.group(0).startswith("<div") else -1
-            if depth == 0:
-                break
-        return html[start:end]
-
-    def test_pipeline_success_three_states_are_distinguishable(self):
-        # State 1 — not collected (fetch_pipeline_user=False this run):
-        # pipeline_success_rate=None + WARN_PIPELINE_SUCCESS_UNAVAILABLE.
-        # Must render as "нет данных", the same signal the MR diff-stats
-        # gap already uses — never a bare, unexplained dash.
-        not_collected = self._pipeline_stat_block(self._card_html({
-            "pipeline_success_rate": None, "warnings": ["WARN_PIPELINE_SUCCESS_UNAVAILABLE"],
-        }))
-        self.assertIn("нет данных", not_collected)
-        self.assertIn("badge-na", not_collected)
-
-        # State 2 — collected, genuinely zero pipelines for this person: no
-        # warning code, plain none-state, no "нет данных" badge.
-        genuinely_none = self._pipeline_stat_block(self._card_html({"pipeline_success_rate": None, "warnings": []}))
-        self.assertNotIn("нет данных", genuinely_none)
-        self.assertIn('data-status="none"', genuinely_none)
-
-        # State 3 — a real measurement must never be flagged as unavailable.
-        real_value = self._pipeline_stat_block(self._card_html({"pipeline_success_rate": 0.6, "warnings": []}))
-        self.assertNotIn("нет данных", real_value)
-        self.assertIn("60", real_value)
-
-
-class LightModeAuditTests(unittest.TestCase):
-    """Audit finding 2b (request_count) and 2a (fetch_mr_details/
-    fetch_pipeline_user opt-outs) — the footer must show the actual GitLab
-    request cost, and a run built with the heavy fan-outs skipped must say
-    so somewhere a reader will see, not just as a suspiciously low number."""
-
-    @staticmethod
-    def _person_tab_ctx(params_extra):
-        report = {
-            "params": dict({"gitlab_request_count": None, "gitlab_fetch_mr_details": None,
-                             "gitlab_fetch_pipeline_user": None}, **params_extra),
-            "personal": {"available": True, "data": {"people": []}},
-            "engineering": {"available": False},
-            "gitlab_fetch_issues": {"skipped_projects": [], "mr_fetch_errors": []},
-            "semantics_notes": [],
-        }
-        ctx: dict = {}
-        rh.build_person_tab(report, ctx)
-        return ctx
-
-    def test_request_count_renders_with_a_gitlab_specific_label(self):
-        ctx: dict = {}
-        rh.build_footer({"params": {"gitlab_request_count": 342}, "gitlab_fetch_issues": {}}, ctx)
-        self.assertIn("342", ctx["PARAM_GITLAB_REQUEST_COUNT"])
-        self.assertIn("GitLab", ctx["PARAM_GITLAB_REQUEST_COUNT"])
-
-    def test_request_count_is_a_dash_when_gitlab_was_never_configured(self):
-        ctx: dict = {}
-        rh.build_footer({"params": {"gitlab_request_count": None}, "gitlab_fetch_issues": {}}, ctx)
-        self.assertEqual(ctx["PARAM_GITLAB_REQUEST_COUNT"], rh.EM_DASH)
-
-    def test_no_caveat_when_both_heavy_fetches_ran(self):
-        ctx = self._person_tab_ctx({"gitlab_fetch_mr_details": True, "gitlab_fetch_pipeline_user": True})
-        self.assertEqual(ctx["PERSON_LIGHT_MODE_CAVEAT"], "")
-
-    def test_caveat_names_mr_details_when_that_fetch_was_skipped(self):
-        ctx = self._person_tab_ctx({"gitlab_fetch_mr_details": False, "gitlab_fetch_pipeline_user": True})
-        self.assertIn("УРЕЗАННЫЙ РЕЖИМ", ctx["PERSON_LIGHT_MODE_CAVEAT"])
-        self.assertIn("детали MR", ctx["PERSON_LIGHT_MODE_CAVEAT"])
-        self.assertNotIn("привязка пайплайнов", ctx["PERSON_LIGHT_MODE_CAVEAT"])
-
-    def test_caveat_names_pipeline_user_when_that_fetch_was_skipped(self):
-        ctx = self._person_tab_ctx({"gitlab_fetch_mr_details": True, "gitlab_fetch_pipeline_user": False})
-        self.assertIn("привязка пайплайнов", ctx["PERSON_LIGHT_MODE_CAVEAT"])
-        self.assertNotIn("детали MR", ctx["PERSON_LIGHT_MODE_CAVEAT"])
-
-    def test_full_render_places_caveat_on_the_personal_tab(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        report["params"]["gitlab_fetch_mr_details"] = False
-        report["params"]["gitlab_fetch_pipeline_user"] = False
-        out = rh.render_html(report)
-        self.assertIn("УРЕЗАННЫЙ РЕЖИМ", out)
-        person_section = out[out.index('id="panel-person"'):out.index('id="panel-eng"')]
-        self.assertIn("УРЕЗАННЫЙ РЕЖИМ", person_section)
-
-
-# --------------------------------------------------------------------------
-# KPI delta direction (DESIGN-NOTES §4)
-# --------------------------------------------------------------------------
-
-
-class KpiDeltaDirectionTests(unittest.TestCase):
-    def test_scope_change_rising_is_flagged_bad_not_good(self):
-        d, arrow = rh._dir_and_arrow(5.0, higher_is_good=False)
-        self.assertEqual(d, "up-bad")
-        d, arrow = rh._dir_and_arrow(-5.0, higher_is_good=False)
-        self.assertEqual(d, "down-good")
-
-    def test_velocity_rising_is_flagged_good(self):
-        d, _ = rh._dir_and_arrow(5.0, higher_is_good=True)
-        self.assertEqual(d, "up-good")
-        d, _ = rh._dir_and_arrow(-5.0, higher_is_good=True)
-        self.assertEqual(d, "down-bad")
-
-    def test_zero_delta_is_flat(self):
-        d, arrow = rh._dir_and_arrow(0.0, higher_is_good=True)
-        self.assertEqual(d, "flat")
-
-    def test_none_delta_is_none_direction(self):
-        d, arrow = rh._dir_and_arrow(None, higher_is_good=True)
-        self.assertEqual(d, "none")
-
-    def test_load_status_band_is_good_only_in_the_middle(self):
-        self.assertEqual(rh._load_status(100.0), "good")
-        self.assertEqual(rh._load_status(120.0), "warn")
-        self.assertEqual(rh._load_status(130.0), "bad")
-        self.assertEqual(rh._load_status(75.0), "warn")
-        self.assertEqual(rh._load_status(50.0), "bad")
-
-    @staticmethod
-    def _kpi_report(committed_sp, scope_change_pct, avg_scope_change_pct):
-        base_metrics = {
-            "committed_sp": committed_sp, "committed_items": 10, "scope_added_items": 0, "scope_removed_items": 0,
-            "scope_added_sp": 0.0, "scope_removed_sp": 0.0, "scope_change_pct": 5.0,
-            "performance_pct": 90.0, "load_pct": 100.0, "velocity_sp": 40.0, "velocity_sma5_sp": 40.0,
-            "throughput_items": 8, "closure_pct_items": 90.0, "closure_pct_sp": 90.0,
-            "scope_estimation_change_sp": 0.0, "delivered_sp": 36.0, "delivered_items": 9,
-        }
-        target_metrics = dict(base_metrics, scope_change_pct=scope_change_pct)
-        return {
-            "sprints": [
-                {"target": False, "payload": {"metrics": base_metrics}},
-                {"target": True, "payload": {"metrics": target_metrics}},
-            ],
-            "kpi": {"avg_scope_change_pct": avg_scope_change_pct},
-        }
-
-    def test_scope_change_tile_direction_is_bad_when_it_rises(self):
-        # scope_change_pct rising vs. the board average is BAD, unlike
-        # velocity/performance where rising is good — a test that also
-        # accepts up-good would pass with the mapping inverted.
-        report = self._kpi_report(committed_sp=40.0, scope_change_pct=20.0, avg_scope_change_pct=10.0)
-        ctx = {}
-        rh.build_kpi_tiles(report, ctx)
-        self.assertEqual(ctx["KPI_SCOPE_CHANGE_DELTA_DIR"], "up-bad")
-
-    def test_scope_change_tile_direction_is_good_when_it_falls(self):
-        report = self._kpi_report(committed_sp=40.0, scope_change_pct=5.0, avg_scope_change_pct=10.0)
-        ctx = {}
-        rh.build_kpi_tiles(report, ctx)
-        self.assertEqual(ctx["KPI_SCOPE_CHANGE_DELTA_DIR"], "down-good")
-
-    def test_first_sprint_tiles_show_real_values_only_the_band_is_suppressed(self):
-        # M4 — on a board's first sprint (n_base == 0) velocity_sp,
-        # throughput_items and closure_pct_* are real numbers with nothing
-        # to divide by zero; status="none" must drop only the band/delta.
-        sprint = jc.Sprint(id=1, name="Sprint 1", state="closed", board_id=1,
-                            start_at=dt(2026, 1, 5), end_at=dt(2026, 1, 9, 18), complete_at=dt(2026, 1, 9, 18))
-        fact = _make_fact("A-1", 1, model.Interval(from_=dt(2026, 1, 5), until=None), 5.0, done_at=dt(2026, 1, 7, 10))
-        client = FakeJiraClient(
-            sprints={1: sprint}, board=jc.Board(id=1, name="B", type="scrum"),
-            closed_ids=[1], active_ids=[], facts=[fact], statuses=STATUSES,
-        )
-        report = report_data.build_combined_report(
-            client, sprint_ids=[1], now=dt(2026, 1, 10), target_items=5, gitlab_client_obj=None,
-        )
-        self.assertEqual(len(rh.base_entries(report)), 0)  # confirms this really is a first sprint
-        ctx: dict = {}
-        rh.build_kpi_tiles(report, ctx)
-        for tid in ("VELOCITY", "THROUGHPUT", "CLOSURE_ITEMS", "CLOSURE_SP"):
-            with self.subTest(tid=tid):
-                self.assertNotEqual(ctx[f"KPI_{tid}_VALUE"], rh.EM_DASH)
-        # velocity/throughput band relative to a baseline that doesn't
-        # exist yet, so their band is legitimately absent...
-        self.assertEqual(ctx["KPI_VELOCITY_STATUS"], "none")
-        self.assertEqual(ctx["KPI_THROUGHPUT_STATUS"], "none")
-        # ...but closure_pct_* bands on fixed thresholds and needs no
-        # baseline at all, so it keeps a real band on the same sprint.
-        self.assertIn(ctx["KPI_CLOSURE_ITEMS_STATUS"], ("good", "warn", "bad"))
-        self.assertIn(ctx["KPI_CLOSURE_SP_STATUS"], ("good", "warn", "bad"))
-        # SMA5 itself genuinely has no value with zero history.
-        self.assertEqual(ctx["KPI_SMA5_VALUE"], rh.EM_DASH)
-
-
-class EngTileBandTests(unittest.TestCase):
-    def test_pipelines_count_and_deployments_per_week_carry_no_band(self):
-        # m6 — pipelines.count borrowed the success-rate band (a run count
-        # read as "критично"); deployments.per_week was unconditionally
-        # "норма". §5 defines no band for either.
-        report = build_multi_sprint_report(with_gitlab=True)
-        ctx: dict = {}
-        state = rh.build_eng_tab(report, ctx)
-        self.assertEqual(state, "available")
-        self.assertEqual(ctx["ENG_PIPELINES_COUNT_STATUS"], "none")
-        self.assertEqual(ctx["ENG_DEPLOYMENTS_PER_WEEK_STATUS"], "none")
-
-
-# --------------------------------------------------------------------------
-# window_applied caveats
-# --------------------------------------------------------------------------
-
-
-class WindowCaveatTests(unittest.TestCase):
-    @staticmethod
-    def _pipelines_tile(out):
-        section = out[out.index('id="sec-eng-kpi"'):out.index('id="sec-eng-chart"')]
-        return section.split('kpi-label">Пайплайны<')[1].split("</article>")[0]
-
-    def test_caveat_marker_absent_when_window_applied_is_true(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        report["engineering"]["data"]["window_applied"]["pipelines"] = True
-        out = rh.render_html(report)
-        self.assertNotIn("вне окна отчёта", self._pipelines_tile(out))
-
-    def test_caveat_marker_present_when_window_applied_is_false(self):
-        # the contract that matters: the marker must actually be emitted,
-        # not merely absent-by-default.
-        report = build_multi_sprint_report(with_gitlab=True)
-        report["engineering"]["data"]["window_applied"]["pipelines"] = False
-        out = rh.render_html(report)
-        self.assertIn("вне окна отчёта", self._pipelines_tile(out))
-
-
-# --------------------------------------------------------------------------
-# gitlab_fetch_issues.deployment_warnings — PAGINATION_LIMIT understates the
-# numbers and must be unmissable; FILTER_REJECTED_FALLBACK does not change
-# the numbers and stays a quiet note. The two must never render the same way.
-# --------------------------------------------------------------------------
-
-
-class DeploymentWarningsTests(unittest.TestCase):
-    @staticmethod
-    def _deployments_tiles(out):
-        section = out[out.index('id="sec-eng-kpi"'):out.index('id="sec-eng-chart"')]
-        count_tile = section.split('kpi-label">Деплои<')[1].split("</article>")[0]
-        per_week_tile = section.split('kpi-label">Деплоев в неделю<')[1].split("</article>")[0]
-        return count_tile, per_week_tile
-
-    @staticmethod
-    def _eng_table_section(out):
-        start = out.index('id="sec-eng-table"')
-        return out[start:out.index("</table>", start)]
-
-    def _row(self, table_section, project):
-        start = table_section.index(f">{project}<")
-        return table_section[start:start + 800]
-
-    def test_no_deployment_warnings_renders_nothing(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        report["gitlab_fetch_issues"]["deployment_warnings"] = []
-        out = rh.render_html(report)
-        count_tile, per_week_tile = self._deployments_tiles(out)
-        self.assertNotIn("kpi-warn", count_tile)
-        self.assertNotIn("kpi-warn", per_week_tile)
-        self.assertNotIn("PAGINATION_LIMIT", out)
-        self.assertNotIn("FILTER_REJECTED_FALLBACK", out)
-        self.assertNotIn("неполно", self._eng_table_section(out))
-
-    def test_absent_deployment_warnings_key_renders_nothing(self):
-        # gitlab_fetch_issues defaults to {} for a no-GitLab run — the block
-        # must not turn into a permanently visible empty box.
-        report = build_multi_sprint_report(with_gitlab=True)
-        del report["gitlab_fetch_issues"]["deployment_warnings"]
-        out = rh.render_html(report)
-        self.assertNotIn("PAGINATION_LIMIT", out)
-        self.assertNotIn("неполно", self._eng_table_section(out))
-
-    def test_pagination_limit_marks_both_deployments_tiles(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        report["gitlab_fetch_issues"]["deployment_warnings"] = [
-            {"project": "group/proj", "code": "PAGINATION_LIMIT", "message": "page cap hit"}
-        ]
-        out = rh.render_html(report)
-        count_tile, per_week_tile = self._deployments_tiles(out)
-        for tile in (count_tile, per_week_tile):
-            self.assertIn("kpi-warn", tile)
-            self.assertIn("warn-badge", tile)
-            self.assertIn("PAGINATION_LIMIT", tile)
-            self.assertIn("group/proj", tile)
-
-    def test_pagination_limit_marks_the_affected_project_row(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        report["gitlab_fetch_issues"]["deployment_warnings"] = [
-            {"project": "group/proj", "code": "PAGINATION_LIMIT", "message": "page cap hit"}
-        ]
-        out = rh.render_html(report)
-        row = self._row(self._eng_table_section(out), "group/proj")
-        self.assertIn("неполно", row)
-        self.assertIn("warn-badge", row)
-
-    def test_multiple_affected_projects_are_all_named(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        report["engineering"]["data"]["deployments"]["per_project"].append(
-            {"project": "group/proj2", "count": 4, "failed": 1, "success_rate_pct": 75.0}
-        )
-        report["gitlab_fetch_issues"]["deployment_warnings"] = [
-            {"project": "group/proj", "code": "PAGINATION_LIMIT", "message": "page cap hit"},
-            {"project": "group/proj2", "code": "PAGINATION_LIMIT", "message": "deadline hit"},
-        ]
-        out = rh.render_html(report)
-        count_tile, _ = self._deployments_tiles(out)
-        self.assertIn("group/proj", count_tile)
-        self.assertIn("group/proj2", count_tile)
-        table_section = self._eng_table_section(out)
-        for proj in ("group/proj", "group/proj2"):
-            self.assertIn("неполно", self._row(table_section, proj), f"{proj} row missing pagination marker")
-
-    def test_filter_rejected_fallback_does_not_use_warn_badge(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        report["gitlab_fetch_issues"]["deployment_warnings"] = [
-            {"project": "group/proj", "code": "FILTER_REJECTED_FALLBACK", "message": "date filter rejected"}
-        ]
-        out = rh.render_html(report)
-        count_tile, per_week_tile = self._deployments_tiles(out)
-        self.assertNotIn("warn-badge", count_tile)
-        self.assertNotIn("warn-badge", per_week_tile)
-        self.assertNotIn("неполно", self._eng_table_section(out))
-        self.assertIn("group/proj", out)
-        self.assertIn("на итоговые числа это не влияет", out)
-
-    def test_both_codes_together_render_distinctly(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        report["engineering"]["data"]["deployments"]["per_project"].append(
-            {"project": "group/proj2", "count": 4, "failed": 1, "success_rate_pct": 75.0}
-        )
-        report["gitlab_fetch_issues"]["deployment_warnings"] = [
-            {"project": "group/proj", "code": "PAGINATION_LIMIT", "message": "page cap hit"},
-            {"project": "group/proj2", "code": "FILTER_REJECTED_FALLBACK", "message": "date filter rejected"},
-        ]
-        out = rh.render_html(report)
-        table_section = self._eng_table_section(out)
-        self.assertIn("неполно", self._row(table_section, "group/proj"))
-        self.assertNotIn("неполно", self._row(table_section, "group/proj2"))
-        self.assertIn("на итоговые числа это не влияет", out)
-
-
-# --------------------------------------------------------------------------
-# Full-render smoke tests
-# --------------------------------------------------------------------------
-
-
-class FullRenderTests(unittest.TestCase):
-    def test_full_gitlab_report_is_valid_balanced_html(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        out = rh.render_html(report)
-        assert_tag_balance(self, out)
-        self.assertTrue(out.strip().startswith("<!DOCTYPE html>"))
-        self.assertTrue(out.strip().endswith("</html>"))
-
-    def test_no_gitlab_report_is_valid_balanced_html_and_marks_sections_unavailable(self):
-        report = build_multi_sprint_report(with_gitlab=False)
-        out = rh.render_html(report)
-        assert_tag_balance(self, out)
-        self.assertIn("Раздел недоступен для этого запуска", out)
-
-    def test_skipped_projects_render_as_visible_disclaimer_not_zero_activity(self):
-        # gitlab_client.py:691 — skipped_projects entries are dicts, never
-        # bare strings.
-        report = build_multi_sprint_report(with_gitlab=True)
-        report["gitlab_fetch_issues"]["skipped_projects"] = [
-            {"project": "group/broken-project", "code": "NOT_FOUND", "message": "project id not returned"}
-        ]
-        out = rh.render_html(report)
-        self.assertIn("group/broken-project", out)
-        self.assertIn("NOT_FOUND", out)
-        self.assertIn("Пропущены проекты", out)
-        self.assertNotIn("{'project'", out)
-
-    def test_skipped_project_also_surfaces_on_the_engineering_tab(self):
-        # browser-verified — the footer said a project was skipped, but the
-        # Инженерия tab's per_project caption gave no hint one was missing.
-        report = build_multi_sprint_report(with_gitlab=True)
-        report["gitlab_fetch_issues"]["skipped_projects"] = [
-            {"project": "group/broken-project", "code": "NOT_FOUND", "message": "project id not returned"}
-        ]
-        out = rh.render_html(report)
-        eng_table_section = out[out.index('id="sec-eng-table"'):out.index("</table>", out.index('id="sec-eng-table"'))]
-        self.assertIn("group/broken-project", eng_table_section)
-        self.assertIn("NOT_FOUND", eng_table_section)
-
-    def test_mr_fetch_errors_render_as_detail_and_mark_the_affected_person(self):
-        # m4 — a failed MR fetch must show project/author/state/code, and
-        # must mark the affected person's own row, not only the footer.
-        report = build_multi_sprint_report(with_gitlab=True)
-        report["gitlab_fetch_issues"]["mr_fetch_errors"] = [
-            {"project": "group/proj", "author": "alice", "state": "merged", "code": "RATE_LIMITED", "message": "429"}
-        ]
-        out = rh.render_html(report)
-        self.assertIn("RATE_LIMITED", out)
-        self.assertIn("alice", out)
-        self.assertIn("MR_FETCH_ERROR", out)
-        # the badge must sit near alice's own row, not only in the footer
-        alice_at = out.index(">alice<")
-        self.assertIn("MR_FETCH_ERROR", out[alice_at:alice_at + 4000])
-
-    def test_semantics_notes_render_in_personal_banner(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        out = rh.render_html(report)
-        for note in report["semantics_notes"]:
-            self.assertIn(note[:30], out)
-
-
-# --------------------------------------------------------------------------
-# Every chart/table section explains itself: what it shows, what is good
-# --------------------------------------------------------------------------
-
-# Ordered section ids as they appear in the document — consecutive pairs
-# bound the slice checked for each section; the last one is bounded by the
-# footer, which always follows the last tab.
-_SECTION_ORDER = [
-    "sec-warnings", "sec-kpi", "sec-metrics", "sec-burndown", "sec-heatmap",
-    "sec-forecast", "sec-tables",
-    "sec-person-note", "sec-person-table", "sec-person-cards",
-    "sec-eng-note", "sec-eng-kpi", "sec-eng-chart", "sec-eng-table",
-]
-
-# Sections that carry a chart, diagram, or table and must explain both what
-# it shows and what counts as good — the ones this task is actually about.
-# sec-warnings/sec-metrics/sec-person-note/sec-eng-note are plain text/scalar
-# blocks, not visual elements, and are excluded on purpose.
-_EXPLAINED_SECTIONS = [
-    "sec-kpi", "sec-burndown", "sec-heatmap", "sec-forecast", "sec-tables",
-    "sec-person-table", "sec-person-cards",
-    "sec-eng-kpi", "sec-eng-chart", "sec-eng-table",
-]
-
-
-def _section_slice(out: str, section_id: str) -> str:
-    start = out.index(f'id="{section_id}"')
-    idx = _SECTION_ORDER.index(section_id)
-    if idx + 1 < len(_SECTION_ORDER):
-        end = out.index(f'id="{_SECTION_ORDER[idx + 1]}"', start)
-    else:
-        end = out.index("<footer", start)
-    return out[start:end]
-
-
-class ChartExplanationTests(unittest.TestCase):
-    """Every chart, diagram and table must carry a non-empty description of
-    what it shows and a non-empty note on what counts as good — a future
-    section that ships without either must fail this test."""
-
+class RenderFixtureTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.out = rh.render_html(build_multi_sprint_report(with_gitlab=True))
+        cls.report = load_fixture()
+        cls.html = rh.render_html(cls.report)
 
-    def test_every_visual_section_has_a_description(self):
-        for section_id in _EXPLAINED_SECTIONS:
-            with self.subTest(section=section_id):
-                section = _section_slice(self.out, section_id)
-                m = re.search(r'<p class="section-desc">(.*?)</p>', section, re.S)
-                self.assertIsNotNone(m, f"{section_id}: no <p class=\"section-desc\">")
-                text = re.sub(r"<[^>]+>", "", m.group(1)).strip()
-                self.assertGreater(len(text), 20, f"{section_id}: description too short/empty")
+    def test_no_unresolved_tokens(self):
+        self.assertNotIn("{{", self.html)
+        self.assertNotIn("}}", self.html)
 
-    def test_every_visual_section_states_what_is_good(self):
-        # KPI sections carry the good/warn/bad bands in a collapsible
-        # thresholds block instead of an inline "Хорошо" sentence — both
-        # forms satisfy the requirement, so accept either.
-        for section_id in _EXPLAINED_SECTIONS:
-            with self.subTest(section=section_id):
-                section = _section_slice(self.out, section_id)
-                has_good_sentence = "Хорошо" in section
-                has_thresholds_block = bool(re.search(r'<details class="thresholds">.*?</details>', section, re.S))
-                self.assertTrue(
-                    has_good_sentence or has_thresholds_block,
-                    f"{section_id}: no 'what is good' note (neither a Хорошо sentence nor a thresholds block)",
-                )
+    def test_tags_balanced(self):
+        assert_tags_balanced(self, self.html)
 
-    def test_thresholds_are_marked_as_our_heuristic_not_the_module_standard(self):
-        for section_id in ("sec-kpi", "sec-eng-kpi"):
-            with self.subTest(section=section_id):
-                section = _section_slice(self.out, section_id)
-                m = re.search(r'<details class="thresholds">(.*?)</details>', section, re.S)
-                self.assertIsNotNone(m, f"{section_id}: no thresholds block")
-                block = m.group(1)
-                self.assertIn("эвристика", block)
-                self.assertIn("нет классификации «норма / под наблюдением / критично»", block)
+    def test_determinism_byte_identical(self):
+        html2 = rh.render_html(load_fixture())
+        self.assertEqual(self.html, html2)
+        html3 = rh.render_html(self.report)
+        self.assertEqual(self.html, html3)
 
-    def test_forecast_marks_its_two_real_module_constants(self):
-        # The one section where actual source-module constants exist
-        # (forecast_available >= 10 points; CV warn threshold 50%) — they
-        # must read as real, not lumped in with the invented KPI bands.
-        section = _section_slice(self.out, "sec-forecast")
-        self.assertIn("из исходного модуля", section)
-        self.assertIn("10", section)
-        self.assertIn("50", section)
+    def test_nine_tab_labels_present(self):
+        labels = [
+            "01 Обзор", "02 Спринт", "03 Динамика команды", "04 Прогноз",
+            "05 Люди — сравнение", "06 Люди — динамика", "07 Инженерия",
+            "08 Данные", "09 Словарь и риски",
+        ]
+        for label in labels:
+            self.assertIn(label, self.html, f"missing tab label {label!r}")
 
-    def test_kpi_thresholds_are_absent_from_the_no_gitlab_report_without_crashing(self):
-        report = build_multi_sprint_report(with_gitlab=False)
-        out = rh.render_html(report)
-        self.assertIn("thresholds", out)
+    def test_exactly_nine_tab_radio_inputs(self):
+        matches = re.findall(r'<input class="tab-input" type="radio" name="report-tab"', self.html)
+        self.assertEqual(len(matches), 9)
 
+    def test_no_snake_case_leak_outside_code(self):
+        no_code = re.sub(r"<code[^>]*>.*?</code>", "", self.html, flags=re.S)
+        leaks = sorted(set(re.findall(r"\b[a-z][a-z0-9]+(?:_[a-z0-9]+)+\b", no_code)))
+        self.assertEqual(leaks, [], f"snake_case machine keys leaked outside <code>: {leaks}")
 
-class RussianOnlyProseTests(unittest.TestCase):
-    """The report must read in Russian: every label/status word/badge we
-    author is Russian. Column headers and warning/error CODES keep their
-    contract field names on purpose (documented, grep-able against the
-    source) — this test only guards the prose we write ourselves."""
+    def test_known_forbidden_keys_absent_outside_code(self):
+        no_code = re.sub(r"<code[^>]*>.*?</code>", "", self.html, flags=re.S)
+        forbidden = [
+            "mr_merge_rate_pct", "task_cycle_time_avg_hours", "success_rate_pct",
+            "coverage_avg_pct", "sample_count", "window_applied", "calc_schema_version",
+            "connection_id", "force_refresh", "job_id", "target_items", "per_project",
+            "committed_sp",
+        ]
+        for key in forbidden:
+            self.assertNotIn(key, no_code, f"{key!r} leaked outside <code>")
 
-    def test_no_bare_english_good_warn_bad_in_our_own_prose(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        out = rh.render_html(report)
-        for section_id in ("sec-kpi", "sec-eng-kpi", "sec-metrics", "sec-person-table", "sec-person-cards"):
-            with self.subTest(section=section_id):
-                section = _section_slice(out, section_id)
-                # status WORDS, not the "warn-badge"/"cell-nodata" CSS classes
-                self.assertNotRegex(section, r"[^-\"]\bgood\b")
-                self.assertNotRegex(section, r"[^-\"]\bwarn\b(?!-)")
-                self.assertNotRegex(section, r"[^-\"]\bbad\b")
+    def test_no_bare_warning_codes_outside_code(self):
+        no_code = re.sub(r"<code[^>]*>.*?</code>", "", self.html, flags=re.S)
+        codes = re.findall(r"WARN_[A-Z_]*|ERR_[A-Z_]*", no_code)
+        self.assertEqual(codes, [], f"bare warning/error codes outside <code>: {codes}")
 
-    def test_kpi_tile_labels_are_russian(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        out = rh.render_html(report)
-        for label in ("Скорость", "Скользящее среднее", "Выполнение обязательств", "Загрузка",
-                      "Изменение объёма", "Пропускная способность", "Закрытие, задачи", "Закрытие, SP"):
-            with self.subTest(label=label):
-                self.assertIn(f'kpi-label">{label}<', out)
-        for stale in ("Velocity", "Performance</span>", ">Load<", "Scope change", "Throughput</span>"):
-            with self.subTest(stale=stale):
-                self.assertNotIn(f'kpi-label">{stale}', out)
+    def test_no_external_urls_or_script_src(self):
+        self.assertNotIn("https://", self.html)
+        self.assertNotIn("//cdn", self.html)
+        self.assertNotIn("<script src", self.html.lower())
+        self.assertNotIn("<link href", self.html.lower())
+        # the SVG xmlns declaration is the only allowed http:// occurrence
+        for m in re.finditer(r"http://[^\"\s]*", self.html):
+            self.assertEqual(m.group(0), "http://www.w3.org/2000/svg")
 
-    def test_person_card_stat_labels_are_russian(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        out = rh.render_html(report)
-        for label in ("доля смерженных", "медиана цикла MR", "задач закрыто", "доля переработок", "успешность пайплайнов"):
-            with self.subTest(label=label):
-                self.assertIn(label, out)
+    def test_js_disabled_structure(self):
+        """Tab switching, theme, and the burndown unit toggle must all be
+        CSS-radio driven — the inline <script> must contain nothing that
+        gates content visibility."""
+        scripts = re.findall(r"<script[^>]*>(.*?)</script>", self.html, flags=re.S)
+        self.assertEqual(len(scripts), 1)
+        body = scripts[0]
+        self.assertNotIn("innerHTML", body)
+        self.assertIn("theme", body.lower())
+        for i in range(1, 10):
+            self.assertIn(f'id="tab-{i:02d}"', self.html)
+            self.assertIn(f'id="panel-{i:02d}"', self.html)
+
+    def test_people_shown_by_display_name_not_bare_login(self):
+        self.assertIn("Александр Максименков", self.html)
+        no_code = re.sub(r"<code[^>]*>.*?</code>", "", self.html, flags=re.S)
+        no_title = re.sub(r'title="[^"]*"', "", no_code)
+        self.assertNotIn("amaksimenkov", no_title)
+
+    def test_coverage_risk_never_multiplied_by_100(self):
+        """Regression for source bug (a): coverage 55.0 must print 55%, not 5500."""
+        self.assertIn("55%", self.html)
+        self.assertNotIn("5500", self.html)
+
+    def test_every_chart_svg_has_hint_sibling(self):
+        tree = build_tree(self.html)
+        total = 0
+        with_hint = 0
+        for node in walk(tree):
+            children = node["children"]
+            for i, c in enumerate(children):
+                if c["tag"] == "svg" and has_class(c, "chart"):
+                    total += 1
+                    if i + 1 < len(children) and children[i + 1]["tag"] == "p" and has_class(children[i + 1], "hint"):
+                        with_hint += 1
+        self.assertGreater(total, 0)
+        self.assertEqual(total, with_hint, "every chart svg must have an immediately-following <p class=hint>")
+
+    def test_every_table_has_hint_in_its_section(self):
+        tree = build_tree(self.html)
+
+        def section_has_table_and_hint(node):
+            found_table = any(n["tag"] == "table" for n in walk([node]))
+            found_hint = any(n["tag"] == "p" and has_class(n, "hint") for n in walk([node]))
+            return found_table, found_hint
+
+        sections = [n for n in walk(tree) if n["tag"] == "section" and has_class(n, "section")]
+        checked = 0
+        for sec in sections:
+            has_table, has_hint = section_has_table_and_hint(sec)
+            if has_table:
+                checked += 1
+                self.assertTrue(has_hint, f"section with a table has no .hint paragraph: {sec}")
+        self.assertGreater(checked, 0)
+
+    def test_glossary_and_metric_defs_from_json_not_hardcoded(self):
+        for term in ("PR cycle time", "Velocity SMA5", "CV (коэффициент вариации)"):
+            self.assertIn(term, self.html)
+        self.assertIn("Число MR", self.html)
+        self.assertIn("mr_count", self.html)  # allowed: inside <code> in tab 09
+
+    def test_risks_rendered(self):
+        self.assertIn("Высокий defect rate", self.html)
+        self.assertIn("Низкое покрытие тестами", self.html)
+
+    def test_jira_labels_shown_as_is_in_code_chip(self):
+        self.assertIn("tech_bucket", self.html)
+        # must be inside a <code> chip, not bare
+        self.assertRegex(self.html, r"<code[^>]*>tech_bucket</code>")
 
 
 # --------------------------------------------------------------------------
-# Closing recommendations — every item derived from a measured value
+# Contract enforcement
 # --------------------------------------------------------------------------
 
 
-class RecommendationsBlockTests(unittest.TestCase):
-    @staticmethod
-    def _healthy_report():
-        metrics = {
-            "committed_sp": 40.0, "committed_items": 10, "scope_added_items": 1, "scope_removed_items": 0,
-            "scope_added_sp": 2.0, "scope_removed_sp": 1.0, "scope_change_pct": 7.5,
-            "performance_pct": 95.0, "load_pct": 100.0, "velocity_sp": 38.0, "velocity_sma5_sp": 40.0,
-            "throughput_items": 8, "closure_pct_items": 90.0, "closure_pct_sp": 90.0,
-            "scope_estimation_change_sp": 0.0, "delivered_sp": 38.0, "delivered_items": 9,
-        }
-        return {
-            "sprints": [
-                {"target": False, "payload": {"metrics": dict(metrics)}},
-                {"target": True, "payload": {"metrics": dict(metrics)}},
-            ],
-            "kpi": {},
-            "forecast": {
-                "warnings": [], "throughput_cv_pct": 10.0, "percentiles": [],
-                "target_items": 5, "sample_sprints": 5, "sample_days": 50, "histogram": [],
-            },
-            "forecast_error": None,
-            "engineering": {"available": False},
-            "personal": {"available": False},
-        }
+class ContractTest(unittest.TestCase):
+    def test_missing_top_level_key_raises_template_error(self):
+        report = load_fixture()
+        del report["board_kpi"]
+        with self.assertRaises(rh.TemplateError):
+            rh.render_html(report)
 
-    def test_healthy_fixture_says_no_obvious_problems(self):
-        ctx: dict = {}
-        rh.build_recommendations(self._healthy_report(), ctx)
-        block = ctx["RECOMMENDATIONS_BLOCK"]
-        self.assertIn("явных проблем не видно", block)
-        self.assertIn('class="reco-none"', block)
-        self.assertNotIn('class="reco-list"', block)
+    def test_missing_sprint_axis_raises(self):
+        report = load_fixture()
+        del report["sprint_axis"]
+        with self.assertRaises(rh.TemplateError):
+            rh.render_html(report)
 
-    def test_unhealthy_fixture_names_the_triggering_metric_and_value(self):
-        # build_multi_sprint_report(with_gitlab=True) genuinely has
-        # load_pct=26.67% (under-committed vs SMA5) and a 50% pipeline
-        # success rate — verified triggers, not invented.
-        report = build_multi_sprint_report(with_gitlab=True)
-        ctx: dict = {}
-        rh.build_recommendations(report, ctx)
-        block = ctx["RECOMMENDATIONS_BLOCK"]
-        self.assertIn('class="reco-list"', block)
-        self.assertIn("Загрузка (load_pct) = 26.67%", block)
-        self.assertIn("Успешность пайплайнов (pipelines.success_rate_pct) = 50", block)
-        self.assertIn("<b>Действие:</b>", block)
-        # ranked by severity: load_pct (75) must appear before pipelines (65)
-        self.assertLess(block.index("Загрузка (load_pct)"), block.index("Успешность пайплайнов"))
+    def test_no_target_sprint_raises(self):
+        report = load_fixture()
+        for s in report["sprint_axis"]:
+            s["target"] = False
+        with self.assertRaises(rh.TemplateError):
+            rh.render_html(report)
 
-    def test_forecast_unavailable_is_the_highest_severity_trigger(self):
-        report = self._healthy_report()
-        report["forecast"] = None
-        report["forecast_error"] = "ERR_FORECAST_NOT_ENOUGH_DATA"
-        ctx: dict = {}
-        rh.build_recommendations(report, ctx)
-        block = ctx["RECOMMENDATIONS_BLOCK"]
-        self.assertIn("Прогноз не построен", block)
-        self.assertIn("ERR_FORECAST_NOT_ENOUGH_DATA", block)
-        # highest severity (90) — must be the first item when others also fire
-        first_item = block.index('<li class="reco-item')
-        self.assertEqual(block.index("Прогноз не построен"), block.index("reco-metric", first_item) + len('reco-metric">'))
+    def test_people_unavailable_renders_reason_not_crash(self):
+        report = load_fixture()
+        report["people_available"] = False
+        report["people_reason_ru"] = "GitLab не настроен для этого запуска"
+        html = rh.render_html(report)
+        self.assertIn("GitLab не настроен для этого запуска", html)
+        assert_tags_balanced(self, html)
 
-    def test_rework_share_trigger_names_no_individual(self):
-        report = self._healthy_report()
-        report["personal"] = {
-            "available": True,
-            "data": {"people": [
-                {"user": "alice", "rework_share": 0.5},
-                {"user": "bob", "rework_share": 0.1},
-                {"user": "carol", "rework_share": None},
-            ]},
-        }
-        ctx: dict = {}
-        rh.build_recommendations(report, ctx)
-        block = ctx["RECOMMENDATIONS_BLOCK"]
-        self.assertIn("Доля переработок", block)
-        self.assertIn("1 из 3 участников", block)
-        self.assertNotIn("alice", block)
-        self.assertNotIn("bob", block)
-        self.assertNotIn("carol", block)
+    def test_engineering_unavailable_renders_reason_not_crash(self):
+        report = load_fixture()
+        report["engineering"] = {"available": False, "reason_ru": "GitLab не настроен", "pipelines": {}, "deployments": {}, "coverage": {}, "window_applied": {}, "by_sprint": []}
+        html = rh.render_html(report)
+        self.assertIn("GitLab не настроен", html)
+        assert_tags_balanced(self, html)
 
-    def test_recommendations_are_capped_at_seven(self):
-        # Fire every trigger at once and confirm the list never exceeds the
-        # documented cap, even though 8 conditions are true here.
-        report = self._healthy_report()
-        report["forecast"] = None
-        report["forecast_error"] = "ERR_FORECAST_NOT_ENOUGH_DATA"
-        m = report["sprints"][1]["payload"]["metrics"]
-        m.update(performance_pct=50.0, load_pct=200.0, scope_change_pct=40.0,
-                  committed_items=10, scope_removed_items=5)
+    def test_forecast_unavailable_renders_reason_not_crash(self):
+        report = load_fixture()
+        report["forecast"] = {"available": False, "error": {"code": "ERR_FORECAST_NOT_ENOUGH_DATA", "message_ru": "Недостаточно данных для прогноза.", "detail": None}}
+        html = rh.render_html(report)
+        self.assertIn("Недостаточно данных для прогноза.", html)
+        assert_tags_balanced(self, html)
+
+
+# --------------------------------------------------------------------------
+# Formatting primitives
+# --------------------------------------------------------------------------
+
+
+class FormattingTest(unittest.TestCase):
+    def test_fmt_num_strips_trailing_zeros(self):
+        self.assertEqual(rh.fmt_num(21.0, 1), "21")
+        self.assertEqual(rh.fmt_num(21.5, 1), "21.5")
+        self.assertEqual(rh.fmt_num(None, 1), rh.EM_DASH)
+
+    def test_fmt_pct(self):
+        self.assertEqual(rh.fmt_pct(83.3), "83.3%")
+        self.assertEqual(rh.fmt_pct(None), rh.EM_DASH)
+
+    def test_bool_ru(self):
+        self.assertEqual(rh.bool_ru(True), "да")
+        self.assertEqual(rh.bool_ru(False), "нет")
+        self.assertEqual(rh.bool_ru(None), rh.EM_DASH)
+
+    def test_esc_escapes_hostile_input(self):
+        hostile = "<script>alert(1)</script>&\"'"
+        out = rh.esc(hostile)
+        self.assertNotIn("<script>", out)
+        self.assertIn("&lt;script&gt;", out)
+
+    def test_auto_code_wrap_wraps_snake_case_only(self):
+        text = rh.esc("см. committed_sp и Обычный текст")
+        out = rh.auto_code_wrap(text)
+        self.assertIn("<code>committed_sp</code>", out)
+        self.assertIn("Обычный текст", out)
+
+    def test_id_safe_has_no_underscore(self):
+        self.assertNotIn("_", rh.id_safe("avg_estimates"))
+
+
+# --------------------------------------------------------------------------
+# §G new SVG builders
+# --------------------------------------------------------------------------
+
+
+class DonutSvgTest(unittest.TestCase):
+    def test_empty_when_total_zero(self):
+        self.assertIsNone(rh.build_donut_svg("c1", "T", [("A", 0), ("B", 0)], "0"))
+        self.assertIsNone(rh.build_donut_svg("c1", "T", [], "0"))
+
+    def test_share_math_and_deterministic_id(self):
+        svg = rh.build_donut_svg("chart-x", "T", [("A", 30), ("B", 70)], "100")
+        self.assertIsNotNone(svg)
+        self.assertIn('id="chart-x"', svg)
+        self.assertIn("30 (30.0%)", svg)
+        self.assertIn("70 (70.0%)", svg)
+        # same input -> byte-identical output (no global counters / random ids)
+        svg2 = rh.build_donut_svg("chart-x", "T", [("A", 30), ("B", 70)], "100")
+        self.assertEqual(svg, svg2)
+
+
+class HbarSvgTest(unittest.TestCase):
+    def test_none_row_prints_no_data(self):
+        svg = rh.build_hbar_svg("c1", "T", [("Alice", 5.0), ("Bob", None)])
+        self.assertIn("нет данных", svg)
+
+    def test_long_label_truncated_with_title(self):
+        long_name = "Александр Оченьдлинноеимя Фамилиев"
+        svg = rh.build_hbar_svg("c1", "T", [(long_name, 5.0)])
+        self.assertIn(f"<title>{long_name}</title>", svg)
+        self.assertIn("Александр Очень…", svg)  # visible text is the truncated form
+
+    def test_empty_items_returns_none(self):
+        self.assertIsNone(rh.build_hbar_svg("c1", "T", []))
+
+
+class GroupedStackedBarTest(unittest.TestCase):
+    def test_grouped_bar_empty(self):
+        self.assertIsNone(rh.build_grouped_bar_svg("c1", "T", [], []))
+        self.assertIsNone(rh.build_grouped_bar_svg("c1", "T", ["A"], []))
+
+    def test_stacked_bar_reference_line_present(self):
+        svg = rh.build_stacked_bar_svg("c1", "T", ["S1", "S2"], [("A", [10, 20]), ("B", [5, 5])], ref_line=100.0)
+        self.assertIsNotNone(svg)
+        self.assertIn("100", svg)
+        self.assertIn('class="c-marker"', svg)
+
+    def test_stacked_bar_segments_present_for_each_series(self):
+        svg = rh.build_stacked_bar_svg("c1", "T", ["S1"], [("A", [10]), ("B", [20]), ("C", [5])])
+        self.assertIn("A · S1: 10", svg)
+        self.assertIn("B · S1: 20", svg)
+        self.assertIn("C · S1: 5", svg)
+
+
+class VbarSvgTest(unittest.TestCase):
+    def test_single_ref_line(self):
+        svg = rh.build_vbar_svg("c1", "T", ["S1", "S2"], [80.0, 60.0], ref_line=80.0)
+        self.assertIn('class="c-marker"', svg)
+
+    def test_multiple_ref_lines_for_forecast_histogram(self):
+        svg = rh.build_vbar_svg("c1", "T", ["7", "9", "13"], [214, 2900, 1500], ref_lines=[(9, "P50"), (13, "P85"), (16, "P95")])
+        self.assertEqual(svg.count('class="c-marker"'), 3)
+
+    def test_empty_values_returns_none(self):
+        self.assertIsNone(rh.build_vbar_svg("c1", "T", [], []))
+
+    def test_none_value_skips_bar_but_keeps_label(self):
+        svg = rh.build_vbar_svg("c1", "T", ["S1", "S2"], [None, 5.0])
+        self.assertIsNotNone(svg)
+
+
+class MultilineSvgTest(unittest.TestCase):
+    def test_empty_when_all_none(self):
+        self.assertIsNone(rh.build_multiline_svg("c1", "T", ["S1", "S2"], [("A", [None, None])]))
+
+    def test_gaps_for_none_points(self):
+        svg = rh.build_multiline_svg("c1", "T", ["S1", "S2", "S3"], [("A", [1.0, None, 3.0])], show_trend=False)
+        self.assertIsNotNone(svg)
+        # only 2 real points -> 2 circles, and since they are non-adjacent no
+        # connecting path segment is drawn between them
+        self.assertEqual(svg.count("<circle"), 2)
+
+    def test_ols_trend_endpoints_known_series(self):
+        # y = 2x + 1 exactly over x=0,1,2 -> k=2, b=1 (hand-computed)
+        k, b = rh.ols_trend([(0, 1.0), (1, 3.0), (2, 5.0)])
+        self.assertAlmostEqual(k, 2.0)
+        self.assertAlmostEqual(b, 1.0)
+
+    def test_ols_trend_single_point(self):
+        k, b = rh.ols_trend([(0, 5.0)])
+        self.assertEqual((k, b), (0.0, 5.0))
+
+    def test_ols_trend_zero_variance_x(self):
+        k, b = rh.ols_trend([(0, 1.0), (0, 3.0)])
+        self.assertEqual(k, 0.0)
+        self.assertAlmostEqual(b, 2.0)
+
+    def test_show_trend_draws_dashed_line(self):
+        svg = rh.build_multiline_svg("c1", "T", ["S1", "S2", "S3"], [("A", [1.0, 2.0, 3.0])], show_trend=True)
+        self.assertIn('class="c-trend"', svg)
+
+    def test_deterministic_ids(self):
+        svg1 = rh.build_multiline_svg("chart-y", "T", ["S1", "S2"], [("A", [1.0, 2.0])])
+        svg2 = rh.build_multiline_svg("chart-y", "T", ["S1", "S2"], [("A", [1.0, 2.0])])
+        self.assertEqual(svg1, svg2)
+        self.assertIn('id="chart-y"', svg1)
+
+
+class ChartBlockTest(unittest.TestCase):
+    def test_none_svg_renders_empty_box(self):
+        block = rh.chart_block("c1", "Title", None, "hint text")
+        self.assertIn("Недостаточно данных для построения графика.", block)
+        self.assertIn("<p class=\"hint\">hint text</p>", block)
+
+    def test_real_svg_wrapped_with_hint_sibling(self):
+        svg = '<svg class="chart" id="c1"></svg>'
+        block = rh.chart_block("c1", "Title", svg, "hint text")
+        self.assertIn(svg, block)
+        self.assertTrue(block.rstrip().endswith("</div>"))
+        self.assertIn(f"{svg}<p class=\"hint\">hint text</p>", block)
+
+
+class WarnCatalogTest(unittest.TestCase):
+    def test_collects_every_code_message_pair_in_the_report(self):
+        report = load_fixture()
+        catalog = rh.warn_catalog(report)
+        self.assertIn("WARN_BASELINE_SHORT", catalog)
+        self.assertIn("WARN_OUTSIDE_SPRINTS", catalog)
+        self.assertIn("NOT_FOUND", catalog)
+        self.assertIn("FILTER_REJECTED_FALLBACK", catalog)
+        self.assertIn("PAGINATION_LIMIT", catalog)
+        self.assertTrue(all(isinstance(v, str) and v for v in catalog.values()))
+
+
+# --------------------------------------------------------------------------
+# Review findings regression tests
+# --------------------------------------------------------------------------
+
+
+class HtmlInjectionTest(unittest.TestCase):
+    """Finding 1 (CRITICAL): tab 08's parameters table used to emit a value
+    RAW whenever it happened to start with "<" — reachable via board.name
+    and params.sprint_names, both attacker-influenced Jira free text. This
+    is an end-to-end test through render_html(), not just esc() in
+    isolation, because the hole was in how a value reached esc(), not in
+    esc() itself."""
+
+    def test_hostile_board_name_renders_as_inert_text(self):
+        report = load_fixture()
+        report["board"]["name"] = '<img src=x onerror=alert(document.domain)>Team Board'
+        html = rh.render_html(report)
+        assert_tags_balanced(self, html)
+        self.assertNotIn("<img src=x", html)
+        self.assertIn("&lt;img src=x onerror=alert(document.domain)&gt;Team Board", html)
+
+    def test_hostile_sprint_name_renders_as_inert_text(self):
+        report = load_fixture()
+        report["params"]["sprint_ids"] = []
+        report["params"]["sprint_names"] = ["<script>alert(1)</script>"]
+        html = rh.render_html(report)
+        assert_tags_balanced(self, html)
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
+
+    def test_no_data_driven_raw_html_branch_left_in_renderer(self):
+        import inspect
+
+        source = inspect.getsource(rh)
+        self.assertNotIn("startswith('<')", source)
+        self.assertNotIn('startswith("<")', source)
+
+
+class ParamsTableEscapingTest(unittest.TestCase):
+    def test_tool_version_escaped_exactly_once(self):
+        """Finding 7: values used to be pre-escaped via esc_or_dash() and
+        then escaped again at render time, turning `&` into `&amp;amp;`."""
+        report = load_fixture()
+        report["params"]["tool_version"] = '3.0.0 "R&D"'
+        html = rh.render_html(report)
+        self.assertIn("3.0.0 &quot;R&amp;D&quot;", html)
+        self.assertNotIn("&amp;quot;", html)
+        self.assertNotIn("&amp;amp;", html)
+
+
+class DonutFullCircleTest(unittest.TestCase):
+    """Finding 2: a 100% (or 0%-after-filtering) share made the arc's start
+    and end points coincide, and SVG 1.1 F.6.2 drops such an arc entirely,
+    leaving an empty donut."""
+
+    def test_hundred_percent_share_renders_visible_ring(self):
+        svg = rh.build_donut_svg("c1", "T", [("Успешно", 100.0)], "100")
+        self.assertIsNotNone(svg)
+        self.assertIn('fill-rule="evenodd"', svg)
+        self.assertEqual(svg.count(" A "), 4)
+
+    def test_zero_percent_share_after_filtering_still_renders(self):
+        svg = rh.build_donut_svg("c1", "T", [("Успешно", 0), ("Не успешно", 100)], "100")
+        self.assertIsNotNone(svg)
+        self.assertIn('fill-rule="evenodd"', svg)
+
+    def test_single_segment_distribution_renders(self):
+        svg = rh.build_donut_svg("c1", "T", [("Task", 20)], "20")
+        self.assertIsNotNone(svg)
+        self.assertIn('fill-rule="evenodd"', svg)
+
+    def test_two_segment_donut_unaffected(self):
+        svg = rh.build_donut_svg("c1", "T", [("A", 30), ("B", 70)], "100")
+        self.assertNotIn("fill-rule", svg)
+
+
+class BreakdownTableStatusCategoryTest(unittest.TestCase):
+    def test_uses_shared_status_category_label_not_a_second_hardcoded_dict(self):
+        """Finding 4: build_breakdown_table used to carry its own
+        new/indeterminate/done/cancelled -> Russian dict instead of
+        report["labels"]["status_categories"] — an override in the JSON
+        would then disagree with the heatmap legend built from the shared
+        lookup."""
+        report = load_fixture()
+        report["labels"]["status_categories"]["done"] = "Кастомное Готово"
+        bd = {"rows": [{"key": "X-1", "final_status": "Done", "final_status_category": "done", "delivered": True}]}
+        table = rh.build_breakdown_table(report, bd)
+        self.assertIn("Кастомное Готово", table)
+        self.assertNotIn(">Готово<", table)
+
+
+class AxisLabelDecimalsTest(unittest.TestCase):
+    """Finding 5: Y-axis gridline labels were always rounded to a fixed
+    decimal count, independent of the actual step size, producing
+    duplicate adjacent labels whenever the step was smaller than 1."""
+
+    def test_whole_number_step_needs_no_decimals(self):
+        self.assertEqual(rh.axis_label_decimals([0, 1, 2, 3]), 0)
+
+    def test_fractional_step_gets_enough_decimals_to_stay_distinct(self):
+        self.assertEqual(rh.axis_label_decimals([0, 0.5, 1, 1.5, 2, 2.5]), 1)
+
+    def test_vbar_small_integer_series_has_no_duplicate_y_labels(self):
+        svg = rh.build_vbar_svg("c", "Throughput (задач)", ["S1", "S2", "S3"], [1, 2, 1])
+        labels = re.findall(r'<text class="c-unit-label"[^>]*>([^<]+)</text>', svg)
+        self.assertGreater(len(labels), 0)
+        self.assertEqual(len(labels), len(set(labels)), f"duplicate y-axis labels: {labels}")
+
+    def test_multiline_collapsed_range_has_no_duplicate_y_labels(self):
+        svg = rh.build_multiline_svg("c", "T", ["S1", "S2", "S3", "S4", "S5"], [("Rework", [2.9, 3.0, 3.05, 3.1, 3.12])], show_trend=False)
+        labels = re.findall(r'<text class="c-unit-label"[^>]*>([^<]+)</text>', svg)
+        self.assertGreater(len(labels), 0)
+        self.assertEqual(len(labels), len(set(labels)), f"duplicate y-axis labels: {labels}")
+
+
+class KpiTileStatusNoneTest(unittest.TestCase):
+    """Finding 6: status "none" means "no threshold defined for this tile",
+    not "no data" — the renderer printed the invented «нет базы» directly
+    under a real value, which reads as "there is no data"."""
+
+    def test_status_none_renders_no_invented_label(self):
+        tile = {"key": "x", "label_ru": "X", "value": 10.0, "unit_ru": "шт", "target_ru": None, "status": "none", "series": [], "hint_ru": "h"}
+        html = rh.build_kpi_tile_html(tile)
+        self.assertNotIn("нет базы", html)
+        self.assertIn('<div class="delta"></div>', html)
+
+    def test_status_good_still_shows_its_label(self):
+        tile = {"key": "x", "label_ru": "X", "value": 90.0, "unit_ru": "%", "target_ru": None, "status": "good", "series": [], "hint_ru": "h"}
+        html = rh.build_kpi_tile_html(tile)
+        self.assertIn("норма", html)
+
+    def test_fixture_render_has_no_invented_label(self):
+        report = load_fixture()
+        html = rh.render_html(report)
+        self.assertNotIn("нет базы", html)
+
+
+class DisplayNameForLoginTest(unittest.TestCase):
+    """Finding 8: GitLab MR-fetch-error rows showed a bare login even when
+    people[] carried a matching display_name for it."""
+
+    def test_mr_fetch_error_author_shown_by_display_name(self):
+        report = load_fixture()
+        html = rh.render_html(report)
+        m = re.search(r'<section class="section" id="sec-07-completeness">.*?</section>', html, re.S)
+        self.assertIsNotNone(m)
+        section = m.group(0)
+        self.assertIn("Ирина Петрова", section)
+        no_title = re.sub(r'title="[^"]*"', "", section)
+        self.assertNotIn("ipetrova", no_title)
+
+    def test_unknown_login_falls_back_to_the_login_itself(self):
+        report = load_fixture()
+        self.assertEqual(rh.display_name_for_login(report, "someone-not-in-people"), "someone-not-in-people")
+        self.assertEqual(rh.display_name_for_login(report, ""), "")
+
+
+class StackedBarNegativeValueTest(unittest.TestCase):
+    def test_negative_value_segments_stay_within_viewbox(self):
+        """Finding 9: a negative running sum pushed a rect's y/height
+        entirely outside the viewBox (fixed zero-at-bottom assumption)."""
+        svg = rh.build_stacked_bar_svg("c1", "T", ["a"], [("x", [-5.0]), ("y", [3.0])])
+        self.assertIsNotNone(svg)
+        vb = re.search(r'viewBox="0 0 (\d+) (\d+)"', svg)
+        vb_h = float(vb.group(2))
+        rects = re.findall(r'<rect[^>]*\sy="(-?[\d.]+)"[^>]*\sheight="([\d.]+)"', svg)
+        self.assertGreater(len(rects), 0)
+        for y_str, h_str in rects:
+            y, h = float(y_str), float(h_str)
+            self.assertGreaterEqual(y, 0)
+            self.assertLessEqual(y + h, vb_h)
+
+    def test_all_non_negative_values_unaffected(self):
+        svg1 = rh.build_stacked_bar_svg("c1", "T", ["S1"], [("A", [10]), ("B", [20])])
+        svg2 = rh.build_stacked_bar_svg("c1", "T", ["S1"], [("A", [10]), ("B", [20])])
+        self.assertEqual(svg1, svg2)
+        self.assertIn("A · S1: 10", svg1)
+        self.assertIn("B · S1: 20", svg1)
+
+
+class Tab05EmptyPeopleTest(unittest.TestCase):
+    """Finding 10: an empty people[] with people_available=True rendered a
+    heading with no body (05.4) and a one-column table of metric names with
+    no "нет данных" marker (05.3)."""
+
+    def test_empty_people_list_renders_standard_empty_state(self):
+        report = load_fixture()
+        report["people_available"] = True
+        report["people"] = []
+        html = rh.render_html(report)
+        assert_tags_balanced(self, html)
+        m1 = re.search(r'<section class="section" id="sec-05-table">.*?</section>', html, re.S)
+        self.assertIn('class="empty"', m1.group(0))
+        m2 = re.search(r'<section class="section" id="sec-05-dist">.*?</section>', html, re.S)
+        self.assertIn('class="empty"', m2.group(0))
+
+
+class FmtNumInfinityTest(unittest.TestCase):
+    """Finding 11: fmt_num/fmt_int called int() on the rounded value
+    unconditionally — NaN/Inf (both valid to json.loads by default) raised
+    a bare ValueError/OverflowError instead of the standard no-data dash."""
+
+    def test_fmt_num_handles_nan_and_inf(self):
+        self.assertEqual(rh.fmt_num(float("nan"), 1), rh.EM_DASH)
+        self.assertEqual(rh.fmt_num(float("inf"), 1), rh.EM_DASH)
+        self.assertEqual(rh.fmt_num(float("-inf"), 1), rh.EM_DASH)
+
+    def test_fmt_int_handles_nan_and_inf(self):
+        self.assertEqual(rh.fmt_int(float("nan")), rh.EM_DASH)
+        self.assertEqual(rh.fmt_int(float("inf")), rh.EM_DASH)
+        self.assertEqual(rh.fmt_int(float("-inf")), rh.EM_DASH)
+
+    def test_render_survives_nan_value_in_report(self):
+        report = load_fixture()
+        report["overview"]["pr_cycle_time_avg_hours"] = float("nan")
+        html = rh.render_html(report)
+        assert_tags_balanced(self, html)
+
+
+class GitlabWindowNullWordingTest(unittest.TestCase):
+    def test_null_gitlab_window_has_readable_wording(self):
+        """Finding 12: a null gitlab_window rendered em-dash/en-dash/em-dash
+        mashed together as the period text."""
+        report = load_fixture()
+        report["params"]["gitlab_window"] = None
+        html = rh.render_html(report)
+        self.assertNotIn(f"{rh.EM_DASH}–{rh.EM_DASH}", html)
+        self.assertIn("не определён", html)
+
+
+class Tab09CodeTableSplitTest(unittest.TestCase):
+    def test_report_codes_and_transport_codes_are_in_separate_tables(self):
+        """Finding 13: WARN_*/ERR_* report codes and transport/diagnostic
+        codes (HTTP_500, NOT_FOUND, ...) used to sit in one table."""
+        report = load_fixture()
+        html = rh.render_html(report)
+        m = re.search(r'<section class="section" id="sec-09-warnings">.*?</section>', html, re.S)
+        self.assertIsNotNone(m)
+        section = m.group(0)
+        idx_warn_heading = section.index("Коды предупреждений")
+        idx_warn_code = section.index("WARN_BASELINE_SHORT")
+        idx_transport_heading = section.index("Технические коды")
+        idx_transport_code = section.index("NOT_FOUND")
+        self.assertLess(idx_warn_heading, idx_warn_code)
+        self.assertLess(idx_warn_code, idx_transport_heading)
+        self.assertLess(idx_transport_heading, idx_transport_code)
+
+
+class Tab08FileInventoryTest(unittest.TestCase):
+    """Finding 14: the out/ file table was a static 21-row list rendered
+    unconditionally, over-reporting under --no-gitlab (7 CSVs never
+    written)."""
+
+    _GITLAB_ONLY_FILES = [
+        "gitlab_mrs.csv", "gitlab_pipelines.csv", "gitlab_deployments.csv",
+        "gitlab_coverage.csv", "gitlab_users.csv", "gitlab_by_sprint.csv", "report_merged.csv",
+    ]
+
+    def test_gitlab_only_files_dropped_when_engineering_unavailable(self):
+        report = load_fixture()
         report["engineering"] = {
-            "available": True,
-            "data": {
-                "pipelines": {"count": 10, "failed": 8, "success_rate_pct": 20.0, "per_project": []},
-                "deployments": {"count": 0, "failed": 0, "success_rate_pct": None, "per_project": []},
-                "coverage": {"coverage_avg_pct": None, "sample_count": 0, "per_project": []},
-            },
+            "available": False, "reason_ru": "GitLab не настроен",
+            "pipelines": {}, "deployments": {}, "coverage": {}, "window_applied": {}, "by_sprint": [],
         }
-        report["personal"] = {
-            "available": True,
-            "data": {"people": [{"user": "a", "rework_share": 0.9}, {"user": "b", "rework_share": 0.1}]},
-        }
-        ctx: dict = {}
-        rh.build_recommendations(report, ctx)
-        block = ctx["RECOMMENDATIONS_BLOCK"]
-        self.assertEqual(block.count('<li class="reco-item'), rh._RECO_MAX)
+        html = rh.render_html(report)
+        for name in self._GITLAB_ONLY_FILES:
+            self.assertNotIn(f"<code>{name}</code>", html, f"{name} should not be listed without GitLab")
 
-    def test_full_render_includes_a_reachable_printing_conclusions_section(self):
-        report = build_multi_sprint_report(with_gitlab=True)
-        out = rh.render_html(report)
-        self.assertIn('id="sec-conclusions"', out)
-        self.assertIn("Что можно улучшить", out)
-        self.assertIn("не вердикт по людям", out)
-        # outside every <div class="tabpanel" ...> gate, so it is visible
-        # regardless of which tab is selected — not a tab-body screen-reader
-        # trick, an unconditional section between </main> and <footer>.
-        self.assertLess(out.index("</main>"), out.index('id="sec-conclusions"'))
-        self.assertLess(out.index('id="sec-conclusions"'), out.index("<footer"))
+    def test_gitlab_files_present_when_engineering_available(self):
+        report = load_fixture()
+        html = rh.render_html(report)
+        for name in self._GITLAB_ONLY_FILES:
+            self.assertIn(f"<code>{name}</code>", html)
 
 
 if __name__ == "__main__":

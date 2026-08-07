@@ -48,5 +48,47 @@ class BuildHeatmapTests(unittest.TestCase):
         self.assertEqual(cell.status_category, "indeterminate")
 
 
+class EnrichedRowFieldsTests(unittest.TestCase):
+    """v2 heatmap rows (SPEC §B.8) carry epic_key/assignee/story_points/
+    qa_estimation/role/role_ru/labels/status_initial/status_end — no other
+    lookup should be needed to render a row."""
+
+    def _issue(self, **overrides):
+        base = dict(
+            key="PROJ-1", epic_key="PROJ-90", story_points=5.0, qa_estimation=2.0, role="BE",
+            labels=["ai-review"], assignee="amaksimenkov", membership_intervals=[], day_statuses=[],
+            status_initial="To Do", status_before_end="Done", status_end="Done",
+            committed=True, added=False, removed=False, delivered=True,
+        )
+        base.update(overrides)
+        return model.Issue(**base)
+
+    def test_row_carries_every_enrichment_field(self):
+        hm = heatmap.build_heatmap(1, [], [self._issue()], display_names={"amaksimenkov": "Александр Максименков"})
+        row = hm.rows[0]
+        self.assertEqual(row.epic_key, "PROJ-90")
+        self.assertEqual(row.assignee_login, "amaksimenkov")
+        self.assertEqual(row.assignee_display_name, "Александр Максименков")
+        self.assertEqual(row.story_points, 5.0)
+        self.assertEqual(row.qa_estimation, 2.0)
+        self.assertEqual(row.role, "BE")
+        self.assertEqual(row.role_ru, "Backend-разработчик")
+        self.assertEqual(row.labels, ["ai-review"])
+        self.assertEqual(row.status_initial, "To Do")
+        self.assertEqual(row.status_end, "Done")
+
+    def test_no_display_name_map_falls_back_to_login(self):
+        hm = heatmap.build_heatmap(1, [], [self._issue()])
+        self.assertEqual(hm.rows[0].assignee_display_name, "amaksimenkov")
+
+    def test_empty_role_gives_empty_role_ru_not_a_placeholder(self):
+        hm = heatmap.build_heatmap(1, [], [self._issue(role="", assignee="")])
+        self.assertEqual(hm.rows[0].role_ru, "")
+
+    def test_unknown_role_code_shown_as_is(self):
+        hm = heatmap.build_heatmap(1, [], [self._issue(role="ZZ")])
+        self.assertEqual(hm.rows[0].role_ru, "ZZ")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -24,6 +24,7 @@ DEFAULT_HISTORY_SPRINTS = 5
 MAX_HISTORY_SPRINTS = 20
 DEFAULT_SEED = 42
 DEFAULT_CONFIG_FILENAME = ".team-metrics.json"
+DEFAULT_OUT_DIR = "out"
 # Pre-2.0.0 name (the project was called jira-metrics-report before the
 # rename) -- kept only so init/doctor can point a user at a config file they
 # might not realize is now unused under its old name. Never read from.
@@ -96,6 +97,10 @@ class FileConfig:
     gitlab_projects: list[str] = field(default_factory=list)
     employees: list[str] = field(default_factory=list)
     final_statuses: list[str] = field(default_factory=lambda: list(DEFAULT_FINAL_STATUSES))
+    out_dir: str = ""
+    # status name -> Russian override shown in parentheses next to the
+    # original Jira status name (SPEC §E.8); never replaces it.
+    status_labels: dict[str, str] = field(default_factory=dict)
 
 
 def load_file_config(path: Optional[str]) -> FileConfig:
@@ -128,6 +133,8 @@ def load_file_config(path: Optional[str]) -> FileConfig:
     cfg.cancelled_statuses = list(cancelled) if cancelled else list(DEFAULT_CANCELLED_STATUSES)
     cfg.story_points_field_id = str(raw.get("story_points_field_id") or "")
     cfg.history_sprint_count = int(raw.get("history_sprint_count") or 0)
+    cfg.out_dir = str(raw.get("out_dir") or "")
+    cfg.status_labels = dict(raw.get("status_labels") or {})
     cfg.gitlab_projects = list(gitlab_raw.get("projects") or [])
     cfg.employees = list(raw.get("employees") or [])
     final_statuses = jira_raw.get("final_statuses")
@@ -226,6 +233,18 @@ def add_pipeline_args(p: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Skip the personal-metrics tab; engineering (team-level pipelines/deployments/coverage) still runs",
     )
+    p.add_argument(
+        "--out-dir",
+        default=None,
+        metavar="PATH",
+        help=f"Directory for collected data and reports (default: ./{DEFAULT_OUT_DIR})",
+    )
+    # No short -v: cli.py's top-level parser already uses -v for --version,
+    # and report_data.py's own CLI (this function is shared with it) has no
+    # short flags of its own either — keeping this one long-only avoids ever
+    # having to reconcile the two.
+    p.add_argument("--verbose", action="store_true", help="Verbose logs (DEBUG level)")
+    p.add_argument("--quiet", action="store_true", help="Errors only (ERROR level)")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -276,13 +295,16 @@ class RunConfig:
     no_personal: bool
     fetch_mr_details: bool
     fetch_pipeline_user: bool
+    out_dir: str
+    verbose: bool
+    quiet: bool
 
 
 def build_run_config_from_args(args: argparse.Namespace, environ: Optional[dict] = None) -> RunConfig:
     """Builds a RunConfig from an already-parsed Namespace holding at least the
     args `add_pipeline_args()` adds (sprint_ids/sprint_names/board_id/history/
     seed/target_items/iterations/config/no_gitlab/no_personal/no_mr_details/
-    no_pipeline_users).
+    no_pipeline_users/out_dir/verbose/quiet).
 
     `json_out`/`out_path` come from `args.json`/`args.out` when present,
     defaulting to False/None otherwise. report_data.py's own CLI (below)
@@ -327,6 +349,9 @@ def build_run_config_from_args(args: argparse.Namespace, environ: Optional[dict]
         no_personal=args.no_personal,
         fetch_mr_details=not getattr(args, "no_mr_details", False),
         fetch_pipeline_user=not getattr(args, "no_pipeline_users", False),
+        out_dir=(getattr(args, "out_dir", None) or file_config.out_dir or DEFAULT_OUT_DIR),
+        verbose=getattr(args, "verbose", False),
+        quiet=getattr(args, "quiet", False),
     )
 
 

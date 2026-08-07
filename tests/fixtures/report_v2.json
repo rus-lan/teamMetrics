@@ -1,0 +1,865 @@
+{
+  "schema_version": 2,
+  "board": { "id": 17, "name": "Team Board" },
+  "params": {
+    "sprint_ids": [411, 412],
+    "sprint_names": [],
+    "board_id": 17,
+    "history_sprint_count": 5,
+    "seed": 42,
+    "iterations": 5000,
+    "target_items_requested": null,
+    "target_items_resolved": 14,
+    "generated_at": "2026-06-17T10:00:00Z",
+    "tool_version": "3.0.0",
+    "out_dir": "out",
+    "no_gitlab": false,
+    "no_personal": false,
+    "gitlab_window": { "start": "2026-06-01T09:00:00Z", "end": "2026-06-19T18:00:00Z" },
+    "gitlab_request_count": 913,
+    "gitlab_fetch_mr_details": true,
+    "gitlab_fetch_pipeline_user": true
+  },
+  "warnings": [
+    { "code": "WARN_BASELINE_SHORT",
+      "message_ru": "Закрытых спринтов для базы меньше 5 — SMA5/загрузка считаются по имеющимся.",
+      "detail": null },
+    { "code": "WARN_SPRINT_ACTIVE_PARTIAL",
+      "message_ru": "Включён активный спринт — его метрики промежуточные.",
+      "detail": "Sprint 43" },
+    { "code": "WARN_OUTSIDE_SPRINTS",
+      "message_ru": "Часть записей завершена вне всех анализируемых спринтов и не попала в разрезы по спринтам.",
+      "detail": "MR: 2, пайплайнов: 12" }
+  ],
+  "sprint_axis": [
+    { "id": 410, "name": "Sprint 41", "state": "closed",
+      "start": "2026-06-01T09:00:00Z", "end": "2026-06-05T18:00:00Z", "target": false },
+    { "id": 411, "name": "Sprint 42", "state": "closed",
+      "start": "2026-06-08T09:00:00Z", "end": "2026-06-12T18:00:00Z", "target": true },
+    { "id": 412, "name": "Sprint 43", "state": "active",
+      "start": "2026-06-15T09:00:00Z", "end": "2026-06-19T18:00:00Z", "target": true }
+  ],
+  "sprints": [
+    {
+      "target": false,
+      "meta": {
+        "id": 410, "name": "Sprint 41", "board_id": 17, "board_name": "Team Board",
+        "state": "closed",
+        "start_at": "2026-06-01T09:00:00Z", "end_at": "2026-06-05T18:00:00Z",
+        "complete_at": "2026-06-05T18:30:00Z",
+        "working_days": ["2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05"]
+      },
+      "metrics": {
+        "committed_sp": 30.0, "committed_items": 10,
+        "delivered_sp": 24.0, "delivered_items": 8,
+        "performance_pct": 80.0, "load_pct": 0.0,
+        "scope_added_sp": 4.0, "scope_added_items": 2,
+        "scope_removed_sp": 2.0, "scope_removed_items": 1,
+        "scope_estimation_change_sp": 1.0, "scope_change_pct": 23.3,
+        "velocity_sp": 24.0, "velocity_sma5_sp": 0.0,
+        "throughput_items": 8, "closure_pct_items": 72.7, "closure_pct_sp": 75.0
+      },
+      "throughput_daily": [
+        { "date": "2026-06-03", "count": 3 },
+        { "date": "2026-06-04", "count": 2 },
+        { "date": "2026-06-05", "count": 3 }
+      ],
+      "warnings": [
+        { "code": "WARN_DIVISION_BY_ZERO",
+          "message_ru": "Знаменатель формулы равен нулю — метрика обнулена.",
+          "detail": "Загрузка, %" }
+      ]
+    },
+    {
+      "target": true,
+      "meta": {
+        "id": 411, "name": "Sprint 42", "board_id": 17, "board_name": "Team Board",
+        "state": "closed",
+        "start_at": "2026-06-08T09:00:00Z", "end_at": "2026-06-12T18:00:00Z",
+        "complete_at": "2026-06-12T19:02:00Z",
+        "working_days": ["2026-06-08", "2026-06-09", "2026-06-10", "2026-06-11", "2026-06-12"]
+      },
+      "metrics": {
+        "committed_sp": 34.0, "committed_items": 12,
+        "delivered_sp": 21.0, "delivered_items": 8,
+        "performance_pct": 61.8, "load_pct": 141.7,
+        "scope_added_sp": 5.0, "scope_added_items": 2,
+        "scope_removed_sp": 3.0, "scope_removed_items": 1,
+        "scope_estimation_change_sp": 2.0, "scope_change_pct": 29.4,
+        "velocity_sp": 21.0, "velocity_sma5_sp": 24.0,
+        "throughput_items": 8, "closure_pct_items": 61.5, "closure_pct_sp": 58.3
+      },
+      "throughput_daily": [
+        { "date": "2026-06-09", "count": 2 },
+        { "date": "2026-06-10", "count": 2 },
+        { "date": "2026-06-12", "count": 4 }
+      ],
+      "warnings": [
+        { "code": "WARN_BASELINE_SHORT",
+          "message_ru": "Закрытых спринтов для базы меньше 5 — SMA5/загрузка считаются по имеющимся.",
+          "detail": null }
+      ]
+    },
+    {
+      "target": true,
+      "meta": {
+        "id": 412, "name": "Sprint 43", "board_id": 17, "board_name": "Team Board",
+        "state": "active",
+        "start_at": "2026-06-15T09:00:00Z", "end_at": "2026-06-19T18:00:00Z",
+        "complete_at": null,
+        "working_days": ["2026-06-15", "2026-06-16", "2026-06-17"]
+      },
+      "metrics": {
+        "committed_sp": 28.0, "committed_items": 10,
+        "delivered_sp": 9.0, "delivered_items": 3,
+        "performance_pct": 32.1, "load_pct": 124.4,
+        "scope_added_sp": 2.0, "scope_added_items": 1,
+        "scope_removed_sp": 0.0, "scope_removed_items": 0,
+        "scope_estimation_change_sp": 0.0, "scope_change_pct": 7.1,
+        "velocity_sp": 9.0, "velocity_sma5_sp": 22.5,
+        "throughput_items": 3, "closure_pct_items": 27.3, "closure_pct_sp": 30.0
+      },
+      "throughput_daily": [
+        { "date": "2026-06-16", "count": 1 },
+        { "date": "2026-06-17", "count": 2 }
+      ],
+      "warnings": [
+        { "code": "WARN_SPRINT_ACTIVE_PARTIAL",
+          "message_ru": "Включён активный спринт — его метрики промежуточные.",
+          "detail": null },
+        { "code": "WARN_BASELINE_SHORT",
+          "message_ru": "Закрытых спринтов для базы меньше 5 — SMA5/загрузка считаются по имеющимся.",
+          "detail": null }
+      ]
+    }
+  ],
+  "board_kpi": {
+    "target_sprint_id": 412,
+    "forecast_available": true,
+    "tiles": [
+      { "key": "commitment", "label_ru": "Поставлено / обязательство (SP)",
+        "value_text": "9 / 28", "delivered_sp": 9.0, "committed_sp": 28.0,
+        "target_ru": null, "status": "none", "series": [24.0, 21.0, 9.0],
+        "hint_ru": "Сколько SP команда поставила к концу спринта против обязательства на его старте." },
+      { "key": "performance_pct", "label_ru": "Performance (Say/Do)",
+        "value": 32.1, "unit_ru": "%", "target_ru": "цель 80%", "status": "warn",
+        "series": [80.0, 61.8, 32.1],
+        "hint_ru": "Поставлено SP / обязательство SP × 100. Ниже 80% — предупреждение." },
+      { "key": "load_pct", "label_ru": "Загрузка",
+        "value": 124.4, "unit_ru": "%", "target_ru": "цель 80–100%", "status": "warn",
+        "series": [0.0, 141.7, 124.4],
+        "hint_ru": "Обязательство SP / Velocity SMA5 × 100. Вне 80–100% — предупреждение." },
+      { "key": "scope_change_pct", "label_ru": "Изменение объёма",
+        "value": 7.1, "unit_ru": "%", "target_ru": null, "status": "none",
+        "series": [23.3, 29.4, 7.1],
+        "hint_ru": "(Добавлено SP + |изменение оценок| + убрано SP) / обязательство SP × 100." },
+      { "key": "velocity_sma5_sp", "label_ru": "Velocity SMA5 (SP)",
+        "value": 24.0, "unit_ru": "SP", "target_ru": null, "status": "none",
+        "series": [0.0, 24.0, 22.5],
+        "hint_ru": "Средняя velocity до 5 предыдущих закрытых спринтов базы." },
+      { "key": "throughput_avg_items", "label_ru": "Средний throughput (задач)",
+        "value": 8.0, "unit_ru": "задач", "target_ru": null, "status": "none",
+        "series": [8, 8, 3],
+        "hint_ru": "Среднее число закрытых задач за спринт по базовым спринтам." },
+      { "key": "closure_pct_items", "label_ru": "% закрытия (задачи)",
+        "value": 27.3, "unit_ru": "%", "target_ru": null, "status": "none",
+        "series": [72.7, 61.5, 27.3],
+        "hint_ru": "Поставленные задачи / (обязательство + добавлено − убрано) × 100." },
+      { "key": "closure_pct_sp", "label_ru": "% закрытия (SP)",
+        "value": 30.0, "unit_ru": "%", "target_ru": null, "status": "none",
+        "series": [75.0, 58.3, 30.0],
+        "hint_ru": "Поставленные SP / (обязательство + добавлено − убрано) SP × 100." }
+    ]
+  },
+  "overview": {
+    "employees": 3,
+    "mr_total": 25,
+    "tasks_done_total": 34,
+    "pr_cycle_time_avg_hours": 19.7,
+    "task_cycle_time_avg_hours": 54.5,
+    "pipeline_success_rate_pct": 84.2,
+    "deploy_success_rate_pct": 92.0,
+    "defect_rate_pct": 23.5,
+    "issue_type_dist": { "Task": 20, "Bug": 8, "Story": 6 }
+  },
+  "burndown": [
+    { "sprint_id": 411, "sprint_name": "Sprint 42",
+      "points": [
+        { "date": "2026-06-08", "remaining_items": 12, "remaining_sp": 34.0, "ideal_sp": 34.0, "ideal_items": 12.0 },
+        { "date": "2026-06-09", "remaining_items": 10, "remaining_sp": 29.0, "ideal_sp": 25.5, "ideal_items": 9.0 },
+        { "date": "2026-06-10", "remaining_items": 8, "remaining_sp": 24.0, "ideal_sp": 17.0, "ideal_items": 6.0 },
+        { "date": "2026-06-11", "remaining_items": 8, "remaining_sp": 24.0, "ideal_sp": 8.5, "ideal_items": 3.0 },
+        { "date": "2026-06-12", "remaining_items": 4, "remaining_sp": 13.0, "ideal_sp": 0.0, "ideal_items": 0.0 }
+      ] },
+    { "sprint_id": 412, "sprint_name": "Sprint 43",
+      "points": [
+        { "date": "2026-06-15", "remaining_items": 10, "remaining_sp": 28.0, "ideal_sp": 28.0, "ideal_items": 10.0 },
+        { "date": "2026-06-16", "remaining_items": 9, "remaining_sp": 25.0, "ideal_sp": 21.0, "ideal_items": 7.5 },
+        { "date": "2026-06-17", "remaining_items": 7, "remaining_sp": 19.0, "ideal_sp": 14.0, "ideal_items": 5.0 }
+      ] }
+  ],
+  "heatmap": [
+    { "sprint_id": 411, "sprint_name": "Sprint 42",
+      "days": ["2026-06-08", "2026-06-09", "2026-06-10", "2026-06-11", "2026-06-12"],
+      "rows": [
+        { "issue_key": "PROJ-101", "epic_key": "PROJ-90",
+          "assignee_login": "amaksimenkov", "assignee_display_name": "Александр Максименков",
+          "story_points": 5.0, "qa_estimation": 2.0,
+          "role": "BE", "role_ru": "Backend-разработчик",
+          "labels": ["ai-review"],
+          "status_initial": "To Do", "status_end": "Done",
+          "cells": [
+            { "date": "2026-06-08", "status": "To Do", "status_category": "new" },
+            { "date": "2026-06-09", "status": "In Progress", "status_category": "indeterminate" },
+            { "date": "2026-06-10", "status": "In Progress", "status_category": "indeterminate" },
+            { "date": "2026-06-11", "status": "Тестирование", "status_category": "indeterminate" },
+            { "date": "2026-06-12", "status": "Done", "status_category": "done" }
+          ] },
+        { "issue_key": "PROJ-102", "epic_key": "",
+          "assignee_login": "aleksubbotin", "assignee_display_name": "Алексей Субботин",
+          "story_points": 3.0, "qa_estimation": 1.0,
+          "role": "FE", "role_ru": "Frontend-разработчик",
+          "labels": ["no-qa", "tech_bucket"],
+          "status_initial": "In Progress", "status_end": "Странный статус",
+          "cells": [
+            { "date": "2026-06-08", "status": "In Progress", "status_category": "indeterminate" },
+            { "date": "2026-06-09", "status": "In Progress", "status_category": "indeterminate" },
+            { "date": "2026-06-10", "status": "Странный статус", "status_category": "" },
+            { "date": "2026-06-11", "status": "Странный статус", "status_category": "" },
+            { "date": "2026-06-12", "status": "Странный статус", "status_category": "" }
+          ] }
+      ] },
+    { "sprint_id": 412, "sprint_name": "Sprint 43",
+      "days": ["2026-06-15", "2026-06-16", "2026-06-17"],
+      "rows": [
+        { "issue_key": "PROJ-110", "epic_key": "PROJ-90",
+          "assignee_login": "ipetrova", "assignee_display_name": "Ирина Петрова",
+          "story_points": 3.0, "qa_estimation": 1.0,
+          "role": "QA", "role_ru": "Инженер по тестированию",
+          "labels": ["Auto_ArchReview"],
+          "status_initial": "To Do", "status_end": "Done",
+          "cells": [
+            { "date": "2026-06-15", "status": "To Do", "status_category": "new" },
+            { "date": "2026-06-16", "status": "In Progress", "status_category": "indeterminate" },
+            { "date": "2026-06-17", "status": "Done", "status_category": "done" }
+          ] },
+        { "issue_key": "PROJ-111", "epic_key": "",
+          "assignee_login": "amaksimenkov", "assignee_display_name": "Александр Максименков",
+          "story_points": 5.0, "qa_estimation": 2.0,
+          "role": "BE", "role_ru": "Backend-разработчик",
+          "labels": ["toinfr", "tocs"],
+          "status_initial": "To Do", "status_end": "Cancelled",
+          "cells": [
+            { "date": "2026-06-15", "status": "To Do", "status_category": "new" },
+            { "date": "2026-06-16", "status": "To Do", "status_category": "new" },
+            { "date": "2026-06-17", "status": "Cancelled", "status_category": "cancelled" }
+          ] }
+      ] }
+  ],
+  "issue_breakdown": [
+    { "sprint_id": 411, "sprint_name": "Sprint 42",
+      "rows": [
+        { "key": "PROJ-101", "final_status": "Done", "final_status_category": "done", "delivered": true },
+        { "key": "PROJ-102", "final_status": "Странный статус", "final_status_category": "", "delivered": false },
+        { "key": "PROJ-103", "final_status": "In Progress", "final_status_category": "indeterminate", "delivered": false }
+      ] },
+    { "sprint_id": 412, "sprint_name": "Sprint 43",
+      "rows": [
+        { "key": "PROJ-110", "final_status": "Done", "final_status_category": "done", "delivered": true },
+        { "key": "PROJ-111", "final_status": "Cancelled", "final_status_category": "cancelled", "delivered": false }
+      ] }
+  ],
+  "forecast": {
+    "available": true,
+    "error": null,
+    "target_items": 14,
+    "target_items_source_ru": "Авто (незакрытые задачи активного спринта)",
+    "sample_sprints": 2,
+    "sample_days": 10,
+    "throughput_cv_pct": 63.4,
+    "cv_warning_ru": "Поток нестабилен (CV 63.4%). Относитесь к перцентилям с осторожностью.",
+    "sample_hint_ru": "Выборка: 2 спринтов, 10 дневных точек.",
+    "percentiles": [
+      { "percentile": 50, "days": 9, "label_ru": "P50 (дней)" },
+      { "percentile": 85, "days": 13, "label_ru": "P85 (дней)" },
+      { "percentile": 95, "days": 16, "label_ru": "P95 (дней)" }
+    ],
+    "histogram": [
+      { "days": 7, "count": 214 },
+      { "days": 9, "count": 2900 },
+      { "days": 13, "count": 1500 },
+      { "days": 16, "count": 386 }
+    ],
+    "warnings": [
+      { "code": "WARN_THROUGHPUT_UNSTABLE",
+        "message_ru": "Поток нестабилен — относитесь к перцентилям с осторожностью.",
+        "detail": null }
+    ]
+  },
+  "people_available": true,
+  "people_reason_ru": null,
+  "people": [
+    {
+      "login": "amaksimenkov",
+      "display_name": "Александр Максименков",
+      "display_name_source": "jira",
+      "metrics": {
+        "mr_count": 12, "mr_merged_count": 10, "mr_closed_count": 1,
+        "mr_merge_rate_pct": 83.3,
+        "mr_cycle_time_avg_hours": 20.1, "mr_cycle_time_median_hours": 14.0,
+        "mr_diff_size_avg": 240.5, "mr_diff_size_available_count": 12,
+        "mr_commits_avg": 3.2, "mr_commits_sum": 38.0,
+        "mr_changes_count_avg": 6.1, "mr_changes_count_sum": 73.0,
+        "tasks_done": 14, "issue_count": 14, "bug_count": 4, "defect_rate_pct": 28.6,
+        "task_cycle_time_avg_hours": 49.0, "task_cycle_time_median_hours": 40.2,
+        "rework_total": 3, "rework_tasks": 2, "rework_rate_pct": 14.3,
+        "story_points_total": 34.0, "story_points_avg": 2.4,
+        "qa_estimation_total": 10.0, "qa_estimation_avg": 0.7,
+        "linked_tasks": 9, "mr_with_jira_key": 11, "mr_per_task": 1.222,
+        "pipeline_success_rate_pct": 88.9
+      },
+      "issue_type_dist": { "Task": 8, "Bug": 4, "Story": 2 },
+      "warnings": [],
+      "by_sprint": [
+        { "sprint_id": 410, "sprint_name": "Sprint 41", "has_data": true,
+          "throughput": 5, "avg_cycle_time_hours": 44.0,
+          "story_points_total": 11.0, "qa_estimation_total": 3.0,
+          "rework_total": 1, "mr_count": 4, "avg_mr_cycle_hours": 16.5,
+          "avg_mr_changes_count": 5.0 },
+        { "sprint_id": 411, "sprint_name": "Sprint 42", "has_data": true,
+          "throughput": 5, "avg_cycle_time_hours": 52.0,
+          "story_points_total": 13.0, "qa_estimation_total": 4.0,
+          "rework_total": 1, "mr_count": 5, "avg_mr_cycle_hours": 22.0,
+          "avg_mr_changes_count": 6.5 },
+        { "sprint_id": 412, "sprint_name": "Sprint 43", "has_data": true,
+          "throughput": 4, "avg_cycle_time_hours": 50.0,
+          "story_points_total": 10.0, "qa_estimation_total": 3.0,
+          "rework_total": 1, "mr_count": 3, "avg_mr_cycle_hours": 21.0,
+          "avg_mr_changes_count": 7.0 }
+      ]
+    },
+    {
+      "login": "aleksubbotin",
+      "display_name": "Алексей Субботин",
+      "display_name_source": "jira",
+      "metrics": {
+        "mr_count": 8, "mr_merged_count": 7, "mr_closed_count": 0,
+        "mr_merge_rate_pct": 87.5,
+        "mr_cycle_time_avg_hours": 15.0, "mr_cycle_time_median_hours": 12.3,
+        "mr_diff_size_avg": null, "mr_diff_size_available_count": 0,
+        "mr_commits_avg": null, "mr_commits_sum": null,
+        "mr_changes_count_avg": null, "mr_changes_count_sum": null,
+        "tasks_done": 12, "issue_count": 12, "bug_count": 2, "defect_rate_pct": 16.7,
+        "task_cycle_time_avg_hours": 60.0, "task_cycle_time_median_hours": 55.0,
+        "rework_total": 4, "rework_tasks": 3, "rework_rate_pct": 25.0,
+        "story_points_total": 28.0, "story_points_avg": 2.3,
+        "qa_estimation_total": 8.0, "qa_estimation_avg": 0.7,
+        "linked_tasks": 6, "mr_with_jira_key": 7, "mr_per_task": 1.167,
+        "pipeline_success_rate_pct": 76.9
+      },
+      "issue_type_dist": { "Task": 8, "Bug": 2, "Story": 2 },
+      "warnings": [
+        { "code": "WARN_DIFF_STATS_UNAVAILABLE",
+          "message_ru": "GitLab не отдал размер диффа ни по одному MR — средний размер диффа показан как «нет данных».",
+          "detail": null },
+        { "code": "WARN_COMMITS_UNAVAILABLE",
+          "message_ru": "GitLab не отдал число коммитов ни по одному MR — метрики коммитов показаны как «нет данных».",
+          "detail": null },
+        { "code": "WARN_CHANGES_COUNT_UNAVAILABLE",
+          "message_ru": "GitLab не отдал число изменённых файлов ни по одному MR — вес MR показан как «нет данных».",
+          "detail": null }
+      ],
+      "by_sprint": [
+        { "sprint_id": 410, "sprint_name": "Sprint 41", "has_data": true,
+          "throughput": 4, "avg_cycle_time_hours": 58.0,
+          "story_points_total": 9.0, "qa_estimation_total": 2.0,
+          "rework_total": 2, "mr_count": 3, "avg_mr_cycle_hours": 14.0,
+          "avg_mr_changes_count": null },
+        { "sprint_id": 411, "sprint_name": "Sprint 42", "has_data": true,
+          "throughput": 4, "avg_cycle_time_hours": 62.0,
+          "story_points_total": 10.0, "qa_estimation_total": 3.0,
+          "rework_total": 1, "mr_count": 3, "avg_mr_cycle_hours": 15.5,
+          "avg_mr_changes_count": null },
+        { "sprint_id": 412, "sprint_name": "Sprint 43", "has_data": true,
+          "throughput": 4, "avg_cycle_time_hours": 60.0,
+          "story_points_total": 9.0, "qa_estimation_total": 3.0,
+          "rework_total": 1, "mr_count": 2, "avg_mr_cycle_hours": 16.0,
+          "avg_mr_changes_count": null }
+      ]
+    },
+    {
+      "login": "ipetrova",
+      "display_name": "Ирина Петрова",
+      "display_name_source": "gitlab",
+      "metrics": {
+        "mr_count": 5, "mr_merged_count": 4, "mr_closed_count": 1,
+        "mr_merge_rate_pct": 80.0,
+        "mr_cycle_time_avg_hours": 24.0, "mr_cycle_time_median_hours": 20.0,
+        "mr_diff_size_avg": 180.0, "mr_diff_size_available_count": 5,
+        "mr_commits_avg": 2.6, "mr_commits_sum": 13.0,
+        "mr_changes_count_avg": 4.4, "mr_changes_count_sum": 22.0,
+        "tasks_done": 8, "issue_count": 8, "bug_count": 2, "defect_rate_pct": 25.0,
+        "task_cycle_time_avg_hours": null, "task_cycle_time_median_hours": null,
+        "rework_total": 2, "rework_tasks": 2, "rework_rate_pct": 25.0,
+        "story_points_total": 18.0, "story_points_avg": 2.25,
+        "qa_estimation_total": 6.0, "qa_estimation_avg": 0.75,
+        "linked_tasks": 4, "mr_with_jira_key": 4, "mr_per_task": 1.0,
+        "pipeline_success_rate_pct": null
+      },
+      "issue_type_dist": { "Task": 4, "Bug": 2, "Story": 2 },
+      "warnings": [
+        { "code": "WARN_TASK_CYCLE_TIME_UNAVAILABLE",
+          "message_ru": "Ни у одной задачи нет вычислимого времени цикла (нет перехода «В работе» → финальный статус) — cycle time задач показан как «нет данных».",
+          "detail": null }
+      ],
+      "by_sprint": [
+        { "sprint_id": 410, "sprint_name": "Sprint 41", "has_data": false,
+          "throughput": null, "avg_cycle_time_hours": null,
+          "story_points_total": null, "qa_estimation_total": null,
+          "rework_total": null, "mr_count": null, "avg_mr_cycle_hours": null,
+          "avg_mr_changes_count": null },
+        { "sprint_id": 411, "sprint_name": "Sprint 42", "has_data": true,
+          "throughput": 4, "avg_cycle_time_hours": null,
+          "story_points_total": 9.0, "qa_estimation_total": 3.0,
+          "rework_total": 1, "mr_count": 3, "avg_mr_cycle_hours": 25.0,
+          "avg_mr_changes_count": 4.0 },
+        { "sprint_id": 412, "sprint_name": "Sprint 43", "has_data": true,
+          "throughput": 4, "avg_cycle_time_hours": null,
+          "story_points_total": 9.0, "qa_estimation_total": 3.0,
+          "rework_total": 1, "mr_count": 2, "avg_mr_cycle_hours": 23.0,
+          "avg_mr_changes_count": 5.0 }
+      ]
+    }
+  ],
+  "people_individual_jira": [
+    { "sprint_id": 411, "sprint_name": "Sprint 42",
+      "rows": [
+        { "assignee_login": "aleksubbotin", "assignee_display_name": "Алексей Субботин",
+          "committed_sp": 12.0, "committed_items": 4, "delivered_sp": 7.0, "delivered_items": 3,
+          "performance_pct": 58.3, "velocity_sp": 7.0, "throughput_items": 3,
+          "warnings": [] },
+        { "assignee_login": "amaksimenkov", "assignee_display_name": "Александр Максименков",
+          "committed_sp": 13.0, "committed_items": 5, "delivered_sp": 8.0, "delivered_items": 3,
+          "performance_pct": 61.5, "velocity_sp": 8.0, "throughput_items": 3,
+          "warnings": [] },
+        { "assignee_login": "ipetrova", "assignee_display_name": "Ирина Петрова",
+          "committed_sp": 7.0, "committed_items": 2, "delivered_sp": 6.0, "delivered_items": 2,
+          "performance_pct": 85.7, "velocity_sp": 6.0, "throughput_items": 2,
+          "warnings": [] },
+        { "assignee_login": "", "assignee_display_name": "Без исполнителя",
+          "committed_sp": 0.0, "committed_items": 0, "delivered_sp": 0.0, "delivered_items": 0,
+          "performance_pct": 0.0, "velocity_sp": 0.0, "throughput_items": 0,
+          "warnings": [
+            { "code": "WARN_DIVISION_BY_ZERO",
+              "message_ru": "Знаменатель формулы равен нулю — метрика обнулена.",
+              "detail": "Performance, %" }
+          ] }
+      ] },
+    { "sprint_id": 412, "sprint_name": "Sprint 43",
+      "rows": [
+        { "assignee_login": "amaksimenkov", "assignee_display_name": "Александр Максименков",
+          "committed_sp": 12.0, "committed_items": 4, "delivered_sp": 4.0, "delivered_items": 1,
+          "performance_pct": 33.3, "velocity_sp": 4.0, "throughput_items": 1,
+          "warnings": [] },
+        { "assignee_login": "ipetrova", "assignee_display_name": "Ирина Петрова",
+          "committed_sp": 9.0, "committed_items": 3, "delivered_sp": 5.0, "delivered_items": 2,
+          "performance_pct": 55.6, "velocity_sp": 5.0, "throughput_items": 2,
+          "warnings": [] }
+      ] }
+  ],
+  "engineering": {
+    "available": true,
+    "reason_ru": null,
+    "pipelines": {
+      "count": 120, "failed": 19, "success_rate_pct": 84.2, "per_week": 20.5,
+      "per_project": [
+        { "project": "group/app", "count": 80, "failed": 12, "success_rate_pct": 85.0, "warnings": [] },
+        { "project": "group/lib", "count": 40, "failed": 7, "success_rate_pct": 82.5, "warnings": [] }
+      ],
+      "warnings": []
+    },
+    "deployments": {
+      "count": 25, "failed": 2, "success_rate_pct": 92.0, "per_week": 4.3,
+      "per_project": [
+        { "project": "group/app", "count": 15, "failed": 1, "success_rate_pct": 93.3, "warnings": [] },
+        { "project": "group/lib", "count": 10, "failed": 1, "success_rate_pct": 90.0, "warnings": [] }
+      ],
+      "warnings": []
+    },
+    "coverage": {
+      "coverage_avg_pct": 55.0, "sample_count": 2,
+      "per_project": [
+        { "project": "group/app", "coverage_avg_pct": 61.0, "sample_count": 1 },
+        { "project": "group/lib", "coverage_avg_pct": 49.0, "sample_count": 1 }
+      ],
+      "warnings": []
+    },
+    "window_applied": {
+      "merge_requests": true, "pipelines": true, "deployments": true, "coverage": true
+    },
+    "by_sprint": [
+      { "sprint_id": 410, "sprint_name": "Sprint 41",
+        "pipeline_count": 40, "pipeline_success_rate_pct": 85.0,
+        "deployment_count": 8, "deployment_success_rate_pct": 100.0,
+        "mr_count": 7, "mr_merged_count": 6,
+        "avg_mr_cycle_time_hours": 15.4, "avg_mr_changes_count": 5.0 },
+      { "sprint_id": 411, "sprint_name": "Sprint 42",
+        "pipeline_count": 45, "pipeline_success_rate_pct": 84.4,
+        "deployment_count": 10, "deployment_success_rate_pct": 90.0,
+        "mr_count": 11, "mr_merged_count": 9,
+        "avg_mr_cycle_time_hours": 20.8, "avg_mr_changes_count": 5.5 },
+      { "sprint_id": 412, "sprint_name": "Sprint 43",
+        "pipeline_count": 35, "pipeline_success_rate_pct": 82.9,
+        "deployment_count": 7, "deployment_success_rate_pct": 85.7,
+        "mr_count": 7, "mr_merged_count": 6,
+        "avg_mr_cycle_time_hours": 20.0, "avg_mr_changes_count": 6.0 }
+    ]
+  },
+  "team_series": [
+    { "key": "throughput", "title_ru": "Throughput по спринтам", "unit_ru": "задач",
+      "hint_ru": "Сколько задач завершено в каждом спринте. Резкое падение к концу периода может значить, что спринт ещё не закончен; устойчивый тренд вниз — повод разобраться.",
+      "show_trend": true,
+      "series": [ { "key": "tasks_done", "name_ru": "Завершено задач", "values": [9, 13, 12] } ] },
+    { "key": "task_cycle_time", "title_ru": "Cycle time по спринтам, ч", "unit_ru": "часы",
+      "hint_ru": "Если cycle time растёт от спринта к спринту — команда замедляется. Медиана устойчивее среднего к выбросам.",
+      "show_trend": true,
+      "series": [
+        { "key": "avg", "name_ru": "Среднее", "values": [51.0, 58.7, 55.0] },
+        { "key": "median", "name_ru": "Медиана", "values": [47.0, 55.0, 52.0] }
+      ] },
+    { "key": "rework", "title_ru": "Rework по спринтам", "unit_ru": "возвраты",
+      "hint_ru": "Сколько раз задачи возвращались в работу в каждом спринте. Рост rework при росте скорости — сигнал, что качество с первого раза падает.",
+      "show_trend": true,
+      "series": [ { "key": "rework_total", "name_ru": "Возвратов в работу", "values": [3, 3, 3] } ] },
+    { "key": "rework_rate", "title_ru": "Rework rate по спринтам, %", "unit_ru": "%",
+      "hint_ru": "Доля задач с хотя бы одним возвратом. Чем выше — тем больше переделок.",
+      "show_trend": true,
+      "series": [ { "key": "rework_rate_pct", "name_ru": "Rework rate", "values": [33.3, 23.1, 25.0] } ] },
+    { "key": "mr", "title_ru": "MR по спринтам", "unit_ru": "шт",
+      "hint_ru": "Сколько merge request'ов открыто и сколько дошло до merge в каждом спринте.",
+      "show_trend": true,
+      "series": [
+        { "key": "mr_count", "name_ru": "Всего MR", "values": [7, 11, 7] },
+        { "key": "mr_merged_count", "name_ru": "Доведено до merge", "values": [6, 9, 6] }
+      ] },
+    { "key": "pr_cycle_time", "title_ru": "PR cycle time по спринтам, ч", "unit_ru": "часы",
+      "hint_ru": "Среднее время MR от открытия до merge. Рост от спринта к спринту — код дольше дожидается проверки/деплоя (выкатки).",
+      "show_trend": true,
+      "series": [ { "key": "avg_mr_cycle_time_hours", "name_ru": "PR cycle time", "values": [15.4, 20.8, 20.0] } ] },
+    { "key": "pipelines_deployments", "title_ru": "Пайплайны и деплои по спринтам", "unit_ru": "шт",
+      "hint_ru": "Объём CI/CD-активности. Резкие всплески без роста выпускаемых задач — признак переделок и повторных запусков.",
+      "show_trend": false,
+      "series": [
+        { "key": "pipeline_count", "name_ru": "Пайплайны", "values": [40, 45, 35] },
+        { "key": "deployment_count", "name_ru": "Деплои", "values": [8, 10, 7] }
+      ] },
+    { "key": "ci_deploy_success", "title_ru": "Успешность CI и деплоев, %", "unit_ru": "%",
+      "hint_ru": "Доля успешных пайплайнов и деплоев. Падение при растущем темпе — качество досталось ценой стабильности.",
+      "show_trend": false,
+      "series": [
+        { "key": "pipeline_success_rate_pct", "name_ru": "Пайплайны", "values": [85.0, 84.4, 82.9] },
+        { "key": "deployment_success_rate_pct", "name_ru": "Деплои", "values": [100.0, 90.0, 85.7] }
+      ] },
+    { "key": "story_points_sum", "title_ru": "Story Points по спринтам (сумма)", "unit_ru": "SP",
+      "hint_ru": "Сколько «стори-поинтов» (относительной сложности) команда закрыла за спринт. Падение — меньше комплексной работы закрыто за спринт.",
+      "show_trend": true,
+      "series": [ { "key": "story_points_total", "name_ru": "Story Points", "values": [20.0, 32.0, 28.0] } ] },
+    { "key": "avg_estimates", "title_ru": "Средние оценки на задачу по спринтам", "unit_ru": "ед.",
+      "hint_ru": "Средняя сложность задачи и средние трудозатраты на тестирование. Каждый отдельный показатель читается только в сравнении с собственным baseline.",
+      "show_trend": false,
+      "series": [
+        { "key": "story_points_avg", "name_ru": "Story Points (ср.)", "values": [2.2, 2.5, 2.3] },
+        { "key": "qa_estimation_avg", "name_ru": "QA Estimation (ср.)", "values": [0.6, 0.8, 0.7] }
+      ] },
+    { "key": "mr_weight", "title_ru": "Средний вес MR (число файлов) по спринтам", "unit_ru": "файлов",
+      "hint_ru": "Сколько файлов в среднем трогали за спринт. Чем больше — тем шире зона доработки.",
+      "show_trend": true,
+      "series": [ { "key": "avg_mr_changes_count", "name_ru": "Файлов на MR", "values": [5.0, 5.5, 6.0] } ] }
+  ],
+  "people_series": [
+    { "key": "throughput_by_person", "title_ru": "Throughput по спринтам (по сотрудникам)", "unit_ru": "задач",
+      "hint_ru": "Сколько задач завершил каждый сотрудник. Расхождение линий — разный объём.",
+      "series": [
+        { "login": "amaksimenkov", "display_name": "Александр Максименков", "values": [5, 5, 4] },
+        { "login": "aleksubbotin", "display_name": "Алексей Субботин", "values": [4, 4, 4] },
+        { "login": "ipetrova", "display_name": "Ирина Петрова", "values": [null, 4, 4] }
+      ] },
+    { "key": "task_cycle_time_by_person", "title_ru": "Cycle time задач по спринтам (ср., ч)", "unit_ru": "часы",
+      "hint_ru": "Среднее время задачи в работе. Расхождение линий — разная скорость доставки.",
+      "series": [
+        { "login": "amaksimenkov", "display_name": "Александр Максименков", "values": [44.0, 52.0, 50.0] },
+        { "login": "aleksubbotin", "display_name": "Алексей Субботин", "values": [58.0, 62.0, 60.0] },
+        { "login": "ipetrova", "display_name": "Ирина Петрова", "values": [null, null, null] }
+      ] },
+    { "key": "rework_by_person", "title_ru": "Rework по спринтам (по сотрудникам)", "unit_ru": "возвраты",
+      "hint_ru": "Сколько раз задачи сотрудника возвращались в работу. Рост у одного при спаде у других — точечная проблема.",
+      "series": [
+        { "login": "amaksimenkov", "display_name": "Александр Максименков", "values": [1, 1, 1] },
+        { "login": "aleksubbotin", "display_name": "Алексей Субботин", "values": [2, 1, 1] },
+        { "login": "ipetrova", "display_name": "Ирина Петрова", "values": [null, 1, 1] }
+      ] },
+    { "key": "story_points_by_person", "title_ru": "Story Points по спринтам (сумма)", "unit_ru": "SP",
+      "hint_ru": "Сумма относительной сложности, закрытой каждым сотрудником.",
+      "series": [
+        { "login": "amaksimenkov", "display_name": "Александр Максименков", "values": [11.0, 13.0, 10.0] },
+        { "login": "aleksubbotin", "display_name": "Алексей Субботин", "values": [9.0, 10.0, 9.0] },
+        { "login": "ipetrova", "display_name": "Ирина Петрова", "values": [null, 9.0, 9.0] }
+      ] },
+    { "key": "qa_estimation_by_person", "title_ru": "QA Estimation по спринтам (сумма)", "unit_ru": "ед.",
+      "hint_ru": "Сумма оценок трудозатрат на тестирование, закрытых каждым сотрудником.",
+      "series": [
+        { "login": "amaksimenkov", "display_name": "Александр Максименков", "values": [3.0, 4.0, 3.0] },
+        { "login": "aleksubbotin", "display_name": "Алексей Субботин", "values": [2.0, 3.0, 3.0] },
+        { "login": "ipetrova", "display_name": "Ирина Петрова", "values": [null, 3.0, 3.0] }
+      ] },
+    { "key": "mr_count_by_person", "title_ru": "Число MR по спринтам (по сотрудникам)", "unit_ru": "шт",
+      "hint_ru": "Сколько merge request'ов довёл до merge каждый сотрудник.",
+      "series": [
+        { "login": "amaksimenkov", "display_name": "Александр Максименков", "values": [4, 5, 3] },
+        { "login": "aleksubbotin", "display_name": "Алексей Субботин", "values": [3, 3, 2] },
+        { "login": "ipetrova", "display_name": "Ирина Петрова", "values": [null, 3, 2] }
+      ] },
+    { "key": "pr_cycle_time_by_person", "title_ru": "PR cycle time по спринтам (ср., ч)", "unit_ru": "часы",
+      "hint_ru": "Среднее время MR от открытия до merge по каждому сотруднику.",
+      "series": [
+        { "login": "amaksimenkov", "display_name": "Александр Максименков", "values": [16.5, 22.0, 21.0] },
+        { "login": "aleksubbotin", "display_name": "Алексей Субботин", "values": [14.0, 15.5, 16.0] },
+        { "login": "ipetrova", "display_name": "Ирина Петрова", "values": [null, 25.0, 23.0] }
+      ] },
+    { "key": "mr_weight_by_person", "title_ru": "Средний вес MR по спринтам (файлов)", "unit_ru": "файлов",
+      "hint_ru": "Сколько файлов в среднем затрагивает MR сотрудника.",
+      "series": [
+        { "login": "amaksimenkov", "display_name": "Александр Максименков", "values": [5.0, 6.5, 7.0] },
+        { "login": "aleksubbotin", "display_name": "Алексей Субботин", "values": [null, null, null] },
+        { "login": "ipetrova", "display_name": "Ирина Петрова", "values": [null, 4.0, 5.0] }
+      ] }
+  ],
+  "export_tables": {
+    "heatmap": {
+      "header": ["Epic", "Issue", "Story Points", "QA Estimation", "Роль", "Labels",
+        "Before", "411 / 2026-06-08 / пн", "411 / 2026-06-09 / вт", "411 / 2026-06-10 / ср",
+        "411 / 2026-06-11 / чт", "411 / 2026-06-12 / пт", "End",
+        "Before", "412 / 2026-06-15 / пн", "412 / 2026-06-16 / вт", "412 / 2026-06-17 / ср", "End"],
+      "header_ru": ["Эпик", "Задача", "Story Points", "QA Estimation", "Роль", "Метки",
+        "До спринта", "411 / 2026-06-08 / пн", "411 / 2026-06-09 / вт", "411 / 2026-06-10 / ср",
+        "411 / 2026-06-11 / чт", "411 / 2026-06-12 / пт", "Конец",
+        "До спринта", "412 / 2026-06-15 / пн", "412 / 2026-06-16 / вт", "412 / 2026-06-17 / ср", "Конец"],
+      "rows": [
+        ["PROJ-90", "PROJ-101", "5", "2", "BE", "ai-review",
+         "To Do", "To Do", "In Progress", "In Progress", "Тестирование", "Done", "Done",
+         "", "", "", "", ""],
+        ["", "PROJ-110", "3", "1", "QA", "Auto_ArchReview",
+         "", "", "", "", "", "", "",
+         "To Do", "To Do", "In Progress", "Done", "Done"]
+      ],
+      "csv_filename": "heatmap.csv"
+    },
+    "board": {
+      "header": ["sprint", "state", "start", "end", "committed_sp", "delivered_sp", "added_sp",
+        "removed_sp", "estimation_change_sp", "performance_pct", "load_pct", "scope_change_pct",
+        "velocity_sp", "sma5_sp", "throughput_count", "closure_rate_count_pct", "closure_rate_sp_pct"],
+      "header_ru": ["Спринт", "Состояние", "Начало", "Конец", "Обязательство, SP", "Поставлено, SP",
+        "Добавлено, SP", "Убрано, SP", "Изменение оценок, SP", "Performance, %", "Загрузка, %",
+        "Изменение объёма, %", "Velocity, SP", "SMA5, SP", "Throughput, задач",
+        "% закрытия (задачи)", "% закрытия (SP)"],
+      "rows": [
+        ["Sprint 41", "closed", "2026-06-01", "2026-06-05", "30", "24", "4", "2", "1",
+         "80", "0", "23.3", "24", "0", "8", "72.7", "75"],
+        ["Sprint 42", "closed", "2026-06-08", "2026-06-12", "34", "21", "5", "3", "2",
+         "61.8", "141.7", "29.4", "21", "24", "8", "61.5", "58.3"],
+        ["Sprint 43", "active", "2026-06-15", "2026-06-19", "28", "9", "2", "0", "0",
+         "32.1", "124.4", "7.1", "9", "22.5", "3", "27.3", "30"]
+      ],
+      "csv_filename": "board.csv"
+    }
+  },
+  "glossary": [
+    { "term": "PR cycle time", "definition_ru": "Сколько времени в среднем MR ждёт от открытия до merge. Чем меньше — тем быстрее команда доводит изменения. Среднее чувствительно к «долгим» MR; медиана устойчивее." },
+    { "term": "Cycle time (Jira)", "definition_ru": "Время от взятия задачи в работу до закрытия. Ведущий показатель скорости доставки." },
+    { "term": "Throughput", "definition_ru": "Число завершённых задач за период. Объём результата команды." },
+    { "term": "Rework", "definition_ru": "Возврат задачи в работу после того, как её уже посчитали сделанной. Много возвратов = низкое качество с первого раза." },
+    { "term": "Defect rate", "definition_ru": "Доля завершённых задач, закрытых как баг/ошибка. Выше — хуже качество поставки." },
+    { "term": "Доля успешных пайплайнов", "definition_ru": "Сколько запусков CI завершились успешно. Падение при росте скорости — сигнал, что скорость досталась ценой качества." },
+    { "term": "Доля успешных деплоев", "definition_ru": "Сколько выкатов прошло без сбоя. Частота и стабильность деплоев — ключевые DORA-метрики." },
+    { "term": "Покрытие тестами", "definition_ru": "Доля кода, покрытого автотестами. Чем выше — тем ниже риск регрессий." },
+    { "term": "Story Points", "definition_ru": "Относительная оценка сложности задачи. Не переводится в часы напрямую: это мера объёма усилий в масштабе команды." },
+    { "term": "QA Estimation", "definition_ru": "Оценка трудозатрат на тестирование задачи (сколько усилий заложено на QA)." },
+    { "term": "Вес MR", "definition_ru": "Сколько файлов затронул реквест (поле changes_count). Косвенно показывает объём доработки: чем больше файлов — тем шире зона изменений." },
+    { "term": "Baseline (P0)", "definition_ru": "Исходные показатели за первый замеряемый период, с которым сравниваются последующие. Позволяет смотреть на динамику, а не на разовые значения." },
+    { "term": "Velocity", "definition_ru": "Сколько Story Points команда фактически поставила за спринт. Основа планирования следующих спринтов." },
+    { "term": "Velocity SMA5", "definition_ru": "Скользящее среднее velocity по пяти предыдущим закрытым спринтам. Сглаживает разовые всплески и провалы." },
+    { "term": "Performance (Say/Do)", "definition_ru": "Отношение поставленного к обещанному на старте спринта, в SP. 100% — сделали ровно что обещали; цель — от 80%." },
+    { "term": "Загрузка", "definition_ru": "Обязательство спринта относительно средней скорости команды (SMA5). 80–100% — здоровая загрузка; выше — перегруз, ниже — недогруз." },
+    { "term": "Изменение объёма", "definition_ru": "Насколько менялся состав спринта после старта: добавленные и убранные задачи плюс изменения оценок, относительно обязательства." },
+    { "term": "Прогноз Monte-Carlo", "definition_ru": "Симуляция: тысячи случайных «проигрываний» будущего на основе прошлых дневных закрытий. Даёт не одну дату, а вероятностные сроки (P50/P85/P95)." },
+    { "term": "CV (коэффициент вариации)", "definition_ru": "Мера нестабильности потока: разброс недельных сумм закрытий относительно их среднего, в процентах. Выше 50% — прогнозу доверять осторожно." }
+  ],
+  "metric_defs": [
+    { "key": "mr_count", "label_ru": "Число MR", "unit_ru": "шт", "comment_ru": "Сколько мерж-реквестов открыто за период.", "category": "gl", "is_pct": false, "scope": "both" },
+    { "key": "mr_merged_count", "label_ru": "MR, доведённых до merge", "unit_ru": "шт", "comment_ru": "Из них дошли до merge.", "category": "gl", "is_pct": false, "scope": "both" },
+    { "key": "mr_merge_rate_pct", "label_ru": "Доля merge-запросов", "unit_ru": "%", "comment_ru": "Доля открытых MR, дошедших до merge.", "category": "gl", "is_pct": true, "scope": "both" },
+    { "key": "mr_cycle_time_avg_hours", "label_ru": "PR cycle time (среднее)", "unit_ru": "часы", "comment_ru": "Среднее время от открытия MR до merge.", "category": "gl", "is_pct": false, "scope": "both" },
+    { "key": "mr_cycle_time_median_hours", "label_ru": "PR cycle time (медиана)", "unit_ru": "часы", "comment_ru": "Медиана времени MR — устойчивее к выбросам.", "category": "gl", "is_pct": false, "scope": "both" },
+    { "key": "mr_diff_size_avg", "label_ru": "Средний размер диффа", "unit_ru": "строк", "comment_ru": "additions + deletions в среднем на MR.", "category": "gl", "is_pct": false, "scope": "both" },
+    { "key": "mr_commits_avg", "label_ru": "Среднее число коммитов на MR", "unit_ru": "шт", "comment_ru": "Среднее число коммитов в одном MR.", "category": "gl", "is_pct": false, "scope": "both" },
+    { "key": "mr_changes_count_avg", "label_ru": "Средний вес MR (файлов)", "unit_ru": "шт", "comment_ru": "Сколько файлов в среднем затрагивает один MR.", "category": "gl", "is_pct": false, "scope": "both" },
+    { "key": "mr_changes_count_sum", "label_ru": "Суммарное число файлов", "unit_ru": "шт", "comment_ru": "Общий объём доработок за период (по числу файлов).", "category": "gl", "is_pct": false, "scope": "both" },
+    { "key": "tasks_done", "label_ru": "Завершённых задач", "unit_ru": "шт", "comment_ru": "Сколько задач доведено до done за период.", "category": "jira", "is_pct": false, "scope": "both" },
+    { "key": "task_cycle_time_avg_hours", "label_ru": "Cycle time задач (среднее)", "unit_ru": "часы", "comment_ru": "Среднее время задачи в работе.", "category": "jira", "is_pct": false, "scope": "both" },
+    { "key": "task_cycle_time_median_hours", "label_ru": "Cycle time задач (медиана)", "unit_ru": "часы", "comment_ru": "Медиана времени задачи.", "category": "jira", "is_pct": false, "scope": "both" },
+    { "key": "defect_rate_pct", "label_ru": "Defect rate", "unit_ru": "%", "comment_ru": "Доля задач, закрытых как баг/ошибка.", "category": "jira", "is_pct": true, "scope": "both" },
+    { "key": "rework_total", "label_ru": "Rework (всего возвратов)", "unit_ru": "шт", "comment_ru": "Сколько раз задачи возвращались в работу.", "category": "jira", "is_pct": false, "scope": "both" },
+    { "key": "rework_rate_pct", "label_ru": "Rework rate", "unit_ru": "%", "comment_ru": "Доля задач с хотя бы одним возвратом.", "category": "jira", "is_pct": true, "scope": "both" },
+    { "key": "story_points_total", "label_ru": "Сумма Story Points", "unit_ru": "шт", "comment_ru": "Сумма оценок сложности задач за период.", "category": "jira", "is_pct": false, "scope": "both" },
+    { "key": "story_points_avg", "label_ru": "Среднее Story Points на задачу", "unit_ru": "шт", "comment_ru": "Относительная оценка сложности в расчёте на задачу.", "category": "jira", "is_pct": false, "scope": "both" },
+    { "key": "qa_estimation_total", "label_ru": "Сумма QA Estimation", "unit_ru": "шт", "comment_ru": "Сумма оценок трудозатрат на тестирование.", "category": "jira", "is_pct": false, "scope": "both" },
+    { "key": "qa_estimation_avg", "label_ru": "Среднее QA Estimation на задачу", "unit_ru": "шт", "comment_ru": "Средние трудозатраты на тестирование задачи.", "category": "jira", "is_pct": false, "scope": "both" },
+    { "key": "linked_tasks", "label_ru": "Задач, связанных с MR", "unit_ru": "шт", "comment_ru": "Сколько задач нашли связь с MR по ключу (jira_key).", "category": "link", "is_pct": false, "scope": "both" },
+    { "key": "mr_per_task", "label_ru": "MR на задачу (среднее)", "unit_ru": "шт", "comment_ru": "Сколько в среднем MR приходится на связанную задачу.", "category": "link", "is_pct": false, "scope": "both" },
+    { "key": "pipelines_count", "label_ru": "Пайплайнов (всего)", "unit_ru": "шт", "comment_ru": "Число запусков CI за период.", "category": "infra", "is_pct": false, "scope": "team" },
+    { "key": "pipeline_success_rate_pct", "label_ru": "Доля успешных пайплайнов", "unit_ru": "%", "comment_ru": "Сколько пайплайнов завершилось успешно.", "category": "infra", "is_pct": true, "scope": "team" },
+    { "key": "pipelines_per_week", "label_ru": "Частота пайплайнов", "unit_ru": "шт/нед", "comment_ru": "Сколько пайплайнов в среднем в неделю.", "category": "infra", "is_pct": false, "scope": "team" },
+    { "key": "deployments_count", "label_ru": "Деплоев (всего)", "unit_ru": "шт", "comment_ru": "Число выкатов за период.", "category": "infra", "is_pct": false, "scope": "team" },
+    { "key": "deploy_success_rate_pct", "label_ru": "Доля успешных деплоев", "unit_ru": "%", "comment_ru": "Доля деплоев без сбоя.", "category": "infra", "is_pct": true, "scope": "team" },
+    { "key": "deployments_per_week", "label_ru": "Частота деплоев", "unit_ru": "шт/нед", "comment_ru": "Сколько деплоев в среднем в неделю.", "category": "infra", "is_pct": false, "scope": "team" },
+    { "key": "coverage_avg_pct", "label_ru": "Покрытие тестами", "unit_ru": "%", "comment_ru": "Среднее покрытие по пайплайнам (если есть).", "category": "infra", "is_pct": true, "scope": "team" }
+  ],
+  "risks": [
+    { "key": "defect_rate",
+      "title_ru": "Высокий defect rate",
+      "body_ru": "23.5% завершённых задач закрываются как баг/ошибка. Стоит больше тестировать и пересмотреть определение готовности." },
+    { "key": "coverage",
+      "title_ru": "Низкое покрытие тестами",
+      "body_ru": "Покрытие 55% — ниже 60%. Высокий риск регрессий при быстрых изменениях." }
+  ],
+  "labels": {
+    "roles": {
+      "FE": "Frontend-разработчик",
+      "BE": "Backend-разработчик",
+      "BA": "Бизнес-аналитик",
+      "SA": "Системный аналитик",
+      "QA": "Инженер по тестированию",
+      "TL": "Технический лидер (тимлид)"
+    },
+    "status_categories": {
+      "new": "To do",
+      "indeterminate": "В работе",
+      "done": "Готово",
+      "cancelled": "Отменено",
+      "unmapped": "Не сопоставлено"
+    },
+    "statuses": {
+      "To Do": { "category": "new", "category_ru": "To do", "override_ru": null },
+      "In Progress": { "category": "indeterminate", "category_ru": "В работе", "override_ru": null },
+      "Тестирование": { "category": "indeterminate", "category_ru": "В работе", "override_ru": "На тестировании" },
+      "Done": { "category": "done", "category_ru": "Готово", "override_ru": null },
+      "Cancelled": { "category": "cancelled", "category_ru": "Отменено", "override_ru": null },
+      "Странный статус": { "category": "", "category_ru": "Не сопоставлено", "override_ru": null }
+    },
+    "columns": {
+      "sprint": "Спринт",
+      "state": "Состояние",
+      "start": "Начало",
+      "end": "Конец",
+      "committed_sp": "Обязательство, SP",
+      "delivered_sp": "Поставлено, SP",
+      "added_sp": "Добавлено, SP",
+      "removed_sp": "Убрано, SP",
+      "estimation_change_sp": "Изменение оценок, SP",
+      "performance_pct": "Performance, %",
+      "load_pct": "Загрузка, %",
+      "scope_change_pct": "Изменение объёма, %",
+      "velocity_sp": "Velocity, SP",
+      "sma5_sp": "SMA5, SP",
+      "throughput_count": "Throughput, задач",
+      "closure_rate_count_pct": "% закрытия (задачи)",
+      "closure_rate_sp_pct": "% закрытия (SP)",
+      "committed_items": "Обязательство, задач",
+      "delivered_items": "Поставлено, задач",
+      "count": "Всего запусков",
+      "failed": "Упавших",
+      "success_rate_pct": "Доля успешных, %",
+      "per_week": "В неделю, шт",
+      "coverage_avg_pct": "Покрытие, %",
+      "sample_count": "Число замеров",
+      "per_project": "По проектам",
+      "window_applied": "Окно дат применено",
+      "project": "Проект",
+      "throughput": "Завершено задач",
+      "avg_cycle_time_hours": "Cycle (ср., ч)",
+      "avg_mr_cycle_hours": "PR cycle (ср., ч)",
+      "avg_mr_cycle_time_hours": "PR cycle (ср., ч)",
+      "avg_mr_changes_count": "Вес MR (файл.)",
+      "mr_merged_count": "Доведено до merge",
+      "pipeline_count": "Пайплайны",
+      "deployment_count": "Деплои",
+      "pipeline_success_rate_pct": "Успешность CI, %",
+      "deployment_success_rate_pct": "Успешность деплоев, %",
+      "sprint_ids": "Целевые спринты",
+      "sprint_names": "Целевые спринты",
+      "board_id": "Доска",
+      "history_sprint_count": "Спринтов истории",
+      "seed": "Seed",
+      "iterations": "Итераций Monte-Carlo",
+      "target_items_requested": "Целевое число задач (запрошено)",
+      "target_items_resolved": "Целевое число задач (вычислено)",
+      "generated_at": "Сформирован",
+      "tool_version": "Версия инструмента",
+      "out_dir": "Папка вывода",
+      "gitlab_window": "Окно GitLab",
+      "gitlab_request_count": "HTTP-запросов к GitLab",
+      "gitlab_fetch_mr_details": "Детали MR запрашивались",
+      "gitlab_fetch_pipeline_user": "Пользователи пайплайнов запрашивались",
+      "no_gitlab": "GitLab отключён",
+      "no_personal": "Персональные метрики отключены",
+      "calc_schema_version": "Версия схемы данных",
+      "employees": "Сотрудников",
+      "mr_total": "MR (всего)",
+      "tasks_done_total": "Завершённых задач",
+      "pr_cycle_time_avg_hours": "PR cycle time (средн.)",
+      "task_cycle_time_avg_hours": "Cycle time задач (средн.)",
+      "deploy_success_rate_pct": "Успешные деплои",
+      "mr_closed_count": "MR закрыто без merge",
+      "bug_count": "Из них багов",
+      "rework_tasks": "Задач с возвратами",
+      "issue_count": "Задач в расчёте cycle time",
+      "mr_with_jira_key": "MR с ключом Jira",
+      "mr_diff_size_available_count": "MR с данными о диффе",
+      "Epic": "Эпик",
+      "Issue": "Задача",
+      "Story Points": "Story Points",
+      "QA Estimation": "QA Estimation",
+      "Labels": "Метки",
+      "Before": "До спринта",
+      "End": "Конец"
+    },
+    "jira_label_note_ru": "Значение метки задаётся в вашей Jira — инструмент показывает её как есть."
+  },
+  "semantics_notes": [
+    "Привязка задачи к спринту: вкладка «Спринт» относит задачу к спринту по интервалам членства в поле Sprint (задача могла заходить и выходить из спринта несколько раз), а персональная и инженерная статистика — по дате завершения задачи, попавшей в календарные даты спринта. Для одной и той же задачи эти два способа могут указать на разные спринты.",
+    "Определение «сделано»: вкладка «Спринт» считает задачу выполненной, если на конец спринта её статус относится к категории Jira «done» (с учётом списка отменённых статусов). Персональная статистика считает задачу выполненной по первому попаданию в один из именованных финальных статусов, включая предрелизные «To Test» и «Ready to Deploy». Число выполненных задач по этим двум вкладкам не совпадает и не должно сравниваться напрямую.",
+    "Throughput (день сдачи задачи): вкладка «Спринт» берёт день ПОСЛЕДНЕГО перехода задачи в категорию «done» внутри спринта, а персональная статистика — день ПЕРВОГО перехода в финальный статус. При повторных переоткрытиях задачи эти даты могут разойтись на недели.",
+    "Story Points: вкладка «Спринт» показывает значение поля на момент выхода задачи из спринта (реплей истории изменений SP), а персональная статистика — текущее значение поля на момент выгрузки отчёта. Если оценку меняли уже после спринта, суммы SP по двум вкладкам разойдутся.",
+    "Период персональной и инженерной статистики: с версии 3.0.0 он покрывает все анализируемые спринты (базовые + целевые), а не только целевые. Суммарные числа по людям и CI/CD поэтому шире, чем метрики одного целевого спринта на вкладке «Спринт»."
+  ],
+  "gitlab_fetch_issues": {
+    "skipped_projects": [
+      { "project": "group/old-app", "code": "NOT_FOUND",
+        "message": "project id not returned",
+        "message_ru": "Проект не найден в GitLab — пропущен целиком." }
+    ],
+    "mr_fetch_errors": [
+      { "project": "group/app", "author": "ipetrova", "state": "merged",
+        "code": "HTTP_500", "message": "internal error",
+        "message_ru": "Не удалось получить MR этого автора в этом проекте — его данные по MR неполные." }
+    ],
+    "deployment_warnings": [
+      { "project": "group/app", "code": "FILTER_REJECTED_FALLBACK",
+        "message": "updated_after filter rejected by GitLab (HTTP 400); fell back to an unfiltered fetch",
+        "message_ru": "GitLab отклонил фильтр по дате — деплои получены без фильтра и отобраны на стороне инструмента; числа корректны, запросов ушло больше." },
+      { "project": "group/lib", "code": "PAGINATION_LIMIT",
+        "message": "deployment fetch stopped early: page cap reached",
+        "message_ru": "Список деплоев обрезан по лимиту страниц или времени — числа деплоев и их успешность занижены, не читайте их как полные." }
+    ]
+  }
+}

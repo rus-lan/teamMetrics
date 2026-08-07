@@ -16,7 +16,7 @@ from typing import Optional
 
 from . import model
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def ratio_pct(num: float, den: float) -> tuple[float, str]:
@@ -322,6 +322,59 @@ def build_kpi(
     kpi.forecast_available = non_zero >= min_non_zero_points
 
     return kpi, warnings
+
+
+@dataclass
+class IndividualMetrics:
+    """Port of the Go module's IndividualMetrics (individual.go:12-21) — one
+    assignee's slice of a single sprint's payload. Board-level values
+    (load_pct, scope_change_pct, velocity_sma5_sp) have no per-assignee
+    definition and are deliberately absent here (individual.go:8-11)."""
+
+    assignee: str = ""
+    committed_sp: float = 0.0
+    committed_items: int = 0
+    delivered_sp: float = 0.0
+    delivered_items: int = 0
+    performance_pct: float = 0.0
+    velocity_sp: float = 0.0
+    throughput_items: int = 0
+    warnings: list[str] = field(default_factory=list)
+
+
+def per_assignee_metrics(issues: list[model.Issue], cfg: model.StatusCategoryConfig) -> list[IndividualMetrics]:
+    """Groups one sprint's payload issues by `assignee` (empty string =
+    unassigned, itself a valid group — individual.go:23-24) and computes each
+    group's committed/delivered/performance/velocity/throughput the same way
+    compute_metrics() does for the whole sprint (SPEC §C.6)."""
+    groups: dict[str, list[model.Issue]] = {}
+    order: list[str] = []
+    for is_ in issues:
+        key = is_.assignee or ""
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(is_)
+
+    out: list[IndividualMetrics] = []
+    for assignee in sorted(order):
+        group = groups[assignee]
+        m = IndividualMetrics(assignee=assignee)
+        for is_ in group:
+            if is_.committed:
+                m.committed_sp += is_.story_points
+                m.committed_items += 1
+            if is_.delivered:
+                m.delivered_sp += is_.story_points
+                m.delivered_items += 1
+        m.performance_pct, w = ratio_pct(m.delivered_sp, m.committed_sp)
+        if w:
+            m.warnings.append(w)
+        m.velocity_sp = m.delivered_sp
+        throughput_daily = build_throughput_daily(group, cfg)
+        m.throughput_items = sum(td.count for td in throughput_daily)
+        out.append(m)
+    return out
 
 
 def status_unmapped_warning(sprints: list[Payload]) -> str:

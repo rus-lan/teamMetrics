@@ -116,13 +116,14 @@ def _require_utc(value: Optional[datetime], field_name: str) -> Optional[datetim
     letting a later comparison fail with a bare "can't compare offset-naive
     and offset-aware datetimes" TypeError.
 
-    Only awareness is enforced, not a literal zero UTC offset: the Jira
-    wiring this module documents as its input contract
-    (jira_client.py's `parse_jira_time`) keeps each timestamp's ORIGINAL
-    Jira-server offset (e.g. `+03:00`) rather than normalizing it to `Z` —
-    Python compares/subtracts differently-offset aware datetimes correctly,
-    so rejecting a valid non-UTC-but-aware value here would just trade one
-    spurious crash for another."""
+    Only awareness is enforced, not a specific offset: the Jira wiring this
+    module documents as its input contract (jira_client.py's
+    `parse_jira_time`) normalizes every timestamp to UTC before returning it,
+    so in practice every value reaching this module already has a zero
+    offset — checking `tzinfo`/`utcoffset()` here rather than a literal `==
+    UTC` still accepts any other aware value a duck-typed caller might pass,
+    since Python compares/subtracts differently-offset aware datetimes
+    correctly."""
     if value is None:
         return None
     if value.tzinfo is None or value.utcoffset() is None:
@@ -443,6 +444,12 @@ def personal_metrics(
         "task_cycle_time_median_hours": _median(task_cycle_vals),
         "rework_total": sum(f.rework_count for f in done_flows),
         "rework_tasks": rework_tasks,
+        # rework_share stays a 0..1 fraction, None on tasks_done==0 (this
+        # module's own convention). Schema v2's people[].metrics.rework_rate_pct
+        # (SPEC §B.13) is a DIFFERENT derivation the caller (report_data.py)
+        # computes itself from rework_tasks/tasks_done, 0..100, with the
+        # standard 0.0 + WARN_DIVISION_BY_ZERO convention on a zero
+        # denominator — never read off this field.
         "rework_share": _safe_div(rework_tasks, len(done_flows)),
         "story_points_total": _sum_or_none(sp_vals),
         "story_points_avg": _avg(sp_vals),
@@ -455,6 +462,11 @@ def personal_metrics(
         "linked_tasks": len(linked_keys),
         "mr_with_jira_key": mr_with_key,
         "mr_per_task": _safe_div(mr_with_key, len(linked_keys)),
+        # pipeline_success_rate stays 0..1, None when there is no data at all
+        # (this module's own convention). Schema v2's
+        # people[].metrics.pipeline_success_rate_pct (SPEC §B.13) is
+        # `round(pipeline_success_rate * 100, 1)`, still None on None — the
+        # caller (report_data.py) does that scaling, never this module.
         "pipeline_success_rate": personal_pipeline_success(user, pipelines),
         "warnings": warnings,
     }

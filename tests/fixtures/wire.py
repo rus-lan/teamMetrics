@@ -157,7 +157,7 @@ PROJ1_DTO = {
         "issuetype": {"name": "Story"},
         "created": "2025-11-20T08:00:00.000+0000",
         "labels": ["backend"],
-        "assignee": {"name": "alice"},
+        "assignee": {"name": "alice", "displayName": "Alice Anderson"},
         "resolutiondate": "2025-12-10T15:00:00.000+0000",
         SPRINT_FIELD_ID: [_sprint_field_entry(SPRINT_BASE1_ID, BOARD_ID, "closed", "Sprint 40")],
         STORY_POINTS_FIELD_ID: 5,  # plain JSON number (SPEC §2.4 decoding)
@@ -217,11 +217,10 @@ PROJ3_DTO = {
     "id": "30003",
     "key": PROJ3_KEY,
     "fields": {
-        "summary": "<script>alert(1)</script>",  # fetched (COMMON_SEARCH_FIELD_NAMES
-        # includes "summary") but never stored on RawIssue/IssueFacts and
-        # never reaches render_html.py — see the test module's docstring
-        # note on why the assignee, not this field, carries the escaping
-        # assertion.
+        "summary": "<script>alert(1)</script>",  # captured onto RawIssue/
+        # IssueFacts.summary (schema v2, jira_issues.csv) — the assignee,
+        # not this field, still carries the primary HTML-escaping assertion
+        # (see the test module's docstring).
         "status": STATUS_DONE,
         "issuetype": {"name": "Bug"},
         "created": "2025-12-20T09:00:00.000+0000",
@@ -250,7 +249,8 @@ ALL_ISSUE_DTOS = [PROJ1_DTO, PROJ2_DTO, PROJ3_DTO]
 
 MR_ALICE_MERGED = {
     "iid": 501, "title": "Fix checkout timeout PROJ-1", "description": "",
-    "author": {"username": "alice"}, "state": "merged", "web_url": "https://gitlab.example.com/team/checkout-web/-/merge_requests/501",
+    "author": {"username": "alice", "name": "Alice Anderson"}, "state": "merged",
+    "web_url": "https://gitlab.example.com/team/checkout-web/-/merge_requests/501",
     "source_branch": "fix/PROJ-1-timeout",
     "created_at": "2026-01-02T10:00:00.000Z", "merged_at": "2026-01-03T15:30:00.000Z", "closed_at": None,
     # additions/deletions/changes_count/commits deliberately absent — the

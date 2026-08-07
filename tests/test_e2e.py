@@ -72,6 +72,7 @@ import contextlib
 import html as html_lib
 import io
 import json
+import logging
 import os
 import re
 import tempfile
@@ -89,6 +90,56 @@ from fixtures import wire
 from fixtures.http_fake import FakeOpener
 
 UTC = timezone.utc
+
+# --------------------------------------------------------------------------
+# schema v2 / out/ inventory constants (SPEC .research/v3-redesign/SPEC.md
+# §B, §C.12, §H) — kept local to this file the same way the check-item name
+# constants above are: this module and test_cli.py are each a standalone
+# `unittest discover` module and deliberately don't import each other.
+# --------------------------------------------------------------------------
+
+# SPEC §H.2 — the exact top-level key set of a schema-v2 report.json, no
+# extras, nothing missing.
+TOP_LEVEL_SCHEMA_V2_KEYS = frozenset(
+    {
+        "schema_version", "board", "params", "warnings", "sprint_axis", "sprints", "board_kpi",
+        "overview", "burndown", "heatmap", "issue_breakdown", "forecast", "people_available",
+        "people_reason_ru", "people", "people_individual_jira", "engineering", "team_series",
+        "people_series", "export_tables", "glossary", "metric_defs", "risks", "labels",
+        "semantics_notes", "gitlab_fetch_issues",
+    }
+)
+
+# SPEC §C.12 — all 18 out/ CSV filenames `run` writes.
+ALL_CSV_NAMES = frozenset(
+    {
+        "gitlab_mrs.csv", "gitlab_pipelines.csv", "gitlab_deployments.csv", "gitlab_coverage.csv",
+        "gitlab_users.csv", "jira_users.csv", "jira_issues.csv", "jira_cycle_time.csv",
+        "jira_rework.csv", "jira_throughput.csv", "sprints.csv", "jira_by_sprint.csv",
+        "gitlab_by_sprint.csv", "report_per_employee.csv", "report_team.csv", "report_merged.csv",
+        "heatmap.csv", "board.csv",
+    }
+)
+# SPEC §H.12 — the CSVs that are GitLab-derived and therefore absent under
+# `--no-gitlab` (the 6 "gitlab_"-prefixed CSVs, plus report_merged.csv which
+# joins MRs to Jira issues).
+GITLAB_ONLY_CSV_NAMES = frozenset(
+    {
+        "gitlab_mrs.csv", "gitlab_pipelines.csv", "gitlab_deployments.csv", "gitlab_coverage.csv",
+        "gitlab_users.csv", "gitlab_by_sprint.csv", "report_merged.csv",
+    }
+)
+JIRA_ONLY_CSV_NAMES = ALL_CSV_NAMES - GITLAB_ONLY_CSV_NAMES
+
+# SPEC §C.12 — the 7 out/raw/*.json files a GitLab-configured run writes.
+ALL_RAW_JSON_NAMES = frozenset(
+    {
+        "jira_issue_facts.json", "jira_sprints.json", "gitlab_merge_requests.json",
+        "gitlab_pipelines.json", "gitlab_deployments.json", "gitlab_coverage.json",
+        "gitlab_fetch_issues.json",
+    }
+)
+JIRA_ONLY_RAW_JSON_NAMES = frozenset({"jira_issue_facts.json", "jira_sprints.json"})
 
 # Russian check-item names/status labels cli.py prints — mirrors the same
 # constants in test_cli.py; kept local here too since these two test modules
@@ -207,6 +258,75 @@ class _FrozenDateTime(datetime, metaclass=_FrozenDateTimeMeta):
 def _frozen_now():
     with unittest.mock.patch("team_metrics.report_data.datetime", _FrozenDateTime):
         yield
+
+
+@contextlib.contextmanager
+def _isolated_logging():
+    """`logging_setup.setup_logging()` is deliberately idempotent (SPEC): a
+    second call only updates the log level, it never attaches a second
+    `StreamHandler` — right for a real process, which calls it exactly once.
+    This test module calls `cli.main()` many times in ONE Python process,
+    so the very first call's handler stays permanently bound to whatever
+    `sys.stderr` object was live at that moment; a later
+    `contextlib.redirect_stderr(...)` swap does not move an already-attached
+    handler's stream. Stripping any existing `StreamHandler` off the
+    `"team_metrics"` logger before a logging-focused test forces the next
+    `setup_logging()` call (inside `cli.main()`) to attach a fresh handler
+    bound to the CURRENT (redirected) stderr, so the test can actually
+    observe the output. The `NullHandler` logging_setup.py installs at
+    import time is left alone."""
+    logger = logging.getLogger("team_metrics")
+    saved_handlers = list(logger.handlers)
+    saved_level = logger.level
+    logger.handlers = [h for h in saved_handlers if isinstance(h, logging.NullHandler)]
+    try:
+        yield
+    finally:
+        logger.handlers = saved_handlers
+        logger.setLevel(saved_level)
+
+
+def _assert_schema_v2_shape(testcase: unittest.TestCase, data: dict):
+    """SPEC §H.2/§H.3/§H.4: exact top-level key set, every aligned `values`
+    array matches `len(sprint_axis)`, and every `"warnings"` list anywhere in
+    the document holds only `{code, message_ru, detail}` objects — never a
+    bare string."""
+    testcase.assertEqual(data["schema_version"], metrics_mod.SCHEMA_VERSION)
+    testcase.assertEqual(set(data.keys()), TOP_LEVEL_SCHEMA_V2_KEYS, "schema v2 top-level key set drifted")
+
+    axis_len = len(data["sprint_axis"])
+    testcase.assertGreater(axis_len, 0)
+
+    for tile in data["board_kpi"]["tiles"]:
+        testcase.assertEqual(len(tile["series"]), axis_len, f"board_kpi tile {tile.get('key')!r} series misaligned")
+    for ts in data["team_series"]:
+        for series in ts["series"]:
+            testcase.assertEqual(len(series["values"]), axis_len, f"team_series {ts.get('key')!r}/{series.get('key')!r} misaligned")
+    for ps in data["people_series"]:
+        for series in ps["series"]:
+            testcase.assertEqual(len(series["values"]), axis_len, f"people_series {ps.get('key')!r} misaligned")
+    for person in data["people"]:
+        testcase.assertEqual(len(person["by_sprint"]), axis_len, f"people[{person.get('login')!r}].by_sprint misaligned")
+    if data["engineering"]["available"]:
+        testcase.assertEqual(len(data["engineering"]["by_sprint"]), axis_len, "engineering.by_sprint misaligned")
+
+    def _walk(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "warnings" and isinstance(value, list):
+                    for item in value:
+                        testcase.assertIsInstance(item, dict, f"bare warning entry (not an object): {item!r}")
+                        testcase.assertEqual(
+                            set(item.keys()), {"code", "message_ru", "detail"}, f"warning object has unexpected shape: {item!r}"
+                        )
+                        testcase.assertTrue(item["message_ru"], "warning object has empty message_ru")
+                else:
+                    _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(data)
 
 
 _RUN_ARGV = ["run", "--sprint-ids", str(wire.SPRINT_TARGET_ID), "--target-items", "5", "--seed", "42"]
@@ -380,8 +500,17 @@ class CheckE2ETests(unittest.TestCase):
 # --------------------------------------------------------------------------
 
 
+def _default_json_path(tmp: Path) -> Path:
+    return tmp / config_mod.DEFAULT_OUT_DIR / cli.DEFAULT_RUN_JSON_OUT
+
+
+def _default_html_path(tmp: Path) -> Path:
+    return tmp / config_mod.DEFAULT_OUT_DIR / cli.DEFAULT_RUN_HTML_OUT
+
+
 class RunAndReportE2ETests(unittest.TestCase):
-    # -- 3. run writes both files, sane JSON shape, sane + escaped HTML ----
+    # -- 3. run writes both files under ./out/, sane schema-v2 JSON shape,
+    #    sane + escaped HTML, all nine tabs present -----------------------
 
     def test_run_writes_json_and_html_with_expected_shape(self):
         opener = wire.build_opener()
@@ -389,23 +518,21 @@ class RunAndReportE2ETests(unittest.TestCase):
             code, out, err = _do_run(tmp, opener)
             self.assertEqual(code, 0, out + err)
 
-            json_path = tmp / cli.DEFAULT_RUN_JSON_OUT
-            html_path = tmp / cli.DEFAULT_RUN_HTML_OUT
-            self.assertTrue(json_path.exists())
-            self.assertTrue(html_path.exists())
+            json_path = _default_json_path(tmp)
+            html_path = _default_html_path(tmp)
+            self.assertTrue(json_path.exists(), "run must default report.json under ./out/")
+            self.assertTrue(html_path.exists(), "run must default report.html under ./out/")
+            # cli.py prints the full resolved path (e.g. "out/report.json"),
+            # of which DEFAULT_RUN_JSON_OUT/_HTML_OUT is always a substring.
             self.assertIn(cli.DEFAULT_RUN_JSON_OUT, out)
             self.assertIn(cli.DEFAULT_RUN_HTML_OUT, out)
 
             data = json.loads(json_path.read_text(encoding="utf-8"))
-            self.assertEqual(data["schema_version"], metrics_mod.SCHEMA_VERSION)
-            for key in (
-                "schema_version", "board", "sprints", "heatmaps", "burndowns", "kpi",
-                "forecast", "forecast_error", "warnings", "export", "params",
-                "personal", "engineering", "semantics_notes", "gitlab_fetch_issues",
-            ):
-                self.assertIn(key, data, f"missing top-level report key: {key}")
-            self.assertTrue(data["personal"]["available"])
+            _assert_schema_v2_shape(self, data)
+            self.assertTrue(data["people_available"])
+            self.assertIsNone(data["people_reason_ru"])
             self.assertTrue(data["engineering"]["available"])
+            self.assertIsNone(data["engineering"]["reason_ru"])
 
             # Proves the truncated-changelog re-fetch path actually ran, not
             # just that the search response happened to already carry the
@@ -425,6 +552,19 @@ class RunAndReportE2ETests(unittest.TestCase):
             _assert_html_well_formed(self, html_text)
             _assert_hostile_fixture_data_escaped(self, html_text)
 
+            # SPEC §H.7 — all nine tabs, exact Russian labels, one radio each.
+            for label in (
+                "01 Обзор", "02 Спринт", "03 Динамика команды", "04 Прогноз",
+                "05 Люди — сравнение", "06 Люди — динамика", "07 Инженерия",
+                "08 Данные", "09 Словарь и риски",
+            ):
+                self.assertIn(label, html_text, f"missing tab label: {label!r}")
+            # `name="report-tab"` scopes this to the 9 TAB radios specifically
+            # -- the burndown Задачи/SP unit toggle (SPEC §D tab 02) is a
+            # separate, per-target-sprint radio group and legitimately adds
+            # more `type="radio"` inputs to the document.
+            self.assertEqual(html_text.count('name="report-tab"'), 9, "expected exactly 9 tab radio inputs")
+
     # -- 4. report reproduces identical HTML, zero network, schema guard ----
 
     def test_report_reproduces_identical_html_with_zero_network_calls(self):
@@ -432,11 +572,11 @@ class RunAndReportE2ETests(unittest.TestCase):
         with _tempdir() as tmp:
             code, out, err = _do_run(tmp, opener)
             self.assertEqual(code, 0, out + err)
-            original_html = (tmp / cli.DEFAULT_RUN_HTML_OUT).read_text(encoding="utf-8")
+            original_html = _default_html_path(tmp).read_text(encoding="utf-8")
 
             with _forbidden_opener():
                 code2, out2, err2 = _run_main(
-                    ["report", str(tmp / cli.DEFAULT_RUN_JSON_OUT), "-o", str(tmp / "again.html")],
+                    ["report", str(_default_json_path(tmp)), "-o", str(tmp / "again.html")],
                     environ={},
                 )
             self.assertEqual(code2, 0, out2 + err2)
@@ -447,7 +587,7 @@ class RunAndReportE2ETests(unittest.TestCase):
         with _tempdir() as tmp:
             code, out, err = _do_run(tmp, opener)
             self.assertEqual(code, 0, out + err)
-            data = json.loads((tmp / cli.DEFAULT_RUN_JSON_OUT).read_text(encoding="utf-8"))
+            data = json.loads(_default_json_path(tmp).read_text(encoding="utf-8"))
             del data["schema_version"]
             bad_path = tmp / "bad_missing.json"
             bad_path.write_text(json.dumps(data), encoding="utf-8")
@@ -464,7 +604,7 @@ class RunAndReportE2ETests(unittest.TestCase):
         with _tempdir() as tmp:
             code, out, err = _do_run(tmp, opener)
             self.assertEqual(code, 0, out + err)
-            data = json.loads((tmp / cli.DEFAULT_RUN_JSON_OUT).read_text(encoding="utf-8"))
+            data = json.loads(_default_json_path(tmp).read_text(encoding="utf-8"))
             data["schema_version"] = data["schema_version"] + 999
             bad_path = tmp / "bad_bumped.json"
             bad_path.write_text(json.dumps(data), encoding="utf-8")
@@ -476,6 +616,30 @@ class RunAndReportE2ETests(unittest.TestCase):
             self.assertIn("schema_version", err2)
             self.assertFalse(out_path.exists())
 
+    def test_report_rejects_schema_v1_json_with_russian_message(self):
+        """SPEC §H.14 / §C.13, run against an actual pre-3.0.0-shaped v1
+        document (not just a bumped-integer variant of a v2 one): exit 1,
+        stderr names both required Russian phrases, no traceback, nothing
+        written."""
+        v1_doc = {
+            "schema_version": 1, "board": {"id": 1, "name": "Team Board"},
+            "sprints": [], "heatmaps": [], "burndowns": [], "kpi": {}, "forecast": None,
+            "forecast_error": None, "warnings": [], "export": {}, "params": {},
+            "personal": {"available": False, "reason": ""}, "engineering": {"available": False, "reason": ""},
+            "semantics_notes": [], "gitlab_fetch_issues": {},
+        }
+        with _tempdir() as tmp:
+            v1_path = tmp / "old_v1.json"
+            v1_path.write_text(json.dumps(v1_doc), encoding="utf-8")
+            out_path = tmp / "old_v1.html"
+            with _forbidden_opener():
+                code, _out, err = _run_main(["report", str(v1_path), "-o", str(out_path)], environ={})
+            self.assertEqual(code, 1)
+            self.assertIn("не поддерживается", err)
+            self.assertIn("пересоздайте его командой", err)
+            self.assertNotIn("Traceback", err)
+            self.assertFalse(out_path.exists())
+
     # -- 5. run --no-gitlab -------------------------------------------------
 
     def test_run_no_gitlab_marks_personal_and_engineering_unavailable(self):
@@ -485,11 +649,12 @@ class RunAndReportE2ETests(unittest.TestCase):
             code, out, err = _do_run(tmp, opener, argv=argv)
             self.assertEqual(code, 0, out + err)
 
-            data = json.loads((tmp / cli.DEFAULT_RUN_JSON_OUT).read_text(encoding="utf-8"))
-            self.assertFalse(data["personal"]["available"])
-            self.assertTrue(data["personal"]["reason"])
+            data = json.loads(_default_json_path(tmp).read_text(encoding="utf-8"))
+            _assert_schema_v2_shape(self, data)
+            self.assertFalse(data["people_available"])
+            self.assertTrue(data["people_reason_ru"])
             self.assertFalse(data["engineering"]["available"])
-            self.assertTrue(data["engineering"]["reason"])
+            self.assertTrue(data["engineering"]["reason_ru"])
             self.assertFalse(any(p.startswith("/api/v4") for p in opener.paths_called()), "GitLab endpoint hit despite --no-gitlab")
 
     # -- 6. GitLab AUTH_FAILED during run fails loudly -----------------------
@@ -501,8 +666,7 @@ class RunAndReportE2ETests(unittest.TestCase):
             code, out, err = _do_run(tmp, opener, environ=environ)
             self.assertNotEqual(code, 0, "a revoked GitLab token must fail the whole run, not degrade silently")
             self.assertIn("ошибка", (out + err).lower())
-            self.assertFalse((tmp / cli.DEFAULT_RUN_JSON_OUT).exists(), "must not write a report on a genuine GitLab fault")
-            self.assertFalse((tmp / cli.DEFAULT_RUN_HTML_OUT).exists())
+            self.assertFalse((tmp / config_mod.DEFAULT_OUT_DIR).exists(), "must not write ANY out/ artifact on a genuine GitLab fault")
             self.assertNotIn("revoked-gitlab-token", out + err)
             self.assertNotIn(wire.GITLAB_VALID_TOKEN, out + err)
 
@@ -512,17 +676,183 @@ class RunAndReportE2ETests(unittest.TestCase):
         with _tempdir() as tmp1:
             code1, out1, err1 = _do_run(tmp1, wire.build_opener())
             self.assertEqual(code1, 0, out1 + err1)
-            json1 = (tmp1 / cli.DEFAULT_RUN_JSON_OUT).read_text(encoding="utf-8")
-            html1 = (tmp1 / cli.DEFAULT_RUN_HTML_OUT).read_text(encoding="utf-8")
+            json1 = _default_json_path(tmp1).read_text(encoding="utf-8")
+            html1 = _default_html_path(tmp1).read_text(encoding="utf-8")
 
         with _tempdir() as tmp2:
             code2, out2, err2 = _do_run(tmp2, wire.build_opener())
             self.assertEqual(code2, 0, out2 + err2)
-            json2 = (tmp2 / cli.DEFAULT_RUN_JSON_OUT).read_text(encoding="utf-8")
-            html2 = (tmp2 / cli.DEFAULT_RUN_HTML_OUT).read_text(encoding="utf-8")
+            json2 = _default_json_path(tmp2).read_text(encoding="utf-8")
+            html2 = _default_html_path(tmp2).read_text(encoding="utf-8")
 
         self.assertEqual(json1, json2)
         self.assertEqual(html1, html2)
+
+    def test_rendering_the_same_json_twice_is_byte_identical(self):
+        """SPEC §H.13, second half: `report` itself is a pure function of its
+        input JSON — two independent renders of the fixture must match
+        byte-for-byte, zero network either time."""
+        fixture_path = Path(__file__).resolve().parent / "fixtures" / "report_v2.json"
+        with _tempdir() as tmp, _forbidden_opener():
+            out1 = tmp / "r1.html"
+            out2 = tmp / "r2.html"
+            code1, _o1, e1 = _run_main(["report", str(fixture_path), "-o", str(out1)], environ={})
+            code2, _o2, e2 = _run_main(["report", str(fixture_path), "-o", str(out2)], environ={})
+            self.assertEqual(code1, 0, e1)
+            self.assertEqual(code2, 0, e2)
+            self.assertEqual(out1.read_text(encoding="utf-8"), out2.read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------------------
+# 8. out/ inventory: full CSV+raw set, --out-dir relocation, no token leaks
+# --------------------------------------------------------------------------
+
+
+class OutInventoryE2ETests(unittest.TestCase):
+    def test_full_inventory_with_gitlab(self):
+        """SPEC §H.12: with GitLab configured and no fetch flags disabled,
+        `out/` holds exactly report.json + report.html + the 18 CSVs, and
+        `out/raw/` holds exactly the 7 raw JSON dumps — nothing else."""
+        opener = wire.build_opener()
+        with _tempdir() as tmp:
+            code, out, err = _do_run(tmp, opener)
+            self.assertEqual(code, 0, out + err)
+
+            out_dir = tmp / config_mod.DEFAULT_OUT_DIR
+            top_level = {p.name for p in out_dir.iterdir() if p.is_file()}
+            self.assertEqual(top_level, ALL_CSV_NAMES | {"report.json", "report.html"})
+
+            raw_dir = out_dir / "raw"
+            self.assertTrue(raw_dir.is_dir())
+            raw_files = {p.name for p in raw_dir.iterdir() if p.is_file()}
+            self.assertEqual(raw_files, ALL_RAW_JSON_NAMES)
+
+    def test_no_gitlab_drops_gitlab_only_files_but_still_exits_zero(self):
+        opener = wire.build_opener()
+        argv = list(_RUN_ARGV) + ["--no-gitlab"]
+        with _tempdir() as tmp:
+            code, out, err = _do_run(tmp, opener, argv=argv)
+            self.assertEqual(code, 0, out + err)
+
+            out_dir = tmp / config_mod.DEFAULT_OUT_DIR
+            top_level = {p.name for p in out_dir.iterdir() if p.is_file()}
+            self.assertEqual(top_level & GITLAB_ONLY_CSV_NAMES, set(), "GitLab-derived CSVs must be absent under --no-gitlab")
+            # report_per_employee.csv has no rows either (no `people` at all
+            # without GitLab) -- out_writer's own "empty rows never write a
+            # headerless file" rule skips it too, same reason, not a GitLab-
+            # named exception to carve out.
+            self.assertNotIn("report_per_employee.csv", top_level)
+            for name in JIRA_ONLY_CSV_NAMES - {"report_per_employee.csv"}:
+                self.assertIn(name, top_level, f"expected {name} to still be written under --no-gitlab")
+
+            raw_dir = out_dir / "raw"
+            raw_files = {p.name for p in raw_dir.iterdir() if p.is_file()}
+            self.assertEqual(raw_files, JIRA_ONLY_RAW_JSON_NAMES, "no GitLab raw dump under --no-gitlab")
+
+    def test_out_dir_flag_relocates_every_artifact(self):
+        opener = wire.build_opener()
+        argv = list(_RUN_ARGV) + ["--out-dir", "custom_artifacts"]
+        with _tempdir() as tmp:
+            code, out, err = _do_run(tmp, opener, argv=argv)
+            self.assertEqual(code, 0, out + err)
+
+            self.assertFalse((tmp / config_mod.DEFAULT_OUT_DIR).exists(), "default ./out/ must not be touched when --out-dir is given")
+            custom_dir = tmp / "custom_artifacts"
+            self.assertTrue(custom_dir.is_dir())
+            top_level = {p.name for p in custom_dir.iterdir() if p.is_file()}
+            self.assertEqual(top_level, ALL_CSV_NAMES | {"report.json", "report.html"})
+            raw_files = {p.name for p in (custom_dir / "raw").iterdir() if p.is_file()}
+            self.assertEqual(raw_files, ALL_RAW_JSON_NAMES)
+
+            data = json.loads((custom_dir / cli.DEFAULT_RUN_JSON_OUT).read_text(encoding="utf-8"))
+            self.assertEqual(data["params"]["out_dir"], "custom_artifacts")
+
+    def test_no_token_value_anywhere_under_out(self):
+        """A real leak risk now that `run` dumps raw upstream API responses
+        (out/raw/*.json) alongside 18 derived CSVs — walks EVERY file
+        actually written under out/ and greps its bytes for both fake
+        tokens, not just the JSON/HTML report the older assertions covered."""
+        opener = wire.build_opener()
+        with _tempdir() as tmp:
+            code, out, err = _do_run(tmp, opener)
+            self.assertEqual(code, 0, out + err)
+
+            out_dir = tmp / config_mod.DEFAULT_OUT_DIR
+            checked = 0
+            for path in out_dir.rglob("*"):
+                if not path.is_file():
+                    continue
+                checked += 1
+                content = path.read_bytes()
+                self.assertNotIn(
+                    wire.JIRA_VALID_TOKEN.encode("utf-8"), content, f"Jira token leaked into {path.relative_to(tmp)}"
+                )
+                self.assertNotIn(
+                    wire.GITLAB_VALID_TOKEN.encode("utf-8"), content, f"GitLab token leaked into {path.relative_to(tmp)}"
+                )
+            self.assertGreaterEqual(checked, 20, "sanity: expected at least 20 files under out/ (18 CSVs + json + html)")
+
+
+# --------------------------------------------------------------------------
+# 9. logging: --verbose adds DEBUG, --quiet silences INFO, stdout stays clean
+# --------------------------------------------------------------------------
+
+
+class LoggingE2ETests(unittest.TestCase):
+    _LOG_LINE_RE = re.compile(r"^\d{2}:\d{2}:\d{2} \[(?P<level>[A-Z]+)\] ", re.MULTILINE)
+
+    def _log_levels_seen(self, text: str) -> set:
+        return {m.group("level") for m in self._LOG_LINE_RE.finditer(text)}
+
+    def test_verbose_adds_debug_lines_in_expected_format(self):
+        opener = wire.build_opener()
+        argv = list(_RUN_ARGV) + ["--verbose"]
+        with _tempdir() as tmp, _isolated_logging():
+            code, out, err = _do_run(tmp, opener, argv=argv)
+            self.assertEqual(code, 0, out + err)
+            self.assertIn("DEBUG", self._log_levels_seen(err), "expected at least one [DEBUG] line under --verbose")
+            self.assertIn("INFO", self._log_levels_seen(err), "--verbose must not drop INFO lines")
+            self.assertEqual(self._log_levels_seen(out), set(), "stdout must carry no log lines at all")
+
+    def test_quiet_suppresses_info_but_errors_still_surface(self):
+        opener = wire.build_opener()
+        argv = list(_RUN_ARGV) + ["--quiet"]
+        with _tempdir() as tmp, _isolated_logging():
+            code, out, err = _do_run(tmp, opener, argv=argv)
+            self.assertEqual(code, 0, out + err)
+            self.assertNotIn("INFO", self._log_levels_seen(err), "--quiet must suppress INFO lines")
+            self.assertNotIn("DEBUG", self._log_levels_seen(err))
+            self.assertEqual(self._log_levels_seen(out), set(), "stdout must carry no log lines at all")
+
+        # A genuine failure (revoked GitLab token) must still be reported
+        # loudly even under --quiet: `cmd_run`'s error path is a plain
+        # print() to stderr, not gated by the logging level at all.
+        with _tempdir() as tmp, _isolated_logging():
+            environ = _good_environ(GITLAB_TOKEN="revoked-gitlab-token")
+            argv2 = list(_RUN_ARGV) + ["--quiet"]
+            code2, out2, err2 = _do_run(tmp, wire.build_opener(), argv=argv2, environ=environ)
+            self.assertNotEqual(code2, 0)
+            self.assertIn("ошибка", (out2 + err2).lower())
+
+    def test_default_verbosity_is_info_no_debug(self):
+        opener = wire.build_opener()
+        with _tempdir() as tmp, _isolated_logging():
+            code, out, err = _do_run(tmp, opener)
+            self.assertEqual(code, 0, out + err)
+            self.assertIn("INFO", self._log_levels_seen(err))
+            self.assertNotIn("DEBUG", self._log_levels_seen(err), "DEBUG lines must not appear without --verbose")
+
+    def test_report_writes_html_to_stdout_with_no_log_pollution(self):
+        """SPEC task item 6: `report` with no `-o` writes the rendered HTML
+        straight to stdout; logging (on stderr, if any were emitted) must
+        never leak into that stream."""
+        fixture_path = Path(__file__).resolve().parent / "fixtures" / "report_v2.json"
+        with _isolated_logging(), _forbidden_opener():
+            code, out, err = _run_main(["report", str(fixture_path)], environ={})
+        self.assertEqual(code, 0, err)
+        self.assertTrue(out.lstrip().startswith("<!DOCTYPE html>"), out[:200])
+        self.assertEqual(self._log_levels_seen(out), set(), "stdout must contain no log lines")
+        _assert_html_well_formed(self, out)
 
 
 if __name__ == "__main__":

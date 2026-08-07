@@ -17,10 +17,18 @@ logs the token — `base_url`/`token` are constructor arguments, matching
 `jira_client.JiraClient`'s shape so wiring code treats both clients the same
 way.
 
-Error channel: this module has no logging by design. `fetch_team_data()`
-reports every per-project / per-author failure it tolerates (as opposed to
-propagates) through its own return dict (`skipped_projects`,
-`mr_fetch_errors`) — that dict IS the channel a caller inspects.
+Error channel: `fetch_team_data()` reports every per-project / per-author
+failure it tolerates (as opposed to propagates) through its own return dict
+(`skipped_projects`, `mr_fetch_errors`, `deployment_warnings`) — that dict IS
+the channel a caller inspects programmatically. This module also logs, via
+`team_metrics.logging_setup`'s `"team_metrics.gitlab_client"` logger: INFO
+per project when its fetch starts and finishes (with counts), DEBUG per
+author x state MR batch and per pagination page, and WARNING for every
+skipped project / MR fetch error / deployment warning. Logging is additive
+to the return dict above, never a replacement for it — a caller that never
+calls `logging_setup.setup_logging()` sees nothing (a `NullHandler` is
+attached by default) and still gets the full picture from the return value
+alone. The PRIVATE-TOKEN header value is never logged.
 
 Load profile: three per-item fan-outs exist (`_mr_detail`, `_mr_commit_count`,
 `_pipeline_job_user` — one request per MR, twice, and one per pipeline).
@@ -37,6 +45,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import logging
 import re
 import threading
 import time
@@ -47,6 +56,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
+
+from . import logging_setup
+
+log = logging_setup.get_logger("gitlab_client")
 
 UTC = timezone.utc
 
@@ -147,6 +160,17 @@ def _qs(v: Any) -> str:
     return urllib.parse.quote(str(v), safe="")
 
 
+def _dedupe_preserve_order(items: list) -> list:
+    seen: set = set()
+    out = []
+    for x in items:
+        if x in seen:
+            continue
+        seen.add(x)
+        out.append(x)
+    return out
+
+
 def _int_or_none(v: Any) -> Optional[int]:
     if v is None or v == "":
         return None
@@ -225,6 +249,7 @@ def _err_body(data: Optional[bytes]) -> str:
     if len(s) > max_len:
         s = s[:max_len] + "..."
     return s or "(empty body)"
+
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -337,6 +362,17 @@ class GitLabClient:
             return self.max_backoff
         return d
 
+    def _redact_token(self, text: str) -> str:
+        """Drops any occurrence of this client's own token from `text` before
+        it can leave the client in an exception message — an upstream error
+        body that happens to echo back the PRIVATE-TOKEN header value (some
+        servers do, on a malformed-auth response) must not carry the token
+        into stdout (`check`) or `out/raw/` (GitLabError text embedded in a
+        skipped-item message)."""
+        if self._token and self._token in text:
+            return text.replace(self._token, "***")
+        return text
+
     def _attempt(self, url: str):
         self._sem.acquire()
         try:
@@ -375,11 +411,27 @@ class GitLabClient:
 
         attempt = 0
         while True:
-            data, status, headers, transport_err = self._attempt(url)
+            try:
+                data, status, headers, transport_err = self._attempt(url)
+            except http.client.InvalidURL:
+                # Raised deep inside urllib/http.client while opening the
+                # connection, before any request is sent -- observed when
+                # GITLAB_URL embeds credentials (a colon in the userinfo
+                # makes http.client's own host:port split misparse the
+                # password as a "port"). The exception text quotes the
+                # mis-split fragment verbatim, which can contain that
+                # password -- never pass it through, raise a fixed message
+                # instead of str(e).
+                raise GitLabError(
+                    op,
+                    "некорректный URL GitLab (проверьте GITLAB_URL — учётные данные вида user:pass@host в адресе "
+                    "не поддерживаются, токен передаётся отдельно через GITLAB_TOKEN)",
+                    code="UNREACHABLE",
+                )
 
             if transport_err is not None:
                 if attempt >= self.max_retries:
-                    raise GitLabError(op, str(transport_err), code="UNREACHABLE")
+                    raise GitLabError(op, self._redact_token(str(transport_err)), code="UNREACHABLE")
                 self._sleep(self._backoff_delay(attempt))
                 attempt += 1
                 continue
@@ -388,11 +440,11 @@ class GitLabClient:
                 return data, headers
 
             if status in (401, 403):
-                raise GitLabError(op, _err_body(data), code="AUTH_FAILED", status_code=status)
+                raise GitLabError(op, self._redact_token(_err_body(data)), code="AUTH_FAILED", status_code=status)
             if status == 404:
-                raise GitLabError(op, _err_body(data), code="NOT_FOUND", status_code=status)
+                raise GitLabError(op, self._redact_token(_err_body(data)), code="NOT_FOUND", status_code=status)
             if status not in _RETRYABLE_STATUSES or attempt >= self.max_retries:
-                raise GitLabError(op, _err_body(data), code="", status_code=status)
+                raise GitLabError(op, self._redact_token(_err_body(data)), code="", status_code=status)
 
             delay = self._backoff_delay(attempt)
             if status == 429:
@@ -446,6 +498,8 @@ class GitLabClient:
                 raise GitLabError(op, f"expected a list response from {path} (page {page})")
             items.extend(batch)
             pages_fetched += 1
+            if log.isEnabledFor(logging.DEBUG):
+                log.debug("GitLab: страница %d %s — получено %d (всего %d)", page, path, len(batch), len(items))
             if pages_fetched > _MAX_PAGINATION_PAGES:
                 raise GitLabError(
                     op,
@@ -570,6 +624,9 @@ class GitLabClient:
             "mr_id": mr.get("iid"),
             "title": title,
             "author": (mr.get("author") or {}).get("username"),
+            # Display name (schema v2 §B.13) — GitLab-side fallback used when
+            # this login never appears with a Jira assignee.displayName.
+            "author_name": (mr.get("author") or {}).get("name") or "",
             "state": mr.get("state"),
             "web_url": mr.get("web_url"),
             "source_branch": source_branch,
@@ -628,11 +685,17 @@ class GitLabClient:
         results: list = [None] * len(tasks)
 
         def work(i: int, author: str, state: str) -> None:
+            if log.isEnabledFor(logging.DEBUG):
+                log.debug("GitLab: MR %s x %s (проект %s)", author, state, project_path)
             try:
                 rows = self._mr_list(project_id, author, state, window)
             except GitLabError as e:
                 if e.code == "AUTH_FAILED":
                     raise
+                log.warning(
+                    "GitLab: ошибка получения MR (проект %s, автор %s, статус %s) — %s",
+                    project_path, author, state, e.message,
+                )
                 if errors is not None:
                     errors.append(
                         {"project": project_path, "author": author, "state": state, "code": e.code, "message": e.message}
@@ -851,6 +914,7 @@ class GitLabClient:
         return records
 
     def _record_deployment_warning(self, entry: dict) -> None:
+        log.warning("GitLab: предупреждение о деплоях (проект %s) — %s", entry.get("project"), entry.get("message"))
         with self._deployment_warnings_lock:
             self.deployment_warnings.append(entry)
 
@@ -960,6 +1024,12 @@ def fetch_team_data(
     request_count_before = getattr(client, "request_count", 0)
     deployment_warnings_before = len(getattr(client, "deployment_warnings", None) or [])
 
+    # A login listed twice in config would otherwise fan out into two
+    # identical (author, state) MR fetches per project, duplicating that
+    # person's MRs in the flat result list (and therefore in
+    # overview.mr_total, team_series.mr and their own mr_count).
+    employees = _dedupe_preserve_order(employees)
+
     project_ids: dict = {}
     skipped_projects: list = []
     for path in projects:
@@ -968,9 +1038,11 @@ def fetch_team_data(
         except GitLabError as e:
             if e.code == "AUTH_FAILED":
                 raise
+            log.warning("GitLab: проект %s пропущен — %s", path, e.message)
             skipped_projects.append({"project": path, "code": e.code, "message": e.message})
             continue
         if pid is None:
+            log.warning("GitLab: проект %s пропущен — id не вернулся", path)
             skipped_projects.append({"project": path, "code": "NOT_FOUND", "message": "project id not returned"})
             continue
         project_ids[path] = pid
@@ -988,10 +1060,19 @@ def fetch_team_data(
         pipeline_kwargs["fetch_pipeline_user"] = fetch_pipeline_user
 
     for path, pid in project_ids.items():
-        merge_requests.extend(client.merge_requests(path, pid, employees, **mr_kwargs))
-        pipelines.extend(client.pipelines(path, pid, **pipeline_kwargs))
-        deployments.extend(client.deployments(path, pid, window=window))
-        coverage.extend(client.coverage(path, pid, window=window))
+        log.info("GitLab: сбор данных для проекта %s (id=%s) начат", path, pid)
+        project_mrs = client.merge_requests(path, pid, employees, **mr_kwargs)
+        project_pipelines = client.pipelines(path, pid, **pipeline_kwargs)
+        project_deployments = client.deployments(path, pid, window=window)
+        project_coverage = client.coverage(path, pid, window=window)
+        merge_requests.extend(project_mrs)
+        pipelines.extend(project_pipelines)
+        deployments.extend(project_deployments)
+        coverage.extend(project_coverage)
+        log.info(
+            "GitLab: проект %s завершён — MR: %d, pipeline: %d, деплоев: %d, coverage-записей: %d",
+            path, len(project_mrs), len(project_pipelines), len(project_deployments), len(project_coverage),
+        )
 
     all_deployment_warnings = getattr(client, "deployment_warnings", None) or []
     deployment_warnings = list(all_deployment_warnings[deployment_warnings_before:])
