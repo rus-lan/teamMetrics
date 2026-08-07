@@ -21,7 +21,7 @@
 
   --text:          #15181d;
   --text-muted:    #57606f;
-  --text-faint:    #767f8d;
+  --text-faint:    #5a6371;
 
   --accent:          #2f52c0;
   --accent-strong:   #23409b;
@@ -40,8 +40,6 @@
   --chart-axis:      #b0b9c7;
   --chart-ideal:     #8b96a6;
   --chart-actual:    #2f52c0;
-  --chart-fill:      #2f52c0;
-  --chart-fill-op:   0.10;
   --chart-weekend:   #f0f2f6;
   --chart-bar:       #93aee2;
 
@@ -50,7 +48,7 @@
   --cat-done:         #cfe8de; --cat-done-fg:         #0c4c3c;
   --cat-cancelled:    #ded9ea; --cat-cancelled-fg:    #443a63;
   --cat-unmapped:     #f7e6c4; --cat-unmapped-fg:     #6b4500;
-  --cat-absent-fg:    #99a2af;
+  --cat-absent-fg:    #65707e;
 
   /* multi-series chart palette — 10 colors cycled by index; every builder
      paints via these classes, never a hardcoded hex in an SVG attribute */
@@ -96,8 +94,6 @@
     --chart-axis:      #4d596c;
     --chart-ideal:     #8892a2;
     --chart-actual:    #7d9bff;
-    --chart-fill:      #7d9bff;
-    --chart-fill-op:   0.16;
     --chart-weekend:   #1a212b;
     --chart-bar:       #40568e;
 
@@ -106,7 +102,7 @@
     --cat-done:         #133d33; --cat-done-fg:         #8fdcc4;
     --cat-cancelled:    #2f2a44; --cat-cancelled-fg:    #c3b8e6;
     --cat-unmapped:     #3a2c12; --cat-unmapped-fg:     #f0c274;
-    --cat-absent-fg:    #6b7684;
+    --cat-absent-fg:    #828da0;
 
     --s0: #7d9bff; --s1: #ff8f7f; --s2: #4fd9ad; --s3: #e6b755; --s4: #b79dff;
     --s5: #4fc9c2; --s6: #e5964e; --s7: #ff7fb0; --s8: #93a0ff; --s9: #9ed05a;
@@ -144,8 +140,6 @@
   --chart-axis:      #4d596c;
   --chart-ideal:     #8892a2;
   --chart-actual:    #7d9bff;
-  --chart-fill:      #7d9bff;
-  --chart-fill-op:   0.16;
   --chart-weekend:   #1a212b;
   --chart-bar:       #40568e;
 
@@ -154,7 +148,7 @@
   --cat-done:         #133d33; --cat-done-fg:         #8fdcc4;
   --cat-cancelled:    #2f2a44; --cat-cancelled-fg:    #c3b8e6;
   --cat-unmapped:     #3a2c12; --cat-unmapped-fg:     #f0c274;
-  --cat-absent-fg:    #6b7684;
+  --cat-absent-fg:    #828da0;
 
   --s0: #7d9bff; --s1: #ff8f7f; --s2: #4fd9ad; --s3: #e6b755; --s4: #b79dff;
   --s5: #4fc9c2; --s6: #e5964e; --s7: #ff7fb0; --s8: #93a0ff; --s9: #9ed05a;
@@ -206,7 +200,7 @@ dd { margin: 2px 0 0; color: var(--text-muted); }
    ============================================================ */
 .report-head { background: var(--surface); border-bottom: 1px solid var(--border); padding: 26px 0 22px; }
 .head-top { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; justify-content: space-between; }
-.eyebrow { font-size: 11px; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; color: var(--text-faint); }
+.eyebrow { font-size: 12px; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; color: var(--text-faint); }
 .report-title { font-size: 25px; line-height: 1.2; margin-top: 6px; }
 .report-subtitle { margin-top: 6px; color: var(--text-muted); font-size: 14px; }
 .report-subtitle b { color: var(--text); font-weight: 600; }
@@ -283,7 +277,7 @@ html.js .theme-switch { display: inline-flex; }
 .warn-list li { font-size: 13px; color: var(--text-muted); }
 
 .banner { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: var(--radius); border: 1px solid var(--warn); background: var(--warn-soft); margin-bottom: 10px; }
-.banner-tag { font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: .04em; color: var(--warn); border: 1px solid var(--warn); border-radius: var(--radius-sm); padding: 2px 7px; flex: none; margin-top: 1px; white-space: nowrap; }
+.banner-tag { font-family: var(--font-mono); font-size: 11px; font-weight: 700; letter-spacing: .04em; color: var(--warn); border: 1px solid var(--warn); border-radius: var(--radius-sm); padding: 2px 7px; flex: none; margin-top: 1px; white-space: nowrap; }
 .banner-body { font-size: 13px; color: var(--text); }
 .banner-body b { font-weight: 640; }
 
@@ -294,7 +288,7 @@ html.js .theme-switch { display: inline-flex; }
    KPI / stat tiles
    ============================================================ */
 .kpi-grid, .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
-.chart-grid { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); align-items: start; }
+.chart-grid { grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)); align-items: start; }
 .kpi { position: relative; padding: 15px 16px 13px; overflow: hidden; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
 .kpi::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--kpi-accent, var(--border-strong)); }
 .kpi[data-status="good"] { --kpi-accent: var(--good); }
@@ -302,8 +296,8 @@ html.js .theme-switch { display: inline-flex; }
 .kpi[data-status="bad"]  { --kpi-accent: var(--bad); }
 .kpi[data-status="none"] { --kpi-accent: var(--border-strong); background: var(--surface-2); }
 .kpi-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
-.kpi-label { font-size: 11.5px; font-weight: 640; letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); min-width: 0; overflow-wrap: anywhere; }
-.kpi-status { font-size: 10.5px; font-weight: 660; letter-spacing: .03em; padding: 2px 7px; border-radius: var(--radius-pill); border: 1px solid var(--border-strong); background: var(--neutral-soft); color: var(--text-muted); white-space: nowrap; flex: none; }
+.kpi-label { font-size: 12px; font-weight: 640; letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); min-width: 0; overflow-wrap: anywhere; }
+.kpi-status { font-size: 11px; font-weight: 660; letter-spacing: .03em; padding: 2px 7px; border-radius: var(--radius-pill); border: 1px solid var(--border-strong); background: var(--neutral-soft); color: var(--text-muted); white-space: nowrap; flex: none; }
 .kpi-value { margin-top: 9px; font-size: 28px; font-weight: 640; line-height: 1.05; letter-spacing: -0.022em; }
 .kpi[data-status="none"] .kpi-value { color: var(--text-faint); }
 .kpi-unit { font-size: 12px; font-weight: 520; color: var(--text-muted); margin-left: 6px; }
@@ -312,11 +306,12 @@ html.js .theme-switch { display: inline-flex; }
 .delta { font-size: 12px; font-weight: 560; color: var(--text-muted); }
 .spark { display: block; width: 88px; height: 32px; flex: none; }
 
-.stat-grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .stat { padding: 10px 12px; border-radius: var(--radius-sm); background: var(--surface-2); border: 1px solid var(--border); }
-.stat-label { font-size: 10.5px; font-weight: 620; letter-spacing: .04em; text-transform: uppercase; color: var(--text-faint); }
+.stat-label { font-size: 12px; font-weight: 620; letter-spacing: .04em; text-transform: uppercase; color: var(--text-faint); }
 .stat-value { font-size: 19px; font-weight: 640; margin-top: 3px; letter-spacing: -0.02em; }
 .stat-value .u { font-size: 11px; font-weight: 450; color: var(--text-muted); margin-left: 3px; }
+.stat-nodata { font-size: 0.6em; font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--text-faint); }
 
 /* ============================================================
    Charts
@@ -330,35 +325,37 @@ html.js .theme-switch { display: inline-flex; }
 .donut-row .chartbox, .donut-pair .chartbox { flex: 1 1 320px; min-width: 300px; }
 .donut-pair { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 6px; }
 .table-block { margin: 18px 0 26px; }
+.donut-wall > summary { cursor: pointer; font-size: 13px; font-weight: 620; color: var(--accent); padding: 6px 0; }
+.donut-wall-body { margin-top: 10px; }
 
 .c-grid       { stroke: var(--chart-grid); stroke-width: 1; }
 .c-axis       { stroke: var(--chart-axis); stroke-width: 1.5; }
 .c-tick       { stroke: var(--chart-axis); stroke-width: 1; }
-.c-tick-label { fill: var(--text-faint); font-size: 10px; }
-.c-tick-sub   { fill: var(--text-faint); font-size: 9px; }
-.c-unit-label { fill: var(--text-faint); font-size: 10.5px; }
-.c-axis-title { fill: var(--text-muted); font-size: 11.5px; }
+.c-tick-label { fill: var(--text-faint); font-size: 11px; }
+.c-tick-sub   { fill: var(--text-faint); font-size: 11px; }
+.c-unit-label { fill: var(--text-faint); font-size: 11.5px; }
+.c-axis-title { fill: var(--text-muted); font-size: 12px; }
 .c-weekend    { fill: var(--chart-weekend); }
-.c-legend-text{ fill: var(--text-muted); font-size: 11px; }
-.c-bar-value  { fill: var(--text-muted); font-size: 10px; }
-.c-hbar-label { fill: var(--text); font-size: 12px; }
-.c-hbar-value { fill: var(--text); font-size: 11px; }
-.c-hbar-nodata{ fill: var(--text-faint); font-size: 11px; }
-.c-point-label{ fill: var(--text); font-size: 9px; }
+.c-legend-text{ fill: var(--text-muted); font-size: 13px; }
+.c-bar-value  { fill: var(--text-muted); font-size: 11px; }
+.c-hbar-label { fill: var(--text); font-size: 12.5px; }
+.c-hbar-value { fill: var(--text); font-size: 11.5px; }
+.c-hbar-nodata{ fill: var(--text-faint); font-size: 11.5px; }
+.c-point-label{ fill: var(--text); font-size: 11px; }
 .c-donut-value  { fill: var(--text); font-size: 24px; font-weight: 700; }
 .c-donut-caption{ fill: var(--text-faint); font-size: 11px; }
+.axis-caption { font-size: 12px; color: var(--text-muted); margin: -4px 0 8px; }
 
 .c-ideal  { fill: none; stroke: var(--chart-ideal);  stroke-width: 2;   stroke-dasharray: 8 6; stroke-linecap: round; }
 .c-actual { fill: none; stroke: var(--chart-actual); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
 .c-actual-pt { fill: var(--surface); stroke: var(--chart-actual); stroke-width: 2; }
-.c-area   { stroke: none; }
-.c-area-top    { stop-color: var(--chart-fill); stop-opacity: var(--chart-fill-op); }
-.c-area-bottom { stop-color: var(--chart-fill); stop-opacity: 0; }
 .c-callout      { stroke: var(--bad); stroke-width: 1.5; stroke-dasharray: 3 3; }
 .c-callout-text { fill: var(--bad); font-size: 11px; font-weight: 620; }
 .c-bar        { fill: var(--chart-bar); }
 .c-marker        { stroke: var(--text-muted); stroke-width: 1.4; stroke-dasharray: 4 3; }
-.c-marker-label  { fill: var(--text-muted); font-size: 10px; font-weight: 620; }
+.c-marker-label  { fill: var(--text-muted); font-size: 11px; font-weight: 620; }
+.c-marker-v      { stroke: var(--accent); stroke-width: 1.6; stroke-dasharray: 4 3; }
+.c-marker-v-label{ fill: var(--accent-strong); font-size: 11px; font-weight: 660; }
 .c-trend { stroke: var(--text-faint); stroke-width: 1.5; stroke-dasharray: 5 4; }
 .c-line  { fill: none; stroke-width: 2; }
 
@@ -369,7 +366,7 @@ html.js .theme-switch { display: inline-flex; }
 .s6 { fill: var(--s6); stroke: var(--s6); } .s7 { fill: var(--s7); stroke: var(--s7); }
 .s8 { fill: var(--s8); stroke: var(--s8); } .s9 { fill: var(--s9); stroke: var(--s9); }
 .c-line.s0, .c-line.s1, .c-line.s2, .c-line.s3, .c-line.s4,
-.c-line.s5, .c-line.s6, .c-line.s7, .c-line.s8, .c-line.s9 { stroke-width: 2; }
+.c-line.s5, .c-line.s6, .c-line.s7, .c-line.s8, .c-line.s9 { fill: none; stroke-width: 2; }
 .c-point { stroke: var(--surface); stroke-width: 1.5; }
 
 .sp-line { fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
@@ -390,17 +387,86 @@ html.js .theme-switch { display: inline-flex; }
 .ut-input:nth-of-type(2):checked ~ .unit-panels .unit-panel:nth-of-type(2) { display: block; }
 
 /* ============================================================
+   JS-driven controls — sprint selector (tab 02), forecast scope
+   selector (tab 04), people multi-select (tabs 05/06). Every
+   control here is hidden until html.js is set, same convention as
+   .theme-switch: with JS off the underlying content stays fully
+   visible (no [data-login]/[data-sprint-block]/[data-forecast-scope]
+   element ever starts hidden), so a plain <select> with no listener
+   would only ever narrow, never gate, content.
+   ============================================================ */
+.control-bar { display: none; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin-bottom: 18px; }
+html.js .control-bar { display: flex; }
+.control-bar label { font-size: 12.5px; font-weight: 620; color: var(--text-muted); }
+.control-bar select { font: inherit; font-size: 13px; padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); max-width: 100%; }
+.people-filter { display: none; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 18px; }
+html.js .people-filter { display: flex; }
+.people-filter .pf-all { font: inherit; font-size: 12px; font-weight: 620; color: var(--accent); cursor: pointer; background: none; border: 1px solid var(--accent); border-radius: var(--radius-pill); padding: 3px 10px; }
+.pf-check { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 3px 9px 3px 6px; border-radius: var(--radius-pill); background: var(--surface-2); border: 1px solid var(--border); cursor: pointer; }
+
+[data-login].tm-hidden, g[data-login].tm-hidden,
+[data-sprint-block].tm-hidden, [data-forecast-scope].tm-hidden,
+.lg-item[data-hidden="true"] { display: none !important; }
+
+/* Filtering out every person leaves a chart/table with data-login series
+   or rows/columns but nothing left to show — `apply()` below toggles
+   `.people-scope-empty` on the nearest `[data-people-scope]` ancestor so
+   this note replaces the now-pointless empty shell instead of it
+   rendering silently. */
+.filter-empty { display: none; color: var(--text-muted); font-size: 13px; padding: 10px 0; }
+[data-people-scope].people-scope-empty > .filter-empty { display: block; }
+[data-people-scope].people-scope-empty > .scroll-x,
+[data-people-scope].people-scope-empty > .table-wrap,
+[data-people-scope].people-scope-empty > .donut-wall-body,
+[data-people-scope].people-scope-empty > .person-cards,
+[data-people-scope].people-scope-empty > .scroll-note { display: none; }
+
+.chart-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; font-size: 13px; color: var(--text-muted); }
+.chart-legend .lg-item { display: inline-flex; align-items: center; gap: 6px; cursor: default; }
+.chart-legend .lg-swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+/* .s0-.s9 (defined above) only paint SVG fill/stroke — an HTML swatch
+   needs its own background-color rule to pick up the same series colour. */
+.chart-legend .lg-swatch.s0 { background: var(--s0); } .chart-legend .lg-swatch.s1 { background: var(--s1); }
+.chart-legend .lg-swatch.s2 { background: var(--s2); } .chart-legend .lg-swatch.s3 { background: var(--s3); }
+.chart-legend .lg-swatch.s4 { background: var(--s4); } .chart-legend .lg-swatch.s5 { background: var(--s5); }
+.chart-legend .lg-swatch.s6 { background: var(--s6); } .chart-legend .lg-swatch.s7 { background: var(--s7); }
+.chart-legend .lg-swatch.s8 { background: var(--s8); } .chart-legend .lg-swatch.s9 { background: var(--s9); }
+
+.stat-tile-box .stat { margin-top: 2px; }
+
+/* ============================================================
+   Recommendations (tab 01)
+   ============================================================ */
+.reco-intro { color: var(--text-muted); font-size: 13px; margin-bottom: 12px; }
+.reco-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; counter-reset: reco; }
+.reco-item { counter-increment: reco; display: flex; gap: 12px; padding: 12px 14px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); box-shadow: var(--shadow); }
+.reco-item::before {
+  content: counter(reco); flex: none; width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700;
+  background: var(--neutral-soft); color: var(--text-muted);
+}
+.reco-item[data-severity="bad"] { border-color: var(--bad); }
+.reco-item[data-severity="bad"]::before { background: var(--bad); color: var(--accent-contrast); }
+.reco-item[data-severity="warn"] { border-color: var(--warn); }
+.reco-item[data-severity="warn"]::before { background: var(--warn); color: var(--accent-contrast); }
+.reco-body { font-size: 13px; color: var(--text); }
+.reco-body b { font-weight: 640; }
+.reco-signal { margin-top: 4px; color: var(--text-muted); }
+.reco-action { margin-top: 4px; }
+.reco-action b { font-weight: 620; }
+
+/* ============================================================
    Heatmap
    ============================================================ */
 .heatmap { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 900px; }
 .heatmap th, .heatmap td { padding: 0; }
-.heatmap thead th { font-size: 10.5px; font-weight: 620; color: var(--text-muted); text-align: center; padding: 0 8px 8px; white-space: nowrap; }
-.heatmap thead th .dow { display: block; font-size: 9.5px; font-weight: 500; color: var(--text-faint); }
+.heatmap thead th { font-size: 11px; font-weight: 620; color: var(--text-muted); text-align: center; padding: 0 8px 8px; white-space: nowrap; }
+.heatmap thead th .dow { display: block; font-size: 11px; font-weight: 500; color: var(--text-faint); }
 .heatmap thead th.hm-corner, .heatmap tbody th { text-align: left; font-size: 12px; font-weight: 560; color: var(--text); white-space: nowrap; padding: 4px 14px 4px 0; position: sticky; left: 0; z-index: 2; background: var(--surface); }
 .heatmap tbody td:not(.hm-cell) { padding: 4px 10px 4px 0; }
-.heatmap thead th.hm-corner { color: var(--text-muted); font-size: 10.5px; z-index: 3; }
+.heatmap thead th.hm-corner { color: var(--text-muted); font-size: 11px; z-index: 3; }
 .heatmap tbody th { border-right: 1px solid var(--border); font-family: var(--font-mono); font-size: 11.5px; }
-.hm-cell { height: 30px; min-width: 44px; text-align: center; vertical-align: middle; font-size: 10.5px; font-weight: 600; border: 2px solid var(--surface); border-radius: 5px; padding: 0 4px; white-space: nowrap; }
+.hm-cell { height: 30px; min-width: 44px; text-align: center; vertical-align: middle; font-size: 11px; font-weight: 600; border: 2px solid var(--surface); border-radius: 5px; padding: 0 4px; white-space: nowrap; }
 .hm-cell[data-cat="new"]           { background: var(--cat-new);           color: var(--cat-new-fg); font-weight: 500; }
 .hm-cell[data-cat="indeterminate"] { background: var(--cat-indeterminate); color: var(--cat-indeterminate-fg); }
 .hm-cell[data-cat="done"]          { background: var(--cat-done);          color: var(--cat-done-fg); }
@@ -417,19 +483,27 @@ html.js .theme-switch { display: inline-flex; }
    Tables
    ============================================================ */
 .table-card { overflow: hidden; margin-bottom: 4px; }
-.table-wrap { overflow: auto; max-height: 420px; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
+.table-wrap { position: relative; overflow: auto; max-height: 420px; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
+.table-wrap.no-cap { max-height: none; }
+.table-wrap.scroll-x { max-height: none; overflow-y: visible; }
+.table-wrap:not(.no-cap):not(.scroll-x)::after {
+  content: ""; position: sticky; left: 0; right: 0; bottom: 0; display: block;
+  height: 30px; margin-top: -30px; pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--surface));
+}
+.scroll-note { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
 table.data { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
 table.data.xwide { min-width: 1400px; }
 table.data.wide { min-width: 900px; }
 table.data.mid  { min-width: 600px; }
-table.data thead th { position: sticky; top: 0; z-index: 3; background: var(--surface-2); color: var(--text-muted); font-size: 10.5px; font-weight: 660; letter-spacing: .03em; text-align: left; white-space: nowrap; padding: 8px 10px; border-bottom: 1px solid var(--border-strong); }
+table.data thead th { position: sticky; top: 0; z-index: 3; background: var(--surface-2); color: var(--text-muted); font-size: 11px; font-weight: 660; letter-spacing: .03em; text-align: left; white-space: nowrap; padding: 8px 10px; border-bottom: 1px solid var(--border-strong); }
 table.data tbody td, table.data tbody th { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; text-align: left; font-weight: 450; }
 table.data tbody tr:nth-child(even) td, table.data tbody tr:nth-child(even) th { background: var(--surface-2); }
 table.data tbody tr:hover td, table.data tbody tr:hover th { background: var(--accent-soft); }
 .col-num { text-align: right; font-variant-numeric: tabular-nums; }
 table.data thead th.col-num { text-align: right; }
 .rowkey { font-family: var(--font-mono); font-size: 11.5px; }
-.pill { display: inline-block; white-space: nowrap; font-size: 11px; font-weight: 560; line-height: 1.4; padding: 1px 7px; border-radius: var(--radius-pill); border: 1px solid var(--border-strong); background: var(--neutral-soft); color: var(--text-muted); }
+.pill { display: inline-block; white-space: nowrap; font-size: 12px; font-weight: 560; line-height: 1.4; padding: 1px 7px; border-radius: var(--radius-pill); border: 1px solid var(--border-strong); background: var(--neutral-soft); color: var(--text-muted); }
 code.pill { font-family: var(--font-mono); }
 
 /* ============================================================
@@ -441,7 +515,7 @@ code.pill { font-family: var(--font-mono); }
 .mini-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
 .sprint-mini { width: 100%; min-width: 460px; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
 .sprint-mini th, .sprint-mini td { padding: 4px 6px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.sprint-mini thead th { font-size: 10px; font-weight: 620; letter-spacing: .03em; text-transform: uppercase; color: var(--text-faint); border-bottom: 1px solid var(--border-strong); }
+.sprint-mini thead th { font-size: 12px; font-weight: 620; letter-spacing: .03em; text-transform: uppercase; color: var(--text-faint); border-bottom: 1px solid var(--border-strong); }
 .sprint-mini th:first-child, .sprint-mini td:first-child { text-align: left; font-weight: 500; }
 
 /* ============================================================
@@ -479,16 +553,17 @@ code.pill { font-family: var(--font-mono); }
     --good: #0a5c48; --good-soft: #e9f4f0; --warn: #7a4e00; --warn-soft: #fbf1de;
     --bad: #96190f; --bad-soft: #fbe6e3; --neutral-soft: #f0f2f5;
     --chart-grid: #e2e6ec; --chart-axis: #98a1ae; --chart-ideal: #7e8896;
-    --chart-actual: #1e3a8a; --chart-fill: #1e3a8a; --chart-fill-op: 0.08;
+    --chart-actual: #1e3a8a;
     --chart-weekend: #f1f3f6; --chart-bar: #b3c3e4;
     --shadow: none;
   }
   body { background: #fff; font-size: 9.5pt; overflow: visible; }
   .wrap { max-width: none; padding: 0; }
-  .no-print, .theme-switch, .skip-link, .tablist { display: none !important; }
+  .no-print, .theme-switch, .skip-link, .tablist, .control-bar, .people-filter { display: none !important; }
   .tabs { padding-top: 0; }
   .tab-input { display: none !important; }
   .tabpanel { display: block !important; }
+  [data-login].tm-hidden, [data-sprint-block].tm-hidden, [data-forecast-scope].tm-hidden { display: revert !important; }
   .tabpanel + .tabpanel { break-before: page; page-break-before: always; }
   .panel-title { position: static; width: auto; height: auto; overflow: visible; clip-path: none; display: block; font-size: 15pt; font-weight: 700; margin: 0 0 14px; padding-bottom: 6px; border-bottom: 2px solid #000; }
   .scroll-x, .table-wrap, .mini-wrap, .table-card { overflow: visible !important; max-height: none !important; }
@@ -672,6 +747,102 @@ code.pill { font-family: var(--font-mono); }
       writeMode(mode);
     });
   }
+
+  // ----------------------------------------------------------------
+  // Sprint selector (tab 02, control A). Every [data-sprint-block] is
+  // visible in the raw markup; this only narrows to the selected one —
+  // with JS disabled every sprint stays visible, one after another.
+  // ----------------------------------------------------------------
+  (function () {
+    var select = document.getElementById("sprint-select");
+    if (!select) { return; }
+    var blocks = document.querySelectorAll("[data-sprint-block]");
+    function apply() {
+      var sid = select.value;
+      for (var i = 0; i < blocks.length; i++) {
+        var match = blocks[i].getAttribute("data-sprint-id") === sid;
+        blocks[i].classList.toggle("tm-hidden", !match);
+      }
+    }
+    select.addEventListener("change", apply);
+    apply();
+  })();
+
+  // ----------------------------------------------------------------
+  // Forecast scope selector (tab 04, control B). Same narrow-not-reveal
+  // rule: every [data-forecast-scope] (team + every person) starts
+  // visible; JS narrows to the selected one.
+  // ----------------------------------------------------------------
+  (function () {
+    var select = document.getElementById("forecast-scope-select");
+    if (!select) { return; }
+    var scopes = document.querySelectorAll("[data-forecast-scope]");
+    function apply() {
+      var val = select.value;
+      for (var i = 0; i < scopes.length; i++) {
+        var match = scopes[i].getAttribute("data-forecast-scope") === val;
+        scopes[i].classList.toggle("tm-hidden", !match);
+      }
+    }
+    select.addEventListener("change", apply);
+    apply();
+  })();
+
+  // ----------------------------------------------------------------
+  // People multi-select (tabs 05/06, control C). Every [data-login]
+  // element (table cells/rows, donut pairs, person cards, and each
+  // <g data-login> series inside a multi-line/grouped-bar/hbar SVG)
+  // starts visible; unchecking a person hides every element carrying
+  // their login, scoped to that filter's own tab so tab 05 and tab 06
+  // filter independently.
+  // ----------------------------------------------------------------
+  (function () {
+    var filters = document.querySelectorAll("[data-people-filter]");
+    for (var f = 0; f < filters.length; f++) {
+      (function (filterEl) {
+        var panel = filterEl.closest ? filterEl.closest(".tabpanel") : null;
+        if (!panel) { return; }
+        var checks = filterEl.querySelectorAll("[data-login-check]");
+        var allBtn = filterEl.querySelector("[data-select-all]");
+
+        function apply() {
+          var hidden = Object.create(null);
+          for (var i = 0; i < checks.length; i++) {
+            if (!checks[i].checked) { hidden[checks[i].getAttribute("data-login-check")] = true; }
+          }
+          var els = panel.querySelectorAll("[data-login]");
+          for (var j = 0; j < els.length; j++) {
+            var login = els[j].getAttribute("data-login");
+            els[j].classList.toggle("tm-hidden", !!hidden[login]);
+          }
+          // A chart/table can end up with every one of its data-login
+          // rows/columns/series hidden — flag it so CSS swaps the now-
+          // pointless empty shell for the `.filter-empty` note instead
+          // of a silent hollow axis/table (§ tab05/tab06 filter-empty).
+          var scopes = panel.querySelectorAll("[data-people-scope]");
+          for (var s = 0; s < scopes.length; s++) {
+            var scoped = scopes[s].querySelectorAll("[data-login]");
+            var allHidden = scoped.length > 0;
+            for (var q = 0; q < scoped.length; q++) {
+              if (!scoped[q].classList.contains("tm-hidden")) { allHidden = false; break; }
+            }
+            scopes[s].classList.toggle("people-scope-empty", allHidden);
+          }
+        }
+
+        for (var k = 0; k < checks.length; k++) {
+          checks[k].addEventListener("change", apply);
+        }
+        if (allBtn) {
+          allBtn.addEventListener("click", function () {
+            for (var m = 0; m < checks.length; m++) { checks[m].checked = true; }
+            apply();
+          });
+        }
+        apply();
+      })(filters[f]);
+    }
+  })();
 })();
 </script>
 

@@ -157,11 +157,10 @@ COLUMN_LABELS_RU: dict[str, str] = {
     "history_sprint_count": "Спринтов истории",
     "seed": "Seed",
     "iterations": "Итераций Monte-Carlo",
-    "target_items_requested": "Целевое число задач (запрошено)",
-    "target_items_resolved": "Целевое число задач (вычислено)",
     "generated_at": "Сформирован",
     "tool_version": "Версия инструмента",
     "out_dir": "Папка вывода",
+    "allowlist": "Список сотрудников (employees)",
     "gitlab_window": "Окно GitLab",
     "gitlab_request_count": "HTTP-запросов к GitLab",
     "gitlab_fetch_mr_details": "Детали MR запрашивались",
@@ -341,6 +340,83 @@ def risk_body_coverage_ru(coverage_avg_pct: float) -> str:
     return f"Покрытие {format_pct1(coverage_avg_pct)}% — ниже 60%. Высокий риск регрессий при быстрых изменениях."
 
 
+def format_num1(value: float) -> str:
+    """1-decimal number text with a trailing '.0' stripped, no unit — same
+    shape as format_pct1 minus the '%' (e.g. SMA5 velocity in SP)."""
+    s = f"{value:.1f}"
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s
+
+
+# --------------------------------------------------------------------------
+# Recommendations block ("Что можно улучшить") — restored from the 2.2.0
+# report and rebuilt in the data layer (report_data.py decides which items
+# fire and with which values; the wording itself lives here).
+# --------------------------------------------------------------------------
+
+RECOMMENDATIONS_INTRO_RU = (
+    "Рекомендации ниже — эвристики этого отчёта поверх посчитанных метрик, не готовые выводы. Часть порогов "
+    "совпадает с предупреждениями самого модуля (это отмечено в тексте пункта), часть задана только для этого "
+    "отчёта. Используйте их как повод разобраться и обсудить с командой, а не как оценку конкретных людей."
+)
+RECOMMENDATIONS_EMPTY_RU = (
+    "По собранным данным ни одна эвристика этого отчёта не сработала — явных поводов для срочных действий нет."
+)
+
+RECOMMENDATION_METRIC_RU: dict[str, str] = {
+    "performance_low": "Выполнение обязательств (performance_pct)",
+    "scope_change_high": "Изменение объёма (scope_change_pct)",
+    "throughput_unstable": "Недельный коэффициент вариации пропускной способности",
+    "pipeline_success_low": "Доля успешных пайплайнов (pipeline_success_rate_pct)",
+    "rework_share_high": "Доля переработок (rework_share) по участникам",
+    "coverage_low": "Покрытие тестами (coverage_avg_pct)",
+}
+
+RECOMMENDATION_SIGNAL_RU: dict[str, str] = {
+    "performance_low": "Критично: ниже 80% (эвристика этого отчёта) — в спринт взяли больше, чем смогли поставить.",
+    "scope_change_high": "Критично: выше 25% (эвристика этого отчёта) — скоуп заметно менялся уже после старта спринта.",
+    "throughput_unstable": f"Превышает порог модуля {format_pct1(50.0)}% (WARN_THROUGHPUT_UNSTABLE, не наша "
+                           "эвристика) — поток нестабилен от недели к неделе.",
+    "pipeline_success_low": "Критично: ниже 80% (эвристика этого отчёта) — CI падает заметно чаще, чем можно "
+                            "доверять поставке.",
+    "rework_share_high": "Работа заметно возвращается в разработку после ревью или QA — приведено как счёт по "
+                         "команде, не как оценка конкретных людей.",
+    "coverage_low": "Ниже 65% (эвристика этого отчёта) — заметная часть кода не защищена автотестами.",
+}
+
+# performance_low's action interpolates the SMA5 value — {sma5} filled in by
+# report_data.py via .format(sma5=...).
+RECOMMENDATION_ACTION_RU: dict[str, str] = {
+    "performance_low": "На следующем планировании ориентироваться на SMA5 ({sma5} SP), а не на оптимистичную "
+                       "оценку объёма.",
+    "scope_change_high": "Ужесточить приём изменений в спринт после старта, либо завести отдельный процесс "
+                         "триажа для срочных добавлений вместо добавления напрямую в текущий спринт.",
+    "throughput_unstable": "Не приводить p50 как единственное число во внешних обязательствах; смотреть на весь "
+                           "диапазон p50–p95 и разбираться, что вызывает скачки пропускной способности.",
+    "pipeline_success_low": "Разобрать самые частые причины падения пайплайнов за период и завести задачи на "
+                            "самые дорогие из них.",
+    "rework_share_high": "Разобрать конкретные случаи на командном ретро, а не в этом отчёте.",
+    "coverage_low": "Поднять минимальный порог покрытия для нового кода в CI и постепенно закрывать пробелы в "
+                    "существующем.",
+}
+
+
+# --------------------------------------------------------------------------
+# Employees allowlist (params.allowlist) — one sentence explaining the
+# filter for the reader.
+# --------------------------------------------------------------------------
+
+
+def allowlist_note_ru(applied: bool) -> str:
+    if applied:
+        return (
+            "В настройках задан список employees — в отчёт попадают только эти сотрудники (плюс задачи и "
+            "записи без исполнителя); остальные логины, встреченные в данных, исключены и перечислены ниже."
+        )
+    return "Список employees в настройках пуст — в отчёт попадают все сотрудники, обнаруженные в данных."
+
+
 # --------------------------------------------------------------------------
 # E.4 — WARN_ERR_RU: warning/error code dictionary
 # --------------------------------------------------------------------------
@@ -351,9 +427,8 @@ WARN_ERR_RU: dict[str, str] = {
     "ERR_JIRA_AUTH_FAILED": "Jira отклонила токен (401/403). Проверьте токен подключения.",
     "ERR_SPRINT_NOT_FOUND": "Спринт не найден.",
     "ERR_SPRINTS_DIFFERENT_BOARDS": "Выбранные спринты принадлежат разным бордам.",
-    "ERR_FORECAST_NOT_ENOUGH_DATA": "Недостаточно данных для прогноза (менее 10 дневных точек).",
-    "ERR_FORECAST_NO_ACTIVE_SPRINT": "Нет активного спринта, чтобы определить целевое число задач — "
-                                     "задайте --target-items явно.",
+    "ERR_FORECAST_NOT_ENOUGH_DATA": "Недостаточно данных для прогноза (меньше 3 закрытых спринтов с "
+                                    "данными по Story Points).",
     "WARN_THROUGHPUT_UNSTABLE": "Поток нестабилен — относитесь к перцентилям с осторожностью.",
     "WARN_SPRINT_ACTIVE_PARTIAL": "Включён активный спринт — его метрики промежуточные.",
     "WARN_STATUS_UNMAPPED": "Встречен несопоставленный статус — категория взята из statusCategory Jira.",
@@ -378,8 +453,9 @@ WARN_ERR_RU: dict[str, str] = {
     "ERR_GITLAB_UNREACHABLE": "GitLab недоступен (сеть, таймаут или 5xx).",
     "AUTH_FAILED": "GitLab отклонил токен (401/403). Проверьте токен.",
     "NOT_FOUND": "Проект не найден в GitLab — пропущен целиком.",
-    "FILTER_REJECTED_FALLBACK": "GitLab отклонил фильтр по дате — деплои получены без фильтра и отобраны на "
-                                "стороне инструмента; числа корректны, запросов ушло больше.",
+    "FILTER_REJECTED_FALLBACK": "GitLab отклонил фильтр по дате при запросе деплоев — они получены без "
+                                "серверного фильтра и отобраны по датам на стороне инструмента; это могло "
+                                "увеличить число запросов к GitLab.",
     "PAGINATION_LIMIT": "Список деплоев обрезан по лимиту страниц или времени — числа деплоев и их успешность "
                         "занижены, не читайте их как полные.",
     "MR_FETCH_ERROR": "Не удалось получить MR этого автора в этом проекте — его данные по MR неполные.",

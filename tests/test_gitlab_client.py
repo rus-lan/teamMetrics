@@ -495,13 +495,13 @@ class WindowFilterTests(unittest.TestCase):
     sprint end in, end-of-day applied internally) rather than truncating the
     final day."""
 
-    def test_deployments_apply_window_sends_updated_after_only(self):
-        """Regression fix #2 (patch release): server-side finished_after/
-        finished_before is gone entirely — see
-        DeploymentsStatusCouplingRegressionTests for why. Only
-        updated_after=window.start goes to the server (a one-directional,
-        never-excludes-a-valid-record pre-filter); the exact finished_at
-        window is applied client-side."""
+    def test_deployments_apply_window_sends_updated_after_with_matching_sort(self):
+        """Patch release round 3: GitLab rejects a bare `updated_after` with
+        HTTP 400 ("`updated_at` filter requires `updated_at` sort") — the
+        filter must be sent together with order_by=updated_at + a sort, or
+        GitLab rejects it and the client falls back to an unfiltered fetch
+        (see DeploymentsResilienceTests). finished_after/finished_before
+        stay gone entirely — see DeploymentsStatusCouplingRegressionTests."""
         client = _client()
         captured = {}
 
@@ -513,11 +513,11 @@ class WindowFilterTests(unittest.TestCase):
         window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
         client.deployments("group/project", 42, window=window)
         self.assertEqual(captured["params"]["updated_after"], "2026-01-01T00:00:00Z")
+        self.assertEqual(captured["params"]["order_by"], "updated_at")
+        self.assertEqual(captured["params"]["sort"], "desc")
         self.assertNotIn("updated_before", captured["params"])
         self.assertNotIn("finished_after", captured["params"])
         self.assertNotIn("finished_before", captured["params"])
-        self.assertNotIn("order_by", captured["params"])
-        self.assertNotIn("sort", captured["params"])
         self.assertNotIn("status", captured["params"])
 
     def test_deployments_without_window_sends_no_date_params(self):
@@ -686,8 +686,11 @@ class DeploymentsClientSideFinishedAtFilterTests(unittest.TestCase):
     """The exact finished_at window is now enforced in Python, against the
     coarser updated_after=window.start server-side pre-filter."""
 
-    def _dep(self, deployment_id, finished_at, status="success"):
-        return {"id": deployment_id, "status": status, "finished_at": finished_at, "user": {}, "environment": {}}
+    def _dep(self, deployment_id, finished_at, status="success", updated_at=None, created_at=None):
+        return {
+            "id": deployment_id, "status": status, "finished_at": finished_at,
+            "updated_at": updated_at, "created_at": created_at, "user": {}, "environment": {},
+        }
 
     def test_deployment_finished_inside_window_is_kept(self):
         client = _client()
@@ -712,12 +715,40 @@ class DeploymentsClientSideFinishedAtFilterTests(unittest.TestCase):
         records = client.deployments("g/p", 42, window=window)
         self.assertEqual(records, [])
 
-    def test_deployment_with_no_finished_at_is_dropped(self):
-        # Still running / not yet terminal -> updated_after could still
-        # match it (recently touched), but it hasn't "finished in this
-        # window" at all.
+    def test_deployment_with_no_timestamp_at_all_is_kept(self):
+        # Finding 1b: a record whose finished_at/updated_at/created_at are
+        # ALL null must survive the window filter rather than being
+        # silently discarded — the client must never guess it is outside
+        # the window when it genuinely cannot tell.
         client = _client()
         client._get_paginated = lambda *a, **kw: [self._dep(1, None, status="running")]
+        window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+        records = client.deployments("g/p", 42, window=window)
+        self.assertEqual([r["deployment_id"] for r in records], [1])
+
+    def test_deployment_with_null_finished_at_falls_back_to_updated_at(self):
+        # finished_at is null (not yet finished) but updated_at is inside
+        # the window -> kept via the fallback chain.
+        client = _client()
+        client._get_paginated = lambda *a, **kw: [self._dep(1, None, status="running", updated_at="2026-01-15T00:00:00Z")]
+        window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+        records = client.deployments("g/p", 42, window=window)
+        self.assertEqual([r["deployment_id"] for r in records], [1])
+
+    def test_deployment_with_null_finished_and_updated_falls_back_to_created_at(self):
+        client = _client()
+        client._get_paginated = lambda *a, **kw: [
+            self._dep(1, None, status="running", updated_at=None, created_at="2026-01-15T00:00:00Z")
+        ]
+        window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
+        records = client.deployments("g/p", 42, window=window)
+        self.assertEqual([r["deployment_id"] for r in records], [1])
+
+    def test_deployment_with_null_finished_at_and_updated_at_outside_window_is_dropped(self):
+        # The fallback chain still enforces the window — a resolvable
+        # timestamp outside the window drops the record just like finished_at would.
+        client = _client()
+        client._get_paginated = lambda *a, **kw: [self._dep(1, None, status="running", updated_at="2020-01-01T00:00:00Z")]
         window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))
         records = client.deployments("g/p", 42, window=window)
         self.assertEqual(records, [])
@@ -753,6 +784,44 @@ class DeploymentsClientSideFinishedAtFilterTests(unittest.TestCase):
         client._get_paginated = lambda *a, **kw: [self._dep(1, None, status="running"), self._dep(2, "2020-01-01T00:00:00Z")]
         records = client.deployments("g/p", 42, window=None)
         self.assertEqual(sorted(r["deployment_id"] for r in records), [1, 2])
+
+
+class DeploymentsDedupeTests(unittest.TestCase):
+    """Finding 7: order_by=updated_at&sort=desc combined with offset
+    pagination can hand the same deployment back twice — it is updated
+    server-side while this method is still paging, shifts across the page
+    boundary, and reappears on the next page. deployments() dedupes on
+    deployment_id itself since nothing downstream does."""
+
+    def _dep(self, deployment_id, status="success"):
+        return {
+            "id": deployment_id, "status": status, "finished_at": "2026-01-15T00:00:00Z",
+            "updated_at": None, "created_at": None, "user": {}, "environment": {},
+        }
+
+    def test_a_deployment_repeated_across_a_page_boundary_is_counted_once(self):
+        # _get_paginated already concatenated every page by the time
+        # deployments() sees it -- id=2 shifted across the boundary and
+        # was returned on both page one and page two.
+        client = _client()
+        page_one = [self._dep(1), self._dep(2)]
+        page_two = [self._dep(2), self._dep(3)]
+        client._get_paginated = lambda *a, **kw: page_one + page_two
+        records = client.deployments("g/p", 42, window=None)
+        self.assertEqual([r["deployment_id"] for r in records], [1, 2, 3])
+
+    def test_first_seen_occurrence_of_a_duplicate_id_wins(self):
+        client = _client()
+        client._get_paginated = lambda *a, **kw: [self._dep(1, status="failed"), self._dep(1, status="success")]
+        records = client.deployments("g/p", 42, window=None)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["status"], "failed")
+
+    def test_a_missing_deployment_id_is_never_deduped_away(self):
+        client = _client()
+        client._get_paginated = lambda *a, **kw: [self._dep(None), self._dep(None)]
+        records = client.deployments("g/p", 42, window=None)
+        self.assertEqual(len(records), 2)
 
 
 class DeploymentsResilienceTests(unittest.TestCase):
@@ -890,11 +959,16 @@ class DeploymentsResilienceTests(unittest.TestCase):
 
             def fake_do(op, path, params=None):
                 time.sleep(0.02)  # slower than the deadline -> trips right after this page
-                dep = {"id": 1, "status": "success", "finished_at": "2026-01-15T00:00:00Z", "user": {}, "environment": {}}
-                # A FULL page (== DEPLOYMENT_PAGE_SIZE) so pagination would
-                # continue to a 2nd page — a short page would just stop
-                # cleanly on its own, never reaching the deadline check.
-                return json.dumps([dep] * gc.DEPLOYMENT_PAGE_SIZE).encode(), {}
+                # A FULL page (== DEPLOYMENT_PAGE_SIZE) of DISTINCT ids so
+                # pagination would continue to a 2nd page — a short page
+                # would just stop cleanly on its own, never reaching the
+                # deadline check, and identical ids would collide with
+                # deployments()'s own deployment_id dedupe.
+                page = [
+                    {"id": i, "status": "success", "finished_at": "2026-01-15T00:00:00Z", "user": {}, "environment": {}}
+                    for i in range(gc.DEPLOYMENT_PAGE_SIZE)
+                ]
+                return json.dumps(page).encode(), {}
 
             client._do = fake_do
             window = gc.Window(start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 1, 31, tzinfo=UTC))

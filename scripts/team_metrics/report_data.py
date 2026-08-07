@@ -54,9 +54,7 @@ UTC = timezone.utc
 
 # SMA5 window is fixed at 5 regardless of --history (SPEC §4.1) — not to be
 # confused with config.MAX_HISTORY_SPRINTS (how many base sprints are
-# fetched/shown). The same constant also caps Forecast's own base-sprint
-# population (_pick_forecast_sprints) — Go's Service.Forecast reuses the
-# identical maxBaseSprints for both purposes.
+# fetched/shown).
 MAX_BASE_SPRINTS = 5
 
 
@@ -232,30 +230,16 @@ def _resolve_target_sprints(client: jc.JiraClient, sprint_ids: list[int], sprint
 def _pick_base_sprints(closed: list[jc.Sprint], targets: list[jc.Sprint], limit: int) -> list[jc.Sprint]:
     """Up to `limit` most recent closed sprints (excluding targets), ascending by start_at (SPEC §1.1).
 
-    This is the DISPLAYED history population (board_table/KPI/velocity trend),
-    sized by history_sprint_count. It is NOT the forecast's population — see
-    _pick_forecast_sprints, which is a separate, fixed-size, target-inclusive
-    set."""
+    This is the DISPLAYED history population (board_table/KPI/velocity
+    trend), sized by history_sprint_count. The SP forecast (§C.5 of the
+    3.1.0 fix release) uses a different population — every closed sprint on
+    `sprint_axis`, targets included — computed directly off `core["all_payloads"]`."""
     target_ids = {t.id for t in targets}
     candidates = [c for c in closed if c.id not in target_ids]
     candidates.sort(key=_sort_key, reverse=True)
     candidates = candidates[:limit]
     candidates.sort(key=_sort_key)
     return candidates
-
-
-def _pick_forecast_sprints(closed: list[jc.Sprint], limit: int = MAX_BASE_SPRINTS) -> list[jc.Sprint]:
-    """Forecast's own base-sprint population — independent of --history and
-    of the target/base split used for the board's displayed rows. Mirrors Go
-    (internal/adapters/persistence/sprint_snapshot_repo.go:110-112
-    ListClosedByBoard + internal/app/board/forecast.go:44): the board's
-    CLOSED sprints ordered by end_at descending, capped at `limit`
-    (MAX_BASE_SPRINTS=5, matching Go's maxBaseSprints), then re-sorted
-    ascending. A CLOSED target sprint is included, not excluded — Go reads
-    persisted snapshots with no notion of "target" at all."""
-    ordered = sorted(closed, key=lambda s: s.end_at, reverse=True)[:limit]
-    ordered.sort(key=lambda s: s.end_at)
-    return ordered
 
 
 @dataclass
@@ -279,82 +263,6 @@ def _velocity_history_for(
     if len(out) > MAX_BASE_SPRINTS:
         out = out[-MAX_BASE_SPRINTS:]
     return out
-
-
-# --------------------------------------------------------------------------
-# forecast.go (app) equivalent: default target_items resolution
-# --------------------------------------------------------------------------
-
-
-def _resolve_target_items(
-    all_payloads: list[metrics_mod.Payload],
-    client: jc.JiraClient,
-    board_id: int,
-    cfg: model.StatusCategoryConfig,
-    id_to_name: dict[str, str],
-    now: datetime,
-    *,
-    story_points_field_id: str = "",
-) -> Optional[int]:
-    """Remaining items of the board's active sprint (SPEC §1.2): committed +
-    added - removed - delivered, clamped >= 0. This standalone tool has no
-    persisted snapshot repository, so if the active sprint isn't already one
-    of the fetched/computed sprints it is fetched and computed on demand;
-    None means "no active sprint found" (caller decides how to degrade)."""
-    active_payload = next((p for p in all_payloads if p.sprint.state != "closed"), None)
-
-    if active_payload is None:
-        active_sprints = client.board_sprints(board_id, "active")
-        if not active_sprints:
-            return None
-        active_sprint = active_sprints[0]
-        facts = client.fetch_sprint_issues([active_sprint.id], story_points_field_id=story_points_field_id)
-        issues = _to_sprint_issues(facts, active_sprint.id, id_to_name)
-        sprint_input = _to_sprint_input(active_sprint, "", now)
-        # This on-demand fetch covers a sprint the main pass never saw, so it
-        # needs the same story_points_field_id override AND the same
-        # per-sprint status-category augmentation the main pass applies
-        # (translate.go:31-38) — otherwise a status unique to this sprint's
-        # issues would spuriously warn as unmapped.
-        augmented_cfg = _augment_status_category_config(cfg, facts)
-        active_payload, _ = metrics_mod.build_payload(sprint_input, issues, augmented_cfg, [])
-
-    m = active_payload.metrics
-    remaining = m.committed_items + m.scope_added_items - m.scope_removed_items - m.delivered_items
-    return max(remaining, 0)
-
-
-def _run_forecast(
-    forecast_payloads: list[metrics_mod.Payload],
-    all_payloads: list[metrics_mod.Payload],
-    client: jc.JiraClient,
-    board_id: int,
-    cfg: model.StatusCategoryConfig,
-    id_to_name: dict[str, str],
-    now: datetime,
-    *,
-    target_items: Optional[int],
-    seed: int,
-    iterations: int,
-    story_points_field_id: str = "",
-) -> tuple[Optional[forecast_mod.ForecastOutput], Optional[str], Optional[int]]:
-    resolved_target_items = target_items
-    if resolved_target_items is None:
-        resolved_target_items = _resolve_target_items(
-            all_payloads, client, board_id, cfg, id_to_name, now, story_points_field_id=story_points_field_id
-        )
-    if resolved_target_items is None:
-        return None, "ERR_FORECAST_NO_ACTIVE_SPRINT", None
-
-    daily_throughput = forecast_mod.calendar_daily_throughput(forecast_payloads)
-    rng = random.Random(seed)
-    try:
-        result = forecast_mod.forecast(
-            daily_throughput, len(forecast_payloads), resolved_target_items, rng, iterations=iterations
-        )
-    except forecast_mod.NotEnoughDataError:
-        return None, "ERR_FORECAST_NOT_ENOUGH_DATA", resolved_target_items
-    return result, None, resolved_target_items
 
 
 # --------------------------------------------------------------------------
@@ -528,7 +436,6 @@ def _build_report_core(
     story_points_field_id: str = "",
     seed: int = config_mod.DEFAULT_SEED,
     iterations: int = 0,
-    target_items: Optional[int] = None,
     now: Optional[datetime] = None,
 ) -> tuple[dict, list[jc.IssueFacts], list[jc.Sprint]]:
     """Builds the full report dict (pre-JSON-serialization) PLUS the raw
@@ -552,17 +459,15 @@ def _build_report_core(
 
     closed = client.closed_sprints(board_id)
     base_sprints = _pick_base_sprints(closed, targets, history_sprint_count)
-    forecast_sprints = _pick_forecast_sprints(closed, MAX_BASE_SPRINTS)
 
     all_sprints: list[_ResolvedSprint] = [_ResolvedSprint(sprint=t, target=True) for t in targets]
     all_sprints += [_ResolvedSprint(sprint=b, target=False) for b in base_sprints]
     all_sprints.sort(key=lambda rs: _sort_key(rs.sprint))
 
-    all_ids = [rs.sprint.id for rs in all_sprints]
-    # The forecast population (B1) can name a closed sprint outside the
-    # display/base set above — widen the one fetch to cover it too, rather
-    # than issuing a second Jira pass just for the forecast.
-    fetch_ids = list(dict.fromkeys(all_ids + [s.id for s in forecast_sprints]))
+    # ONE Jira pass covers every sprint on the axis (base + target) — the
+    # forecast (§C.5) and the all-sprint burndown/heatmap/issue_breakdown
+    # (§C.10) both read straight from these same payloads, no second fetch.
+    fetch_ids = [rs.sprint.id for rs in all_sprints]
     facts = client.fetch_sprint_issues(fetch_ids, story_points_field_id=story_points_field_id)
     jira_statuses = client.list_statuses()
     cfg = _to_status_category_config(status_map, cancelled_statuses, jira_statuses, facts)
@@ -620,34 +525,6 @@ def _build_report_core(
     warnings.extend(fresh_warnings)
     warnings = model.dedupe_warnings(warnings)
 
-    # Forecast's own population (B1) — closed sprints of the board ordered by
-    # end_at, capped at MAX_BASE_SPRINTS, target-inclusive. Reuse an
-    # already-computed payload when one of these sprints is also in `final`;
-    # its velocity_history doesn't matter here — only throughput_daily and
-    # the sprint's own dates feed the forecast, and neither depends on it.
-    forecast_payloads: list[metrics_mod.Payload] = []
-    for s in forecast_sprints:
-        p = final.get(s.id)
-        if p is None:
-            issues = _to_sprint_issues(facts, s.id, id_to_name)
-            sprint_input = _to_sprint_input(s, board_name, now)
-            p, _ = metrics_mod.build_payload(sprint_input, issues, cfg, [])
-        forecast_payloads.append(p)
-
-    forecast_result, forecast_error, resolved_target_items = _run_forecast(
-        forecast_payloads,
-        all_payloads,
-        client,
-        board_id,
-        cfg,
-        id_to_name,
-        now,
-        target_items=target_items,
-        seed=seed,
-        iterations=iterations,
-        story_points_field_id=story_points_field_id,
-    )
-
     export = _build_export(sprint_results)
 
     core = {
@@ -659,10 +536,6 @@ def _build_report_core(
         "all_payloads": all_payloads,
         "sprint_results": sprint_results,
         "kpi": kpi,
-        "forecast_result": forecast_result,
-        "forecast_error": forecast_error,
-        "resolved_target_items": resolved_target_items,
-        "forecast_payloads": forecast_payloads,
         "warnings": warnings,
         "export": export,
         "cfg": cfg,
@@ -673,7 +546,6 @@ def _build_report_core(
         "history_sprint_count": history_sprint_count,
         "seed": seed,
         "iterations": iterations if iterations > 0 else forecast_mod.DEFAULT_ITERATIONS,
-        "target_items_requested": target_items,
     }
     return core, facts, targets
 
@@ -879,24 +751,74 @@ def _build_sprints_section(
     return out
 
 
-def _build_issue_breakdown(target_payloads: list[metrics_mod.Payload], cfg: model.StatusCategoryConfig) -> list[dict]:
+def _normalize_login(login: Optional[str]) -> str:
+    return (login or "").strip().lower()
+
+
+def _build_allowlist(employees: Iterable[str]) -> Optional[frozenset]:
+    """§ finding 2 — a hard allowlist of logins, or None when `employees` is
+    empty (today's discover-from-data behaviour, unchanged). Case-insensitive
+    and whitespace-trimmed, so a casing typo in the config never silently
+    drops a real person."""
+    normalized = {_normalize_login(e) for e in employees if _normalize_login(e)}
+    return frozenset(normalized) if normalized else None
+
+
+def _login_allowed(login: Optional[str], allowlist: Optional[frozenset]) -> bool:
+    return allowlist is None or _normalize_login(login) in allowlist
+
+
+def _blank_disallowed_identity(rows: list[dict], allowlist: Optional[frozenset]) -> list[dict]:
+    """Blanks `user_username`/`user_name` on a whole-project pipeline/
+    deployment row whose trigger login is not on the allowlist — the row
+    itself, and every team-level count/rate built from it, stays exactly as
+    fetched (pipelines/deployments are deliberately whole-project). Only the
+    identity leaking out through CSV/raw-dump exports is scoped, matching
+    the JSON path's `employees` allowlist."""
+    if allowlist is None:
+        return rows
     out = []
-    for p in target_payloads:
-        rows = []
-        for is_ in p.issues:
-            category, _ = model.effective_status_category(is_.status_end, cfg)
-            rows.append({"key": is_.key, "final_status": is_.status_end, "final_status_category": category, "delivered": is_.delivered})
-        out.append({"sprint_id": p.sprint.id, "sprint_name": p.sprint.name, "rows": rows})
+    for row in rows:
+        if _login_allowed(row.get("user_username"), allowlist):
+            out.append(row)
+        else:
+            out.append({**row, "user_username": "", "user_name": ""})
     return out
 
 
-def _build_burndown_v2(target_payloads: list[metrics_mod.Payload], now: datetime) -> list[dict]:
+def _allowed_payload_issues(issues: list["model.Issue"], allowlist: Optional[frozenset]) -> list["model.Issue"]:
+    """Drops sprint-tab issues whose assignee is set and not on the
+    allowlist — unassigned issues always pass through. Used only for the
+    identity-bearing views (heatmap, issue breakdown, per-assignee Jira
+    table); the sprint's own committed/delivered/etc. metrics are computed
+    over the FULL issue set before this filter ever runs (frozen formulas,
+    never scoped by employees)."""
+    if allowlist is None:
+        return list(issues)
+    return [is_ for is_ in issues if not is_.assignee or _login_allowed(is_.assignee, allowlist)]
+
+
+def _build_issue_breakdown(
+    all_payloads: list[metrics_mod.Payload], target_ids: set, cfg: model.StatusCategoryConfig,
+    allowlist: Optional[frozenset] = None,
+) -> list[dict]:
     out = []
-    for p in target_payloads:
+    for p in all_payloads:
+        rows = []
+        for is_ in _allowed_payload_issues(p.issues, allowlist):
+            category, _ = model.effective_status_category(is_.status_end, cfg)
+            rows.append({"key": is_.key, "final_status": is_.status_end, "final_status_category": category, "delivered": is_.delivered})
+        out.append({"sprint_id": p.sprint.id, "sprint_name": p.sprint.name, "target": p.sprint.id in target_ids, "rows": rows})
+    return out
+
+
+def _build_burndown_v2(all_payloads: list[metrics_mod.Payload], target_ids: set, now: datetime) -> list[dict]:
+    out = []
+    for p in all_payloads:
         points = burndown_mod.burndown_from_payload(p, now)
         out.append(
             {
-                "sprint_id": p.sprint.id, "sprint_name": p.sprint.name,
+                "sprint_id": p.sprint.id, "sprint_name": p.sprint.name, "target": p.sprint.id in target_ids,
                 "points": [
                     {
                         "date": pt.date, "remaining_items": pt.remaining_items, "remaining_sp": pt.remaining_sp,
@@ -909,12 +831,15 @@ def _build_burndown_v2(target_payloads: list[metrics_mod.Payload], now: datetime
     return out
 
 
-def _build_heatmap_v2(target_payloads: list[metrics_mod.Payload], resolve_name) -> list[dict]:
+def _build_heatmap_v2(
+    all_payloads: list[metrics_mod.Payload], target_ids: set, resolve_name, allowlist: Optional[frozenset] = None,
+) -> list[dict]:
     out = []
-    for p in target_payloads:
-        logins = sorted({is_.assignee for is_ in p.issues if is_.assignee})
+    for p in all_payloads:
+        issues = _allowed_payload_issues(p.issues, allowlist)
+        logins = sorted({is_.assignee for is_ in issues if is_.assignee})
         display_names = {login: resolve_name(login)[0] for login in logins}
-        hm = heatmap_mod.heatmap_from_payload(p, display_names)
+        hm = heatmap_mod.build_heatmap(p.sprint.id, p.sprint.working_days, issues, display_names)
         rows = [
             {
                 "issue_key": r.issue_key, "epic_key": r.epic_key,
@@ -926,14 +851,23 @@ def _build_heatmap_v2(target_payloads: list[metrics_mod.Payload], resolve_name) 
             }
             for r in hm.rows
         ]
-        out.append({"sprint_id": p.sprint.id, "sprint_name": p.sprint.name, "days": list(hm.days), "rows": rows})
+        out.append(
+            {
+                "sprint_id": p.sprint.id, "sprint_name": p.sprint.name, "target": p.sprint.id in target_ids,
+                "days": list(hm.days), "rows": rows,
+            }
+        )
     return out
 
 
-def _build_people_individual_jira(target_payloads: list[metrics_mod.Payload], cfg: model.StatusCategoryConfig, resolve_name) -> list[dict]:
+def _build_people_individual_jira(
+    target_payloads: list[metrics_mod.Payload], cfg: model.StatusCategoryConfig, resolve_name,
+    allowlist: Optional[frozenset] = None,
+) -> list[dict]:
     out = []
     for p in target_payloads:
-        raw_rows = metrics_mod.per_assignee_metrics(p.issues, cfg)
+        issues = _allowed_payload_issues(p.issues, allowlist)
+        raw_rows = metrics_mod.per_assignee_metrics(issues, cfg)
         enriched = []
         for r in raw_rows:
             display = resolve_name(r.assignee)[0] if r.assignee else "Без исполнителя"
@@ -955,58 +889,95 @@ def _build_people_individual_jira(target_payloads: list[metrics_mod.Payload], cf
     return out
 
 
-def _build_forecast_v2(
-    forecast_result: Optional[forecast_mod.ForecastOutput],
-    forecast_error: Optional[str],
-    resolved_target_items: Optional[int],
-    target_items_requested: Optional[int],
-    forecast_payloads: list[metrics_mod.Payload],
-) -> dict:
-    target_items_source_ru = (
-        "Задано флагом --target-items" if target_items_requested is not None
-        else "Авто (незакрытые задачи активного спринта)"
-    )
-    if forecast_result is None:
-        daily = forecast_mod.calendar_daily_throughput(forecast_payloads)
-        return {
-            "available": False,
-            "error": labels_ru.warning_obj(forecast_error or "ERR_UNKNOWN"),
-            # §B types target_items as int, never null -- when no simulation
-            # ever ran (no active sprint to derive it from, none requested
-            # either) there is no "what the simulation ran with" value, so 0
-            # is the only int that does not fabricate a real target.
-            "target_items": resolved_target_items if resolved_target_items is not None else 0,
-            "target_items_source_ru": target_items_source_ru,
-            "sample_sprints": len(forecast_payloads),
-            "sample_days": len(daily),
-            "throughput_cv_pct": forecast_mod.weekly_cv(daily) if daily else 0.0,
-            "cv_warning_ru": None,
-            "sample_hint_ru": f"Выборка: {len(forecast_payloads)} спринтов, {len(daily)} дневных точек.",
-            "percentiles": [],
-            "histogram": [],
-            "warnings": [],
-        }
+# --------------------------------------------------------------------------
+# Forecast v2 — bootstrap over per-sprint delivered Story Points (§C.5 of
+# this fix release), team-wide and per allowlisted person.
+# --------------------------------------------------------------------------
 
-    cv = forecast_result.throughput_cv_pct
+
+def _closed_axis_sp_values(all_payloads: list[metrics_mod.Payload]) -> list[float]:
+    """Chronological (axis) order matters for determinism: the RNG draws an
+    INDEX, so a different element order at the same index changes the
+    result for the same --seed."""
+    return [p.metrics.delivered_sp for p in all_payloads if p.sprint.state == "closed"]
+
+
+def _percentiles_json(percentiles: list["forecast_mod.Percentile"]) -> list[dict]:
+    return [{"p": pc.p, "sp": pc.sp, "label_ru": pc.label_ru} for pc in percentiles]
+
+
+def _histogram_json(histogram: list["forecast_mod.Bucket"]) -> list[dict]:
+    return [{"sp": b.sp, "count": b.count} for b in histogram]
+
+
+def _build_team_forecast(values: list[float], seed: int, iterations: int) -> tuple[Optional[dict], Optional[dict]]:
+    if len(values) < forecast_mod.MIN_TEAM_SPRINTS:
+        return None, labels_ru.warning_obj("ERR_FORECAST_NOT_ENOUGH_DATA")
+
+    rng = random.Random(seed)
+    result = forecast_mod.forecast_sp(values, rng, iterations=iterations, min_sprints=forecast_mod.MIN_TEAM_SPRINTS)
     cv_warning_ru = None
-    if cv > forecast_mod.CV_WARN_THRESHOLD_PCT:
-        cv_warning_ru = f"Поток нестабилен (CV {labels_ru.format_pct1(cv)}%). Относитесь к перцентилям с осторожностью."
-    return {
-        "available": True,
-        "error": None,
-        "target_items": forecast_result.target_items,
-        "target_items_source_ru": target_items_source_ru,
-        "sample_sprints": forecast_result.sample_sprints,
-        "sample_days": forecast_result.sample_days,
-        "throughput_cv_pct": cv,
+    if forecast_mod.WARN_THROUGHPUT_UNSTABLE in result.warnings:
+        cv_warning_ru = f"Поток нестабилен (CV {labels_ru.format_pct1(result.cv_pct)}%). Относитесь к перцентилям с осторожностью."
+    effective_iterations = iterations if iterations > 0 else forecast_mod.DEFAULT_ITERATIONS
+    team = {
+        "percentiles": _percentiles_json(result.percentiles),
+        "histogram": _histogram_json(result.histogram),
+        "mean_sp": result.mean_sp,
+        "sample_sprints": result.sample_sprints,
+        "cv_pct": result.cv_pct,
         "cv_warning_ru": cv_warning_ru,
-        "sample_hint_ru": f"Выборка: {forecast_result.sample_sprints} спринтов, {forecast_result.sample_days} дневных точек.",
-        "percentiles": [
-            {"percentile": pc.percentile, "days": pc.days, "label_ru": f"P{pc.percentile} (дней)"}
-            for pc in forecast_result.percentiles
-        ],
-        "histogram": [{"days": b.days, "count": b.count} for b in forecast_result.histogram],
-        "warnings": [labels_ru.warning_obj(w) for w in forecast_result.warnings],
+        "basis_ru": (
+            f"Bootstrap-симуляция ({effective_iterations} итераций) по фактически поставленным Story Points "
+            f"{result.sample_sprints} закрытых спринтов на оси анализа (sprints[].metrics.delivered_sp)."
+        ),
+    }
+    return team, None
+
+
+def _person_sp_values(by_sprint: list[dict], axis: list["sprint_series.AxisSprint"]) -> list[float]:
+    return [
+        row["story_points_total"]
+        for row, a in zip(by_sprint, axis)
+        if row.get("has_data") and a.state == "closed" and row.get("story_points_total") is not None
+    ]
+
+
+def _build_person_forecast(person: dict, axis: list["sprint_series.AxisSprint"], seed: int, iterations: int) -> dict:
+    login, display_name = person["login"], person["display_name"]
+    values = _person_sp_values(person.get("by_sprint", []), axis)
+    if len(values) < forecast_mod.MIN_PERSON_SPRINTS:
+        return {
+            "login": login, "display_name": display_name, "available": False,
+            "unavailable_reason_ru": (
+                f"Меньше {forecast_mod.MIN_PERSON_SPRINTS} закрытых спринтов со Story Points у этого "
+                "человека — персональный прогноз не строится."
+            ),
+            "percentiles": [], "histogram": [], "mean_sp": None, "sample_sprints": len(values),
+        }
+    rng = random.Random(seed)
+    result = forecast_mod.forecast_sp(values, rng, iterations=iterations, min_sprints=forecast_mod.MIN_PERSON_SPRINTS)
+    return {
+        "login": login, "display_name": display_name, "available": True, "unavailable_reason_ru": None,
+        "percentiles": _percentiles_json(result.percentiles),
+        "histogram": _histogram_json(result.histogram),
+        "mean_sp": result.mean_sp, "sample_sprints": result.sample_sprints,
+    }
+
+
+def _build_forecast_v2(
+    all_payloads: list[metrics_mod.Payload], axis: list["sprint_series.AxisSprint"], people: list,
+    seed: int, iterations: int,
+) -> dict:
+    team, error = _build_team_forecast(_closed_axis_sp_values(all_payloads), seed, iterations)
+    return {
+        "available": team is not None,
+        "unit_ru": "SP",
+        "error": error,
+        "team": team,
+        # `people` is already allowlist-scoped (§ finding 2) by the time it
+        # reaches here — no further filtering needed.
+        "people": [_build_person_forecast(p, axis, seed, iterations) for p in people],
     }
 
 
@@ -1072,6 +1043,37 @@ def _outside_warning(counts: dict) -> Optional[dict]:
     if not parts:
         return None
     return labels_ru.warning_obj("WARN_OUTSIDE_SPRINTS", ", ".join(parts))
+
+
+def _build_deployment_warnings(raw_warnings: list[dict]) -> list[dict]:
+    """§ finding 1c — aggregates one raw warning PER PROJECT (gitlab_client's
+    own shape: `{"project", "code", "message"}`, `message` an internal/log
+    string that may embed raw HTTP text) into ONE entry per distinct `code`,
+    carrying a project count and the sorted project list — never a raw HTTP
+    body, never duplicated per project."""
+    projects_by_code: dict[str, set] = {}
+    order: list[str] = []
+    for w in raw_warnings:
+        code = w.get("code") or "ERR_UNKNOWN"
+        if code not in projects_by_code:
+            projects_by_code[code] = set()
+            order.append(code)
+        project = w.get("project")
+        if project:
+            projects_by_code[code].add(project)
+
+    out = []
+    for code in order:
+        projects = sorted(projects_by_code[code])
+        out.append(
+            {
+                "code": code,
+                "message_ru": labels_ru.warn_message(code),
+                "projects_count": len(projects),
+                "projects": projects,
+            }
+        )
+    return out
 
 
 def _dedupe_warning_objs(objs: list[dict]) -> list[dict]:
@@ -1196,6 +1198,71 @@ def _build_risks(overview: dict, engineering_data: dict, team_rework_rate_pct: O
     return risks
 
 
+# Severity order: most severe first — "bad" is a critical/report-own
+# threshold, "warn" is a softer/module-borrowed one (§ finding 4).
+_RECOMMENDATION_SEVERITY_RANK = {"bad": 0, "warn": 1}
+
+
+def _build_recommendations(
+    primary_metrics: metrics_mod.Metrics,
+    velocity_sma5_sp: float,
+    throughput_cv_pct: Optional[float],
+    overview: dict,
+    engineering_data: dict,
+    people: list,
+) -> list[dict]:
+    """§ finding 4 — restores the 2.2.0 «Что можно улучшить» block, built
+    entirely in the data layer so render_html.py carries no wording of its
+    own. Distinct from `risks` (kept as-is): recommendations name the
+    metric, its value, the threshold that fired, and a concrete action."""
+    items: list[dict] = []
+
+    def add(key: str, severity: str, value_ru: str, action_ru: Optional[str] = None) -> None:
+        items.append(
+            {
+                "key": key,
+                "severity": severity,
+                "metric_ru": labels_ru.RECOMMENDATION_METRIC_RU[key],
+                "value_ru": value_ru,
+                "signal_ru": labels_ru.RECOMMENDATION_SIGNAL_RU[key],
+                "action_ru": action_ru if action_ru is not None else labels_ru.RECOMMENDATION_ACTION_RU[key],
+            }
+        )
+
+    if primary_metrics.performance_pct < 80:
+        action = labels_ru.RECOMMENDATION_ACTION_RU["performance_low"].format(sma5=labels_ru.format_num1(velocity_sma5_sp))
+        add("performance_low", "bad", f"{labels_ru.format_pct1(primary_metrics.performance_pct)}%", action)
+
+    if primary_metrics.scope_change_pct > 25:
+        add("scope_change_high", "bad", f"{labels_ru.format_pct1(primary_metrics.scope_change_pct)}%")
+
+    if throughput_cv_pct is not None and throughput_cv_pct > forecast_mod.CV_WARN_THRESHOLD_PCT:
+        add("throughput_unstable", "warn", f"{labels_ru.format_pct1(throughput_cv_pct)}%")
+
+    pipeline_rate = overview["pipeline_success_rate_pct"]
+    if pipeline_rate is not None and pipeline_rate < 80:
+        add("pipeline_success_low", "bad", f"{labels_ru.format_pct1(pipeline_rate)}%")
+
+    rework_people = [
+        p for p in people
+        if p["metrics"]["rework_rate_pct"] is not None and p["metrics"]["rework_rate_pct"] > 30
+    ]
+    if rework_people:
+        max_rate = max(p["metrics"]["rework_rate_pct"] for p in rework_people)
+        add(
+            "rework_share_high", "warn",
+            f"выше 30% у {len(rework_people)} из {len(people)} участников "
+            f"(максимум {labels_ru.format_pct1(max_rate)}%)",
+        )
+
+    coverage_pct = engineering_data["coverage"]["coverage_avg_pct"] if engineering_data["available"] else None
+    if coverage_pct is not None and coverage_pct < 65:
+        add("coverage_low", "warn", f"{labels_ru.format_pct1(coverage_pct)}%")
+
+    items.sort(key=lambda r: _RECOMMENDATION_SEVERITY_RANK.get(r["severity"], 2))
+    return items
+
+
 def _heatmap_header_ru(header: list[str]) -> list[str]:
     out = []
     for h in header:
@@ -1220,7 +1287,6 @@ def build_combined_report(
     story_points_field_id: str = "",
     seed: int = config_mod.DEFAULT_SEED,
     iterations: int = 0,
-    target_items: Optional[int] = None,
     now: Optional[datetime] = None,
     gitlab_client_obj: Optional[glc.GitLabClient] = None,
     gitlab_projects: list[str] = (),
@@ -1241,7 +1307,7 @@ def build_combined_report(
         client,
         sprint_ids=sprint_ids, sprint_names=sprint_names, board_id_override=board_id_override,
         history_sprint_count=history_sprint_count, status_map=status_map, cancelled_statuses=cancelled_statuses,
-        story_points_field_id=story_points_field_id, seed=seed, iterations=iterations, target_items=target_items,
+        story_points_field_id=story_points_field_id, seed=seed, iterations=iterations,
         now=now, gitlab_client_obj=gitlab_client_obj, gitlab_projects=gitlab_projects, employees=employees,
         final_statuses=final_statuses, include_personal=include_personal, fetch_mr_details=fetch_mr_details,
         fetch_pipeline_user=fetch_pipeline_user, out_dir=out_dir, no_gitlab=no_gitlab, status_labels=status_labels,
@@ -1261,7 +1327,6 @@ def build_report(
     story_points_field_id: str = "",
     seed: int = config_mod.DEFAULT_SEED,
     iterations: int = 0,
-    target_items: Optional[int] = None,
     now: Optional[datetime] = None,
 ) -> dict:
     """Jira-only convenience wrapper: the same schema-v2 report as
@@ -1270,7 +1335,7 @@ def build_report(
     return build_combined_report(
         client, sprint_ids=sprint_ids, sprint_names=sprint_names, board_id_override=board_id_override,
         history_sprint_count=history_sprint_count, status_map=status_map, cancelled_statuses=cancelled_statuses,
-        story_points_field_id=story_points_field_id, seed=seed, iterations=iterations, target_items=target_items,
+        story_points_field_id=story_points_field_id, seed=seed, iterations=iterations,
         now=now, gitlab_client_obj=None,
     )
 
@@ -1287,7 +1352,6 @@ def build_combined_report_with_raw(
     story_points_field_id: str = "",
     seed: int = config_mod.DEFAULT_SEED,
     iterations: int = 0,
-    target_items: Optional[int] = None,
     now: Optional[datetime] = None,
     gitlab_client_obj: Optional[glc.GitLabClient] = None,
     gitlab_projects: list[str] = (),
@@ -1314,7 +1378,7 @@ def build_combined_report_with_raw(
     core, facts, targets = _build_report_core(
         client, sprint_ids=sprint_ids, sprint_names=sprint_names, board_id_override=board_id_override,
         history_sprint_count=history_sprint_count, status_map=status_map, cancelled_statuses=cancelled_statuses,
-        story_points_field_id=story_points_field_id, seed=seed, iterations=iterations, target_items=target_items,
+        story_points_field_id=story_points_field_id, seed=seed, iterations=iterations,
         now=now,
     )
     log.info("Метрики спринтов посчитаны")
@@ -1331,9 +1395,16 @@ def build_combined_report_with_raw(
     target_payloads = [sprints_by_id[rs.sprint.id] for rs in all_sprints if rs.target]
     cfg: model.StatusCategoryConfig = core["cfg"]
 
+    # -- employees allowlist (§ finding 2): a hard filter applied at every
+    # point a person's identity can reach the report, when configured. -----
+    allowlist = _build_allowlist(employees)
+
     # -- personal facts: v3 scope is ANY axis sprint, not target-only ------
     axis_ids = {rs.sprint.id for rs in all_sprints}
-    personal_facts = [f for f in facts if any(f.membership_by_sprint.get(sid) for sid in axis_ids)]
+    personal_facts_before_allowlist = [f for f in facts if any(f.membership_by_sprint.get(sid) for sid in axis_ids)]
+    personal_facts = [
+        f for f in personal_facts_before_allowlist if not f.assignee or _login_allowed(f.assignee, allowlist)
+    ]
 
     gitlab_configured = gitlab_client_obj is not None
     people_available = False
@@ -1343,6 +1414,7 @@ def build_combined_report_with_raw(
     gitlab_fetch_issues = {"skipped_projects": [], "mr_fetch_errors": [], "deployment_warnings": []}
     gitlab_data: Optional[dict] = None
     mrs: list = []
+    mrs_before_allowlist: list = []
     pipelines: list = []
     deployments: list = []
     coverage: list = []
@@ -1371,12 +1443,16 @@ def build_combined_report_with_raw(
                 {**e, "message_ru": labels_ru.warn_message("MR_FETCH_ERROR")}
                 for e in gitlab_data.get("mr_fetch_errors", [])
             ],
-            "deployment_warnings": [
-                {**w, "message_ru": labels_ru.warn_message(w.get("code") or "ERR_UNKNOWN")}
-                for w in gitlab_data.get("deployment_warnings", [])
-            ],
+            "deployment_warnings": _build_deployment_warnings(gitlab_data.get("deployment_warnings", [])),
         }
-        mrs = gitlab_data["merge_requests"]
+        # MR authors are an identity path too (§ finding 2's "MR author"
+        # entry point) — filtered defensively here regardless of whether the
+        # GitLab fetch itself already scoped `author_username` to
+        # `employees`, so a duck-typed/future client that returns broader
+        # data can never leak a non-allowlisted author into the report.
+        mrs_before_allowlist = gitlab_data["merge_requests"]
+        mrs = [m for m in mrs_before_allowlist if _login_allowed(m.get("author"), allowlist)]
+        gitlab_data["merge_requests"] = mrs
         pipelines = gitlab_data["pipelines"]
         deployments = gitlab_data["deployments"]
         coverage = gitlab_data["coverage"]
@@ -1500,6 +1576,37 @@ def build_combined_report_with_raw(
         "issue_type_dist": _issue_type_dist(f for f in all_done_flows if f["login"]) if people_available else {},
     }
 
+    # -- allowlist bookkeeping (§ finding 2, params.allowlist) --------------
+    seen_logins: set = set()
+    for f in personal_facts_before_allowlist:
+        if f.assignee:
+            seen_logins.add(_normalize_login(f.assignee))
+    for m in mrs_before_allowlist:
+        author = m.get("author")
+        if author:
+            seen_logins.add(_normalize_login(author))
+    for p in pipelines:
+        u = p.get("user_username")
+        if u:
+            seen_logins.add(_normalize_login(u))
+    for d in deployments:
+        u = d.get("user_username")
+        if u:
+            seen_logins.add(_normalize_login(u))
+    if allowlist is not None:
+        excluded_logins = sorted(seen_logins - allowlist)
+        missing_logins = sorted(allowlist - seen_logins)
+    else:
+        excluded_logins = []
+        missing_logins = []
+    allowlist_obj = {
+        "applied": allowlist is not None,
+        "configured_count": len(allowlist) if allowlist is not None else 0,
+        "excluded_logins": excluded_logins,
+        "missing_logins": missing_logins,
+        "note_ru": labels_ru.allowlist_note_ru(allowlist is not None),
+    }
+
     primary_target = next(p for a, p in [(a, sprints_by_id[a.id]) for a in reversed(axis)] if a.id in target_ids)
     board_kpi = _build_board_kpi(axis, sprints_by_id, primary_target, core["kpi"])
 
@@ -1521,11 +1628,19 @@ def build_combined_report_with_raw(
     warnings.extend(top_warnings_extra)
     warnings = _dedupe_warning_objs(warnings)
 
-    forecast_obj = _build_forecast_v2(
-        core["forecast_result"], core["forecast_error"], core["resolved_target_items"], target_items, core["forecast_payloads"]
-    )
+    forecast_obj = _build_forecast_v2(core["all_payloads"], axis, people, core["seed"], core["iterations"])
 
     risks = _build_risks(overview, engineering_data, team_rework_rate_pct)
+
+    # Weekly item-throughput CV — a stability signal for recommendations
+    # only (§ finding 4), independent of the SP forecast above. Same
+    # population as the SP forecast: closed sprints on the axis.
+    closed_axis_payloads = [p for p in core["all_payloads"] if p.sprint.state == "closed"]
+    throughput_daily = forecast_mod.calendar_daily_throughput(closed_axis_payloads)
+    throughput_cv_pct = forecast_mod.weekly_cv(throughput_daily) if throughput_daily else None
+    recommendations = _build_recommendations(
+        primary_target.metrics, core["kpi"].velocity_sma5_sp, throughput_cv_pct, overview, engineering_data, people,
+    )
 
     export = core["export"]
     export_tables = {
@@ -1551,27 +1666,27 @@ def build_combined_report_with_raw(
             "sprint_ids": core["sprint_ids"], "sprint_names": core["sprint_names"],
             "board_id": core["board_id"], "history_sprint_count": core["history_sprint_count"],
             "seed": core["seed"], "iterations": core["iterations"],
-            "target_items_requested": core["target_items_requested"], "target_items_resolved": core["resolved_target_items"],
             "generated_at": now, "tool_version": _tool_version(), "out_dir": out_dir,
             "no_gitlab": no_gitlab, "no_personal": not include_personal,
             "gitlab_window": {"start": axis_window_start, "end": axis_window_end} if gitlab_configured else None,
             "gitlab_request_count": gitlab_request_count,
             "gitlab_fetch_mr_details": gitlab_fetch_mr_details_echo,
             "gitlab_fetch_pipeline_user": gitlab_fetch_pipeline_user_echo,
+            "allowlist": allowlist_obj,
         },
         "warnings": warnings,
         "sprint_axis": axis,
         "sprints": _build_sprints_section(axis, sprints_by_id, per_sprint_warnings, target_ids),
         "board_kpi": board_kpi,
         "overview": overview,
-        "burndown": _build_burndown_v2(target_payloads, now),
-        "heatmap": _build_heatmap_v2(target_payloads, resolve_name),
-        "issue_breakdown": _build_issue_breakdown(target_payloads, cfg),
+        "burndown": _build_burndown_v2(core["all_payloads"], target_ids, now),
+        "heatmap": _build_heatmap_v2(core["all_payloads"], target_ids, resolve_name, allowlist),
+        "issue_breakdown": _build_issue_breakdown(core["all_payloads"], target_ids, cfg, allowlist),
         "forecast": forecast_obj,
         "people_available": people_available,
         "people_reason_ru": people_reason_ru,
         "people": people,
-        "people_individual_jira": _build_people_individual_jira(target_payloads, cfg, resolve_name),
+        "people_individual_jira": _build_people_individual_jira(target_payloads, cfg, resolve_name, allowlist),
         "engineering": engineering_data,
         "team_series": team_series,
         "people_series": people_series,
@@ -1579,6 +1694,9 @@ def build_combined_report_with_raw(
         "glossary": labels_ru.GLOSSARY_RU,
         "metric_defs": labels_ru.METRIC_DEFS_RU,
         "risks": risks,
+        "recommendations": recommendations,
+        "recommendations_empty_ru": labels_ru.RECOMMENDATIONS_EMPTY_RU,
+        "recommendations_intro_ru": labels_ru.RECOMMENDATIONS_INTRO_RU,
         "labels": {
             "roles": labels_ru.ROLES_RU,
             "status_categories": labels_ru.STATUS_CATEGORIES_RU,
@@ -1591,7 +1709,10 @@ def build_combined_report_with_raw(
     }
 
     raw = {
-        "facts": personal_facts, "mrs": mrs, "pipelines": pipelines, "deployments": deployments, "coverage": coverage,
+        "facts": personal_facts, "mrs": mrs,
+        "pipelines": _blank_disallowed_identity(pipelines, allowlist),
+        "deployments": _blank_disallowed_identity(deployments, allowlist),
+        "coverage": coverage,
         "done_flows": all_done_flows, "axis": axis, "cfg": cfg, "final_statuses": final_statuses,
         "gitlab_configured": gitlab_configured, "heatmap_csv_text": export["heatmap_csv"],
     }
@@ -1625,7 +1746,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             story_points_field_id=run_cfg.file_config.story_points_field_id,
             seed=run_cfg.seed,
             iterations=run_cfg.iterations,
-            target_items=run_cfg.target_items,
             gitlab_client_obj=gitlab_cli,
             gitlab_projects=run_cfg.file_config.gitlab_projects,
             employees=run_cfg.file_config.employees,

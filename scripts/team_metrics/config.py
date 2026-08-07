@@ -215,12 +215,6 @@ def add_pipeline_args(p: argparse.ArgumentParser) -> None:
         help="Previous closed sprints analyzed in addition to targets (0 -> default 5, clamp 20)",
     )
     p.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Monte-Carlo bootstrap RNG seed (deterministic)")
-    p.add_argument(
-        "--target-items",
-        type=int,
-        default=None,
-        help="Forecast target item count; default: remaining items of the board's active sprint",
-    )
     p.add_argument("--iterations", type=int, default=0, help="Monte-Carlo iterations (0 -> default 5000)")
     p.add_argument("--config", default=None, help=f"Path to JSON config file (default: ./{DEFAULT_CONFIG_FILENAME} if present)")
     p.add_argument(
@@ -286,7 +280,6 @@ class RunConfig:
     board_id: Optional[int]
     history_sprint_count: int
     seed: int
-    target_items: Optional[int]
     iterations: int
     json_out: bool
     out_path: Optional[str]
@@ -303,7 +296,7 @@ class RunConfig:
 def build_run_config_from_args(args: argparse.Namespace, environ: Optional[dict] = None) -> RunConfig:
     """Builds a RunConfig from an already-parsed Namespace holding at least the
     args `add_pipeline_args()` adds (sprint_ids/sprint_names/board_id/history/
-    seed/target_items/iterations/config/no_gitlab/no_personal/no_mr_details/
+    seed/iterations/config/no_gitlab/no_personal/no_mr_details/
     no_pipeline_users/out_dir/verbose/quiet).
 
     `json_out`/`out_path` come from `args.json`/`args.out` when present,
@@ -340,7 +333,6 @@ def build_run_config_from_args(args: argparse.Namespace, environ: Optional[dict]
         board_id=args.board_id,
         history_sprint_count=history_sprint_count,
         seed=args.seed,
-        target_items=args.target_items,
         iterations=args.iterations,
         json_out=getattr(args, "json", False),
         out_path=getattr(args, "out", None),

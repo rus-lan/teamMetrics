@@ -1,66 +1,78 @@
-"""Monte-Carlo forecast: bootstrap-with-replacement over calendar daily throughput.
+"""Monte-Carlo forecast: bootstrap over historical per-sprint delivered
+story points.
 
-Python port of internal/domain/forecast/montecarlo.go + forecast.go and the
-calendar-window assembly from internal/app/board/forecast.go
-(calendarDailyThroughput/sprintCalendarWindow). Only item counts, never story
-points (SPEC §8). RNG is injected (stdlib random.Random) so callers can pin a
---seed for determinism; production Go seeds from crypto/rand and is
-intentionally non-deterministic, but nothing here depends on matching Go's
-draws bit-for-bit — only on this implementation being internally
-deterministic given the same seed.
+Answers "how many SP is a sprint likely to deliver" — team-wide and per
+person — by resampling (with replacement) the historical per-sprint SP
+values. Each bootstrap iteration draws one historical sprint's value as a
+simulated outcome for "the next sprint"; percentiles/histogram summarize
+that distribution. RNG is injected (stdlib random.Random) so callers can pin
+a --seed for determinism.
+
+`weekly_cv`/`calendar_daily_throughput`/`sprint_calendar_window` are a
+second, independent thing kept in this module: a weekly item-throughput
+coefficient-of-variation used only as a stability signal for
+report_data.py's recommendations block (WARN_THROUGHPUT_UNSTABLE) — they
+feed no forecast math here anymore.
 """
 
 from __future__ import annotations
 
 import math
-import random
+import statistics
 from dataclasses import dataclass
 from datetime import timedelta
+from random import Random
+from typing import Optional
 
 from . import metrics as metrics_mod
 from . import model
 
 DEFAULT_ITERATIONS = 5000
-MAX_DAYS_GUARD = 2000
+MIN_TEAM_SPRINTS = 3
+MIN_PERSON_SPRINTS = 2
 MIN_NON_ZERO_POINTS = 10
 CV_WARN_THRESHOLD_PCT = 50.0
 WARN_THROUGHPUT_UNSTABLE = "WARN_THROUGHPUT_UNSTABLE"
 
+# Restores the qualitative percentile wording a previous version carried and
+# a later one dropped in favour of a bare "P50 (дней)" label — the renderer
+# must not have to invent this wording itself.
+PERCENTILE_LABELS_RU: dict[int, str] = {
+    50: "50% прогонов уложились",
+    85: "рабочее обещание",
+    95: "безопасный внешний срок",
+}
+
 
 class NotEnoughDataError(Exception):
-    """Mirrors forecast.ErrNotEnoughData (ERR_FORECAST_NOT_ENOUGH_DATA)."""
+    """Fewer than the minimum closed-sprint SP data points for a forecast."""
 
 
 @dataclass
 class Percentile:
-    percentile: int
-    days: int
+    p: int
+    sp: float
+    label_ru: str
 
 
 @dataclass
 class Bucket:
-    days: int
+    sp: float
     count: int
 
 
 @dataclass
 class ForecastOutput:
-    target_items: int
-    sample_sprints: int
-    sample_days: int
-    throughput_cv_pct: float
     percentiles: list[Percentile]
     histogram: list[Bucket]
+    mean_sp: float
+    sample_sprints: int
+    cv_pct: Optional[float]
     warnings: list[str]
-    outcomes: list[int]
 
 
-def non_zero_points(daily_hist: list[int]) -> int:
-    return sum(1 for v in daily_hist if v > 0)
-
-
-def percentile(sorted_vals: list[int], p: float) -> int:
-    """Nearest-rank percentile, no interpolation (SPEC §8.4)."""
+def percentile(sorted_vals: list, p: float):
+    """Nearest-rank percentile, no interpolation."""
     if not sorted_vals:
         return 0
     rank = math.ceil(p / 100 * len(sorted_vals)) - 1
@@ -71,87 +83,94 @@ def percentile(sorted_vals: list[int], p: float) -> int:
     return sorted_vals[rank]
 
 
-def simulate_when(hist: list[int], target_items: int, iterations: int, rng: random.Random) -> tuple[list[int], int, int, int]:
-    """Bootstrap 'when do we close target_items items' (SPEC §8.3)."""
-    n = len(hist)
-    outcomes: list[int] = []
-    for _ in range(iterations):
-        remaining, days = target_items, 0
-        while remaining > 0 and days < MAX_DAYS_GUARD:
-            remaining -= hist[rng.randrange(n)]
-            days += 1
-        outcomes.append(days)
-    outcomes.sort()
-    return outcomes, percentile(outcomes, 50), percentile(outcomes, 85), percentile(outcomes, 95)
-
-
-def weekly_cv(daily_hist: list[int]) -> float:
-    """Population-variance coefficient of variation over consecutive 7-day windows (SPEC §8.6)."""
-    weeks: list[float] = []
-    i = 0
-    while i + 7 <= len(daily_hist):
-        weeks.append(float(sum(daily_hist[i : i + 7])))
-        i += 7
-    if len(weeks) < 2:
-        return 0.0
-    mean = sum(weeks) / len(weeks)
+def sp_series_cv_pct(values: list[float]) -> Optional[float]:
+    """Population-variance coefficient of variation over the historical
+    per-sprint SP series itself (not a weekly-binned daily series — the SP
+    forecast operates at sprint granularity). None when there are fewer than
+    two values or their mean is zero (nothing meaningful to divide by)."""
+    if len(values) < 2:
+        return None
+    mean = sum(values) / len(values)
     if mean == 0:
-        return 0.0
-    variance = sum((w - mean) ** 2 for w in weeks) / len(weeks)
+        return None
+    variance = sum((v - mean) ** 2 for v in values) / len(values)
     return math.sqrt(variance) / mean * 100.0
 
 
-def build_histogram(sorted_outcomes: list[int]) -> list[Bucket]:
-    """One bucket per distinct duration; missing durations get no zero-count bucket (SPEC §8.5)."""
+def _percentile_label_ru(p: int) -> str:
+    return PERCENTILE_LABELS_RU.get(p, f"P{p}")
+
+
+def build_histogram(sorted_outcomes: list[float]) -> list[Bucket]:
+    """One bucket per distinct SP value; missing values get no zero-count
+    bucket. The bootstrap only ever redraws a historical value verbatim
+    (never sums/interpolates), so this is already an exact histogram, not an
+    approximation that needs bin-width smoothing."""
     if not sorted_outcomes:
         return []
     buckets: list[Bucket] = []
     cur = sorted_outcomes[0]
     count = 0
-    for d in sorted_outcomes:
-        if d != cur:
-            buckets.append(Bucket(days=cur, count=count))
-            cur = d
+    for v in sorted_outcomes:
+        if v != cur:
+            buckets.append(Bucket(sp=cur, count=count))
+            cur = v
             count = 0
         count += 1
-    buckets.append(Bucket(days=cur, count=count))
+    buckets.append(Bucket(sp=cur, count=count))
     return buckets
 
 
-def forecast(
-    daily_throughput: list[int],
-    sample_sprints: int,
-    target_items: int,
-    rng: random.Random,
+def forecast_sp(
+    values: list[float],
+    rng: Random,
+    *,
     iterations: int = 0,
+    min_sprints: int = MIN_TEAM_SPRINTS,
 ) -> ForecastOutput:
-    if non_zero_points(daily_throughput) < MIN_NON_ZERO_POINTS:
-        raise NotEnoughDataError("forecast: not enough throughput history")
+    """Bootstrap-with-replacement over `values` (one float per historical
+    sprint, index-order matters for determinism — callers pass a stable,
+    e.g. chronological, order). Each iteration redraws one historical
+    value as a simulated "next sprint" SP outcome."""
+    if len(values) < min_sprints:
+        raise NotEnoughDataError("forecast: not enough closed-sprint SP history")
 
     iters = iterations if iterations > 0 else DEFAULT_ITERATIONS
+    n = len(values)
+    outcomes = [values[rng.randrange(n)] for _ in range(iters)]
+    outcomes.sort()
 
-    cv = weekly_cv(daily_throughput)
-    outcomes, p50, p85, p95 = simulate_when(daily_throughput, target_items, iters, rng)
+    p50 = percentile(outcomes, 50)
+    p85 = percentile(outcomes, 85)
+    p95 = percentile(outcomes, 95)
 
-    warnings = []
-    if cv > CV_WARN_THRESHOLD_PCT:
+    cv = sp_series_cv_pct(values)
+    warnings: list[str] = []
+    if cv is not None and cv > CV_WARN_THRESHOLD_PCT:
         warnings.append(WARN_THROUGHPUT_UNSTABLE)
 
     return ForecastOutput(
-        target_items=target_items,
-        sample_sprints=sample_sprints,
-        sample_days=len(daily_throughput),
-        throughput_cv_pct=cv,
-        percentiles=[Percentile(50, p50), Percentile(85, p85), Percentile(95, p95)],
+        percentiles=[
+            Percentile(p=50, sp=round(p50, 1), label_ru=_percentile_label_ru(50)),
+            Percentile(p=85, sp=round(p85, 1), label_ru=_percentile_label_ru(85)),
+            Percentile(p=95, sp=round(p95, 1), label_ru=_percentile_label_ru(95)),
+        ],
         histogram=build_histogram(outcomes),
+        mean_sp=round(statistics.mean(values), 2),
+        sample_sprints=n,
+        cv_pct=round(cv, 1) if cv is not None else None,
         warnings=warnings,
-        outcomes=outcomes,
     )
 
 
+# --------------------------------------------------------------------------
+# Weekly item-throughput CV — a stability signal for recommendations only.
+# --------------------------------------------------------------------------
+
+
 def sprint_calendar_window(payload: "metrics_mod.Payload") -> list[int]:
-    """Expand one closed sprint's sparse throughput_daily into a full calendar
-    window [start_at..complete_at|end_at], zeros included (SPEC §8.1)."""
+    """Expand one closed sprint's sparse throughput_daily into a full
+    calendar window [start_at..complete_at|end_at], zeros included."""
     sprint = payload.sprint
     end = sprint.complete_at if sprint.complete_at is not None else sprint.end_at
 
@@ -174,9 +193,27 @@ def sprint_calendar_window(payload: "metrics_mod.Payload") -> list[int]:
 
 
 def calendar_daily_throughput(closed_payloads: list["metrics_mod.Payload"]) -> list[int]:
-    """Concatenate the calendar windows of up to 5 closed sprints, sorted ascending by start_at."""
+    """Concatenate the calendar windows of the given closed sprints, sorted
+    ascending by start_at."""
     ordered = sorted(closed_payloads, key=lambda p: p.sprint.start_at)
     out: list[int] = []
     for p in ordered:
         out.extend(sprint_calendar_window(p))
     return out
+
+
+def weekly_cv(daily_hist: list[int]) -> float:
+    """Population-variance coefficient of variation over consecutive 7-day
+    windows of a daily item-throughput series."""
+    weeks: list[float] = []
+    i = 0
+    while i + 7 <= len(daily_hist):
+        weeks.append(float(sum(daily_hist[i : i + 7])))
+        i += 7
+    if len(weeks) < 2:
+        return 0.0
+    mean = sum(weeks) / len(weeks)
+    if mean == 0:
+        return 0.0
+    variance = sum((w - mean) ** 2 for w in weeks) / len(weeks)
+    return math.sqrt(variance) / mean * 100.0

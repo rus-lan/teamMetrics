@@ -18,7 +18,7 @@ from team_metrics import jira_client as jc
 from team_metrics import metrics as metrics_mod
 from team_metrics import model, report_data
 
-from helpers import dt, make_cfg
+from helpers import dt
 
 UTC = timezone.utc
 
@@ -139,7 +139,7 @@ class BuildReportIntegrationTests(unittest.TestCase):
         )
 
         self.report = report_data.build_report(
-            self.client, sprint_ids=[100], history_sprint_count=5, target_items=7, now=dt(2026, 1, 24)
+            self.client, sprint_ids=[100], history_sprint_count=5, now=dt(2026, 1, 24)
         )
 
     def _target_entry(self):
@@ -186,25 +186,55 @@ class BuildReportIntegrationTests(unittest.TestCase):
         self.assertNotIn(model.WARN_DIVISION_BY_ZERO, codes)
         self.assertNotIn(model.WARN_SPRINT_ACTIVE_PARTIAL, codes)
 
-    def test_forecast_succeeds_with_enough_nonzero_points(self):
-        # Forecast's own population (B1) is the board's closed sprints
-        # ordered by end_at, capped at 5, target-inclusive — so it's sprints
-        # 98+99+100 here (all three are closed), NOT just the 2 non-target
-        # base sprints --history would show on the board table.
+    def test_recommendations_fire_from_real_sprint_metrics(self):
+        # Sprint 100: performance_pct ~= 71.4% (< 80) and scope_change_pct
+        # ~= 71.4% (> 25) -- both recommendation heuristics must fire from
+        # the SAME payload the sprint tab already computed.
+        keys = {r["key"] for r in self.report["recommendations"]}
+        self.assertIn("performance_low", keys)
+        self.assertIn("scope_change_high", keys)
+        for r in self.report["recommendations"]:
+            self.assertIn(r["severity"], ("bad", "warn"))
+            self.assertTrue(r["metric_ru"])
+            self.assertTrue(r["value_ru"])
+            self.assertTrue(r["signal_ru"])
+            self.assertTrue(r["action_ru"])
+        self.assertTrue(self.report["recommendations_intro_ru"])
+        self.assertTrue(self.report["recommendations_empty_ru"])
+
+    def test_forecast_sp_succeeds_with_enough_closed_sprints(self):
+        # New SP-based team forecast (3.1.0): bootstrap over
+        # sprints[].metrics.delivered_sp across the closed sprints on the
+        # axis — 98+99+100 here (all three are closed, target included).
         forecast = self.report["forecast"]
         self.assertTrue(forecast["available"])
         self.assertIsNone(forecast["error"])
-        self.assertEqual(forecast["sample_sprints"], 3)
-        self.assertEqual(forecast["sample_days"], 15)
-        self.assertEqual(forecast["target_items"], 7)
-        self.assertEqual(len(forecast["percentiles"]), 3)
+        self.assertEqual(forecast["unit_ru"], "SP")
+        team = forecast["team"]
+        self.assertEqual(team["sample_sprints"], 3)
+        self.assertEqual(team["mean_sp"], 5.0)  # all three sprints deliver 5.0 SP
+        self.assertEqual(len(team["percentiles"]), 3)
+        self.assertEqual([pc["p"] for pc in team["percentiles"]], [50, 85, 95])
+        for pc in team["percentiles"]:
+            self.assertEqual(pc["sp"], 5.0)
+            self.assertTrue(pc["label_ru"])
+        self.assertTrue(team["basis_ru"])
 
-    def test_heatmap_and_burndown_built_for_target_sprint_only(self):
-        self.assertEqual(len(self.report["heatmap"]), 1)
-        self.assertEqual(len(self.report["burndown"]), 1)
+    def test_heatmap_and_burndown_built_for_every_axis_sprint(self):
+        # Finding 5: all three axis sprints get detail data, not just the
+        # target — but the target sprint's own per-day content is unchanged.
+        self.assertEqual(len(self.report["heatmap"]), 3)
+        self.assertEqual(len(self.report["burndown"]), 3)
+        self.assertEqual(
+            sorted((h["sprint_id"], h["target"]) for h in self.report["heatmap"]),
+            [(98, False), (99, False), (100, True)],
+        )
+        self.assertEqual(
+            sorted((b["sprint_id"], b["target"]) for b in self.report["burndown"]),
+            [(98, False), (99, False), (100, True)],
+        )
 
-        hm = self.report["heatmap"][0]
-        self.assertEqual(hm["sprint_id"], 100)
+        hm = next(h for h in self.report["heatmap"] if h["sprint_id"] == 100)
         self.assertEqual(hm["days"], ["2026-01-19", "2026-01-20", "2026-01-21", "2026-01-22", "2026-01-23"])
         rows_by_key = {r["issue_key"]: r["cells"] for r in hm["rows"]}
         # T1: delivered Jan 21 10:00 -> "In Progress" through Jan 20, "Done" from Jan 21.
@@ -218,8 +248,7 @@ class BuildReportIntegrationTests(unittest.TestCase):
         # T3: removed Jan 22 09:00 -> last cell is Jan 21, none after.
         self.assertEqual([c["date"] for c in rows_by_key["T3"]], ["2026-01-19", "2026-01-20", "2026-01-21"])
 
-        bd = self.report["burndown"][0]
-        self.assertEqual(bd["sprint_id"], 100)
+        bd = next(b for b in self.report["burndown"] if b["sprint_id"] == 100)
         points_by_date = {p["date"]: p for p in bd["points"]}
         # Jan 19: only T1 (5sp) + T3 (2sp) are members yet (T2 joins Jan 20).
         self.assertEqual(points_by_date["2026-01-19"]["remaining_items"], 2)
@@ -285,8 +314,8 @@ class BuildReportIntegrationTests(unittest.TestCase):
         params = self.report["params"]
         self.assertEqual(params["board_id"], 1)
         self.assertEqual(params["history_sprint_count"], 5)
-        self.assertEqual(params["target_items_resolved"], 7)
         self.assertEqual(params["sprint_ids"], [100])
+        self.assertFalse(params["allowlist"]["applied"])
 
     def test_board_id_mismatch_raises(self):
         with self.assertRaises(report_data.ReportError):
@@ -297,67 +326,6 @@ class BuildReportIntegrationTests(unittest.TestCase):
             report_data.build_report(self.client, sprint_ids=[], sprint_names=[], now=dt(2026, 1, 24))
         with self.assertRaises(report_data.ReportError):
             report_data.build_report(self.client, sprint_ids=[100], sprint_names=["Sprint 100"], now=dt(2026, 1, 24))
-
-
-class ResolveTargetItemsTests(unittest.TestCase):
-    """Default target_items = remaining items of the board's active sprint (SPEC §1.2)."""
-
-    def _client_and_cfg(self, facts):
-        active = jc.Sprint(id=101, name="Active", state="active", board_id=1,
-                            start_at=dt(2026, 1, 26), end_at=dt(2026, 1, 30), complete_at=model.ZERO_TIME)
-        client = FakeJiraClient(
-            sprints={101: active}, board=jc.Board(id=1, name="B", type="scrum"),
-            closed_ids=[], active_ids=[101], facts=facts, statuses=STATUSES,
-        )
-        cfg = make_cfg(jira_status_categories={"In Progress": "indeterminate", "Done": "done"})
-        return client, cfg
-
-    def test_remaining_items_formula(self):
-        facts = [
-            _make_fact("A1", 101, model.Interval(from_=dt(2025, 12, 1), until=None), 1.0),  # committed, not delivered
-            _make_fact("A2", 101, model.Interval(from_=dt(2025, 12, 1), until=None), 1.0, done_at=dt(2026, 1, 27)),  # committed+delivered
-            jc.IssueFacts(  # added after start, not delivered
-                key="A3", epic_key="", type="Story", role="", labels=[], assignee="",
-                story_points=1.0, qa_estimation=0.0, created=dt(2025, 12, 1),
-                initial_status="In Progress", initial_status_id="2", status_history=[], sp_events=[],
-                current_status="In Progress", current_status_category_key="indeterminate",
-                membership_by_sprint={101: [model.Interval(from_=dt(2026, 1, 27, 9, 0), until=None)]},
-            ),
-            jc.IssueFacts(  # committed AND (later) removed — counts in both sets, SPEC §3.3
-                key="A4", epic_key="", type="Story", role="", labels=[], assignee="",
-                story_points=1.0, qa_estimation=0.0, created=dt(2025, 12, 1),
-                initial_status="In Progress", initial_status_id="2", status_history=[], sp_events=[],
-                current_status="In Progress", current_status_category_key="indeterminate",
-                membership_by_sprint={101: [model.Interval(from_=dt(2025, 12, 1), until=dt(2026, 1, 27, 9, 0))]},
-            ),
-        ]
-        client, cfg = self._client_and_cfg(facts)
-        remaining = report_data._resolve_target_items(
-            all_payloads=[], client=client, board_id=1, cfg=cfg, id_to_name={}, now=dt(2026, 1, 28)
-        )
-        # committed(3: A1,A2,A4) + added(1: A3) - removed(1: A4) - delivered(1: A2) = 2
-        self.assertEqual(remaining, 2)
-
-    def test_remaining_items_clamped_at_zero_when_formula_goes_negative(self):
-        facts = [
-            _make_fact("B1", 101, model.Interval(from_=dt(2025, 12, 1), until=None), 1.0, done_at=dt(2026, 1, 27)),
-            _make_fact("B2", 101, model.Interval(from_=dt(2025, 12, 1), until=None), 1.0, done_at=dt(2026, 1, 27)),
-        ]
-        client, cfg = self._client_and_cfg(facts)
-        remaining = report_data._resolve_target_items(
-            all_payloads=[], client=client, board_id=1, cfg=cfg, id_to_name={}, now=dt(2026, 1, 28)
-        )
-        # committed(2) + added(0) - removed(0) - delivered(2) = 0 — never negative
-        self.assertEqual(remaining, 0)
-
-    def test_no_active_sprint_returns_none(self):
-        client = FakeJiraClient(sprints={}, board=jc.Board(id=1, name="B", type="scrum"),
-                                 closed_ids=[], active_ids=[], facts=[], statuses=STATUSES)
-        cfg = make_cfg()
-        remaining = report_data._resolve_target_items(
-            all_payloads=[], client=client, board_id=1, cfg=cfg, id_to_name={}, now=dt(2026, 1, 28)
-        )
-        self.assertIsNone(remaining)
 
 
 class CanonicalStatusNameTests(unittest.TestCase):
@@ -387,28 +355,6 @@ class PickBaseSprintsTests(unittest.TestCase):
         closed = [_sprint(i, dt(2026, 1, i)) for i in range(1, 4)]
         picked = report_data._pick_base_sprints(closed, targets=[], limit=10)
         self.assertEqual([s.id for s in picked], [1, 2, 3])
-
-
-class PickForecastSprintsTests(unittest.TestCase):
-    """B1: forecast's own population — closed sprints ordered by end_at,
-    capped at MAX_BASE_SPRINTS, target-inclusive (unlike _pick_base_sprints)."""
-
-    def test_all_included_when_within_limit_ordered_by_end_at_ascending(self):
-        closed = [_sprint(1, dt(2026, 1, 1), end=dt(2026, 1, 9)),
-                  _sprint(2, dt(2026, 1, 12), end=dt(2026, 1, 16)),
-                  _sprint(3, dt(2026, 1, 19), end=dt(2026, 1, 23))]
-        picked = report_data._pick_forecast_sprints(closed, limit=5)
-        self.assertEqual([s.id for s in picked], [1, 2, 3])
-
-    def test_caps_at_limit_taking_most_recent_by_end_at(self):
-        closed = [_sprint(i, dt(2026, 1, i), end=dt(2026, 1, i)) for i in range(1, 8)]
-        picked = report_data._pick_forecast_sprints(closed, limit=5)
-        self.assertEqual([s.id for s in picked], [3, 4, 5, 6, 7])
-
-    def test_default_limit_is_max_base_sprints(self):
-        closed = [_sprint(i, dt(2026, 1, i), end=dt(2026, 1, i)) for i in range(1, 8)]
-        picked = report_data._pick_forecast_sprints(closed)
-        self.assertEqual(len(picked), report_data.MAX_BASE_SPRINTS)
 
 
 class VelocityHistoryForTests(unittest.TestCase):
@@ -531,56 +477,6 @@ class MissingSprintDatesNoTracebackTests(unittest.TestCase):
         board_row = report["export_tables"]["board"]["rows"][0]
         self.assertEqual(board_row[2], "0001-01-01")  # start
         self.assertEqual(board_row[3], "0001-01-01")  # end
-
-
-class ResolveTargetItemsAugmentedCfgTests(unittest.TestCase):
-    """M3: the on-demand active-sprint fetch must thread story_points_field_id
-    and augment cfg with the fetched issues' own current status category —
-    same as the main pass (translate.go:31-38)."""
-
-    def test_story_points_field_id_is_forwarded_to_the_on_demand_fetch(self):
-        active = jc.Sprint(id=301, name="Active", state="active", board_id=1,
-                            start_at=dt(2026, 1, 26), end_at=dt(2026, 1, 30), complete_at=model.ZERO_TIME)
-        recorded = {}
-
-        class RecordingClient(FakeJiraClient):
-            def fetch_sprint_issues(self, sprint_ids, story_points_field_id=""):
-                recorded["story_points_field_id"] = story_points_field_id
-                return super().fetch_sprint_issues(sprint_ids, story_points_field_id=story_points_field_id)
-
-        client = RecordingClient(
-            sprints={301: active}, board=jc.Board(id=1, name="B", type="scrum"),
-            closed_ids=[], active_ids=[301], facts=[], statuses=STATUSES,
-        )
-        report_data._resolve_target_items(
-            all_payloads=[], client=client, board_id=1, cfg=make_cfg(), id_to_name={},
-            now=dt(2026, 1, 28), story_points_field_id="customfield_999",
-        )
-        self.assertEqual(recorded["story_points_field_id"], "customfield_999")
-
-    def test_status_only_known_via_the_fetched_issue_is_folded_into_cfg(self):
-        active = jc.Sprint(id=302, name="Active", state="active", board_id=1,
-                            start_at=dt(2026, 1, 26), end_at=dt(2026, 1, 30), complete_at=model.ZERO_TIME)
-        fact = jc.IssueFacts(
-            key="X-1", epic_key="", type="Story", role="", labels=[], assignee="",
-            story_points=1.0, qa_estimation=0.0, created=dt(2026, 1, 20),
-            initial_status="Released", initial_status_id="9", status_history=[], sp_events=[],
-            current_status="Released", current_status_category_key="done",
-            membership_by_sprint={302: [model.Interval(from_=dt(2026, 1, 20), until=None)]},
-        )
-        client = FakeJiraClient(
-            sprints={302: active}, board=jc.Board(id=1, name="B", type="scrum"),
-            closed_ids=[], active_ids=[302], facts=[fact], statuses=STATUSES,
-        )
-        # cfg carries no knowledge of "Released" at all — only the on-demand
-        # fetch's own IssueFacts.current_status_category_key does.
-        cfg = make_cfg()
-        remaining = report_data._resolve_target_items(
-            all_payloads=[], client=client, board_id=1, cfg=cfg, id_to_name={}, now=dt(2026, 1, 28),
-        )
-        # committed(1) - delivered(1, via the augmented "Released"->done) = 0.
-        # Without the M3 fix this would come out 1 (spuriously not delivered).
-        self.assertEqual(remaining, 0)
 
 
 class FakeGitLabClient:
@@ -765,7 +661,10 @@ class BuildCombinedReportTests(unittest.TestCase):
         warnings = report["gitlab_fetch_issues"]["deployment_warnings"]
         self.assertEqual(len(warnings), 1)
         self.assertEqual(warnings[0]["code"], "PAGINATION_LIMIT")
-        self.assertEqual(warnings[0]["project"], "group/proj")
+        self.assertEqual(warnings[0]["projects"], ["group/proj"])
+        self.assertEqual(warnings[0]["projects_count"], 1)
+        self.assertNotIn("project", warnings[0])
+        self.assertNotIn("message", warnings[0])
 
     def test_deployment_warnings_absent_key_when_gitlab_not_configured(self):
         report = report_data.build_combined_report(
@@ -808,6 +707,42 @@ class BuildCombinedReportTests(unittest.TestCase):
         for note in report["semantics_notes"]:
             self.assertGreater(len(note), 20)
             self.assertTrue(any(ord(c) > 127 for c in note))  # contains Cyrillic
+
+
+class BuildDeploymentWarningsAggregationTests(unittest.TestCase):
+    """Finding #1c: one raw warning PER PROJECT collapses into ONE entry per
+    distinct code, carrying a project count and the sorted project list —
+    never a raw HTTP body, never duplicated per project."""
+
+    def test_many_projects_same_code_collapse_into_one_entry(self):
+        raw = [
+            {"project": "group/app-c", "code": "FILTER_REJECTED_FALLBACK", "message": "HTTP 400: raw body from GitLab"},
+            {"project": "group/app-a", "code": "FILTER_REJECTED_FALLBACK", "message": "HTTP 400: raw body from GitLab"},
+            {"project": "group/app-b", "code": "FILTER_REJECTED_FALLBACK", "message": "HTTP 400: raw body from GitLab"},
+        ]
+        out = report_data._build_deployment_warnings(raw)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["code"], "FILTER_REJECTED_FALLBACK")
+        self.assertEqual(out[0]["projects"], ["group/app-a", "group/app-b", "group/app-c"])  # sorted
+        self.assertEqual(out[0]["projects_count"], 3)
+        self.assertNotIn("message", out[0])
+        # No raw HTTP body anywhere in the aggregated message.
+        self.assertNotIn("HTTP 400", out[0]["message_ru"])
+        self.assertTrue(any(ord(c) > 127 for c in out[0]["message_ru"]))  # Russian prose
+
+    def test_distinct_codes_stay_separate_entries_in_first_seen_order(self):
+        raw = [
+            {"project": "group/app-a", "code": "PAGINATION_LIMIT", "message": "..."},
+            {"project": "group/app-b", "code": "FILTER_REJECTED_FALLBACK", "message": "..."},
+            {"project": "group/app-c", "code": "PAGINATION_LIMIT", "message": "..."},
+        ]
+        out = report_data._build_deployment_warnings(raw)
+        self.assertEqual([w["code"] for w in out], ["PAGINATION_LIMIT", "FILTER_REJECTED_FALLBACK"])
+        self.assertEqual(out[0]["projects"], ["group/app-a", "group/app-c"])
+        self.assertEqual(out[1]["projects"], ["group/app-b"])
+
+    def test_empty_input_gives_empty_output(self):
+        self.assertEqual(report_data._build_deployment_warnings([]), [])
 
 
 class ZeroPipelinesNoFalseRiskTests(unittest.TestCase):
@@ -861,11 +796,12 @@ class ZeroPipelinesNoFalseRiskTests(unittest.TestCase):
         self.assertNotIn("speed_vs_quality", risk_keys)
 
 
-class ForecastNoActiveSprintErrorCodeTests(unittest.TestCase):
-    """Finding #2: the "no active sprint" degradation must carry a real code
-    + Russian message, and target_items must stay an int (never null, per §B)."""
+class ForecastMinimumDataGuardTests(unittest.TestCase):
+    """Finding #3 (3.1.0): fewer than 3 closed sprints with SP data ->
+    available=False with a real code + Russian message, never a crash and
+    never a fabricated number."""
 
-    def test_no_active_sprint_and_no_target_items_yields_real_error_code(self):
+    def test_single_closed_sprint_yields_not_enough_data_error_code(self):
         sprint = jc.Sprint(id=700, name="Sprint 700", state="closed", board_id=1,
                             start_at=dt(2026, 1, 5), end_at=dt(2026, 1, 9, 18), complete_at=dt(2026, 1, 9, 18))
         client = FakeJiraClient(
@@ -875,11 +811,21 @@ class ForecastNoActiveSprintErrorCodeTests(unittest.TestCase):
         report = report_data.build_report(client, sprint_ids=[700], now=dt(2026, 1, 10))
         forecast = report["forecast"]
         self.assertFalse(forecast["available"])
-        self.assertEqual(forecast["error"]["code"], "ERR_FORECAST_NO_ACTIVE_SPRINT")
-        self.assertNotIn("target_items", forecast["error"]["message_ru"])  # no raw snake_case/English leak
+        self.assertIsNone(forecast["team"])
+        self.assertEqual(forecast["error"]["code"], "ERR_FORECAST_NOT_ENOUGH_DATA")
         self.assertTrue(any(ord(c) > 127 for c in forecast["error"]["message_ru"]))  # Russian prose
-        self.assertIsInstance(forecast["target_items"], int)
-        self.assertEqual(forecast["target_items"], 0)
+        self.assertEqual(forecast["people"], [])
+
+    def test_zero_closed_sprints_never_crashes(self):
+        sprint = jc.Sprint(id=800, name="Sprint 800", state="active", board_id=1,
+                            start_at=dt(2026, 1, 5), end_at=dt(2026, 1, 9, 18), complete_at=model.ZERO_TIME)
+        client = FakeJiraClient(
+            sprints={800: sprint}, board=jc.Board(id=1, name="Board", type="scrum"),
+            closed_ids=[], active_ids=[800], facts=[], statuses=STATUSES,
+        )
+        report = report_data.build_report(client, sprint_ids=[800], now=dt(2026, 1, 10))
+        self.assertFalse(report["forecast"]["available"])
+        self.assertEqual(report["forecast"]["error"]["code"], "ERR_FORECAST_NOT_ENOUGH_DATA")
 
 
 class SprintActivePartialWarningDedupeTests(unittest.TestCase):
@@ -1071,6 +1017,313 @@ class MainCliWiringTests(unittest.TestCase):
         code, _out, _captured, fake_setup_logging = self._run(["--sprint-ids", "100"])
         self.assertEqual(code, 0)
         fake_setup_logging.assert_called_once_with(verbose=False, quiet=False)
+
+
+class BuildRecommendationsTests(unittest.TestCase):
+    """Finding #4: the restored «Что можно улучшить» block — each heuristic
+    fires independently on its own threshold, and the list is empty (with
+    an explicit empty-state sentence available separately) when nothing
+    fires."""
+
+    def _metrics(self, performance_pct=90.0, scope_change_pct=10.0):
+        return metrics_mod.Metrics(performance_pct=performance_pct, scope_change_pct=scope_change_pct)
+
+    def _overview(self, pipeline_success_rate_pct=None):
+        return {"pipeline_success_rate_pct": pipeline_success_rate_pct}
+
+    def _engineering(self, available=True, coverage_avg_pct=None):
+        return {"available": available, "coverage": {"coverage_avg_pct": coverage_avg_pct}}
+
+    def test_empty_when_nothing_fires(self):
+        items = report_data._build_recommendations(
+            self._metrics(), 88.0, 20.0, self._overview(90.0), self._engineering(coverage_avg_pct=80.0), [],
+        )
+        self.assertEqual(items, [])
+
+    def test_performance_low_fires_below_80_with_sma5_in_the_action(self):
+        items = report_data._build_recommendations(
+            self._metrics(performance_pct=64.42), 88.8, 20.0, self._overview(90.0),
+            self._engineering(coverage_avg_pct=80.0), [],
+        )
+        item = next(i for i in items if i["key"] == "performance_low")
+        self.assertEqual(item["severity"], "bad")
+        self.assertIn("64.4", item["value_ru"])
+        self.assertIn("88.8", item["action_ru"])
+
+    def test_scope_change_high_fires_above_25(self):
+        items = report_data._build_recommendations(
+            self._metrics(scope_change_pct=32.69), 88.0, 20.0, self._overview(90.0),
+            self._engineering(coverage_avg_pct=80.0), [],
+        )
+        self.assertTrue(any(i["key"] == "scope_change_high" for i in items))
+
+    def test_throughput_unstable_fires_above_module_threshold(self):
+        items = report_data._build_recommendations(
+            self._metrics(), 88.0, 59.1, self._overview(90.0), self._engineering(coverage_avg_pct=80.0), [],
+        )
+        item = next(i for i in items if i["key"] == "throughput_unstable")
+        self.assertIn("WARN_THROUGHPUT_UNSTABLE", item["signal_ru"])
+        self.assertIn("не наша эвристика", item["signal_ru"])
+
+    def test_pipeline_success_low_fires_below_80(self):
+        items = report_data._build_recommendations(
+            self._metrics(), 88.0, 20.0, self._overview(70.0), self._engineering(coverage_avg_pct=80.0), [],
+        )
+        self.assertTrue(any(i["key"] == "pipeline_success_low" for i in items))
+
+    def test_pipeline_success_not_evaluated_when_none_measured(self):
+        items = report_data._build_recommendations(
+            self._metrics(), 88.0, 20.0, self._overview(None), self._engineering(coverage_avg_pct=80.0), [],
+        )
+        self.assertFalse(any(i["key"] == "pipeline_success_low" for i in items))
+
+    def test_rework_share_high_fires_and_names_the_worst_offender(self):
+        people = [{"metrics": {"rework_rate_pct": 38.0}}, {"metrics": {"rework_rate_pct": 20.0}}] + [
+            {"metrics": {"rework_rate_pct": 5.0}} for _ in range(10)
+        ]
+        items = report_data._build_recommendations(
+            self._metrics(), 88.0, 20.0, self._overview(90.0), self._engineering(coverage_avg_pct=80.0), people,
+        )
+        item = next(i for i in items if i["key"] == "rework_share_high")
+        self.assertIn("1 из 12", item["value_ru"])
+        self.assertIn("38%", item["value_ru"])
+        self.assertEqual(item["severity"], "warn")
+
+    def test_coverage_low_fires_below_65(self):
+        items = report_data._build_recommendations(
+            self._metrics(), 88.0, 20.0, self._overview(90.0), self._engineering(coverage_avg_pct=60.0), [],
+        )
+        self.assertTrue(any(i["key"] == "coverage_low" for i in items))
+
+    def test_coverage_low_never_fires_when_engineering_unavailable(self):
+        items = report_data._build_recommendations(
+            self._metrics(), 88.0, 20.0, self._overview(90.0), self._engineering(available=False), [],
+        )
+        self.assertFalse(any(i["key"] == "coverage_low" for i in items))
+
+    def test_severity_bad_sorted_before_warn(self):
+        items = report_data._build_recommendations(
+            self._metrics(performance_pct=50.0), 88.0, 59.1, self._overview(90.0),
+            self._engineering(coverage_avg_pct=80.0), [],
+        )
+        self.assertEqual(items[0]["severity"], "bad")
+        self.assertEqual(items[-1]["severity"], "warn")
+
+
+def _person_fact(key, sprint_id, interval, story_points, assignee, done_at):
+    return jc.IssueFacts(
+        key=key, epic_key="", type="Story", role="", labels=[], assignee=assignee,
+        story_points=story_points, qa_estimation=0.0, created=dt(2025, 12, 1),
+        initial_status="In Progress", initial_status_id="2",
+        status_history=[jc.RawStatusChange(at=done_at, from_name="In Progress", to_name="Done", from_id="2", to_id="3")],
+        sp_events=[], current_status="Done", current_status_category_key="done",
+        resolutiondate=done_at,
+        membership_by_sprint={sprint_id: [interval]},
+    )
+
+
+class _PermissiveFakeGitLabClient(FakeGitLabClient):
+    """Ignores the `authors` filter and always returns every configured MR —
+    simulating a GitLab client that (unlike the real one) does not itself
+    scope by author, so these tests exercise report_data.py's OWN defensive
+    allowlist filter rather than relying on the fetch already having been
+    scoped upstream."""
+
+    def merge_requests(self, path, project_id, authors, *, states=(), window=None, errors=None, fetch_mr_details=True):
+        self.mr_calls.append((path, tuple(authors), window, fetch_mr_details))
+        self.request_count += 1
+        return list(self._mrs.get(path, []))
+
+
+class AllowlistFilteringTests(unittest.TestCase):
+    """Finding #2: `employees`, when non-empty, is a hard allowlist at every
+    point a person's identity can reach the report — Jira assignee, MR
+    author, pipeline user (bot accounts), heatmap/issue-breakdown rows, the
+    per-assignee Jira table, and forecast.people."""
+
+    def setUp(self):
+        sprint98 = jc.Sprint(id=2098, name="Sprint 98", state="closed", board_id=1,
+                              start_at=dt(2026, 1, 5), end_at=dt(2026, 1, 9, 18), complete_at=dt(2026, 1, 9, 18))
+        sprint99 = jc.Sprint(id=2099, name="Sprint 99", state="closed", board_id=1,
+                              start_at=dt(2026, 1, 12), end_at=dt(2026, 1, 16, 18), complete_at=dt(2026, 1, 16, 18))
+        target = jc.Sprint(id=2100, name="Sprint 100", state="closed", board_id=1,
+                            start_at=dt(2026, 1, 19), end_at=dt(2026, 1, 23, 18), complete_at=dt(2026, 1, 23, 18))
+
+        iv98 = model.Interval(from_=dt(2025, 12, 1), until=None)
+        iv99 = model.Interval(from_=dt(2025, 12, 1), until=None)
+        iv_t = model.Interval(from_=dt(2025, 12, 1), until=None)
+
+        alice98 = _person_fact("A-98", 2098, iv98, 5.0, "alice", dt(2026, 1, 6, 15))
+        alice99 = _person_fact("A-99", 2099, iv99, 5.0, "alice", dt(2026, 1, 13, 15))
+        alice_t = _person_fact("A-100", 2100, iv_t, 5.0, "alice", dt(2026, 1, 20, 15))
+        # mallory: not in the employees allowlist -- a Jira-assignee entry point.
+        mallory_t = _person_fact("M-100", 2100, iv_t, 3.0, "mallory", dt(2026, 1, 21, 15))
+        # carol: allowlisted, but only 1 closed sprint of data -- exercises
+        # the per-person forecast's minimum-data guard.
+        carol_t = _person_fact("C-100", 2100, iv_t, 2.0, "carol", dt(2026, 1, 22, 15))
+
+        self.client = FakeJiraClient(
+            sprints={2098: sprint98, 2099: sprint99, 2100: target},
+            board=jc.Board(id=1, name="Team Board", type="scrum"),
+            closed_ids=[2098, 2099, 2100], active_ids=[],
+            facts=[alice98, alice99, alice_t, mallory_t, carol_t],
+            statuses=STATUSES,
+        )
+        self.gitlab = _PermissiveFakeGitLabClient(
+            project_ids={"group/proj": 42},
+            mrs_by_project={"group/proj": [
+                {"author": "alice", "state": "merged",
+                 "created_at": "2026-01-20T00:00:00Z", "merged_at": "2026-01-21T00:00:00Z"},
+                # bot_ci: not in the employees allowlist -- an MR-author entry point.
+                {"author": "bot_ci", "state": "merged",
+                 "created_at": "2026-01-20T00:00:00Z", "merged_at": "2026-01-21T00:00:00Z"},
+            ]},
+            pipelines_by_project={"group/proj": [
+                # bot_ci: not in the employees allowlist -- a pipeline-user entry point.
+                {"user_username": "bot_ci", "status": "success"},
+                {"user_username": "alice", "status": "success"},
+            ]},
+        )
+
+    def _report(self, employees):
+        return report_data.build_combined_report(
+            self.client, sprint_ids=[2100], now=dt(2026, 1, 24),
+            gitlab_client_obj=self.gitlab, gitlab_projects=["group/proj"], employees=employees,
+        )
+
+    def test_no_allowlist_configured_keeps_everyone(self):
+        report = self._report(employees=[])
+        logins = {p["login"] for p in report["people"]}
+        self.assertEqual(logins, {"alice", "mallory", "carol", "bot_ci"})
+        self.assertFalse(report["params"]["allowlist"]["applied"])
+
+    def test_allowlist_excludes_jira_assignee_mr_author_and_pipeline_bot(self):
+        report = self._report(employees=["alice", "carol"])
+        logins = {p["login"] for p in report["people"]}
+        self.assertEqual(logins, {"alice", "carol"})
+
+        allowlist = report["params"]["allowlist"]
+        self.assertTrue(allowlist["applied"])
+        self.assertEqual(allowlist["configured_count"], 2)
+        self.assertIn("mallory", allowlist["excluded_logins"])
+        self.assertIn("bot_ci", allowlist["excluded_logins"])
+        self.assertTrue(allowlist["note_ru"])
+
+    def test_case_and_whitespace_insensitive_match(self):
+        report = self._report(employees=[" Alice \n", "CAROL"])
+        logins = {p["login"] for p in report["people"]}
+        self.assertEqual(logins, {"alice", "carol"})
+
+    def test_heatmap_and_issue_breakdown_drop_the_excluded_assignees_issue(self):
+        report = self._report(employees=["alice", "carol"])
+        hm = next(h for h in report["heatmap"] if h["sprint_id"] == 2100)
+        self.assertEqual({r["issue_key"] for r in hm["rows"]}, {"A-100", "C-100"})  # M-100 dropped
+
+        breakdown = next(b for b in report["issue_breakdown"] if b["sprint_id"] == 2100)
+        self.assertEqual({r["key"] for r in breakdown["rows"]}, {"A-100", "C-100"})  # M-100 dropped
+
+    def test_people_individual_jira_drops_the_excluded_assignee(self):
+        report = self._report(employees=["alice", "carol"])
+        rows = report["people_individual_jira"][0]["rows"]
+        self.assertEqual({r["assignee_login"] for r in rows}, {"alice", "carol"})
+
+    def test_forecast_people_only_covers_allowlisted_people(self):
+        report = self._report(employees=["alice", "carol"])
+        forecast_by_login = {p["login"]: p for p in report["forecast"]["people"]}
+        self.assertEqual(set(forecast_by_login), {"alice", "carol"})
+
+        # alice: 3 closed sprints of data -> forecast available.
+        self.assertTrue(forecast_by_login["alice"]["available"])
+        self.assertEqual(forecast_by_login["alice"]["sample_sprints"], 3)
+        self.assertEqual(forecast_by_login["alice"]["mean_sp"], 5.0)
+
+        # carol: only 1 closed sprint of data -> below the minimum, marked
+        # unavailable with a Russian reason, never a crash or fabricated number.
+        self.assertFalse(forecast_by_login["carol"]["available"])
+        self.assertIsNone(forecast_by_login["carol"]["mean_sp"])
+        self.assertEqual(forecast_by_login["carol"]["percentiles"], [])
+        self.assertTrue(any(ord(c) > 127 for c in forecast_by_login["carol"]["unavailable_reason_ru"]))
+
+
+class RawDumpAllowlistIdentityTests(unittest.TestCase):
+    """Release 3.1.0 audit, Fix 1: pipelines/deployments are whole-project
+    fetches and can carry a bot/service-account trigger. `raw["pipelines"]`/
+    `raw["deployments"]` feed BOTH the CSV exports and the out/raw/*.json
+    dumps verbatim (cli.py._write_run_outputs writes them unchanged), so
+    blanking the identity here is the single point that scopes both."""
+
+    def setUp(self):
+        sprint = jc.Sprint(id=2200, name="Sprint 200", state="closed", board_id=1,
+                            start_at=dt(2026, 2, 2), end_at=dt(2026, 2, 6, 18), complete_at=dt(2026, 2, 6, 18))
+        iv = model.Interval(from_=dt(2026, 1, 1), until=None)
+        alice = _person_fact("A-200", 2200, iv, 5.0, "alice", dt(2026, 2, 3, 15))
+
+        self.client = FakeJiraClient(
+            sprints={2200: sprint}, board=jc.Board(id=1, name="Team Board", type="scrum"),
+            closed_ids=[2200], active_ids=[], facts=[alice], statuses=STATUSES,
+        )
+        self.gitlab = FakeGitLabClient(
+            project_ids={"group/proj": 42},
+            pipelines_by_project={"group/proj": [
+                {"user_username": "alice", "user_name": "Alice", "status": "success"},
+                {"user_username": "group_12231_bot_ci", "user_name": "****", "status": "failed"},
+            ]},
+            deployments_by_project={"group/proj": [
+                {"user_username": "alice", "user_name": "Alice", "status": "success"},
+                {"user_username": "group_12231_bot_ci", "user_name": "****", "status": "success"},
+            ]},
+        )
+
+    def _build(self, employees):
+        return report_data.build_combined_report_with_raw(
+            self.client, sprint_ids=[2200], now=dt(2026, 2, 7),
+            gitlab_client_obj=self.gitlab, gitlab_projects=["group/proj"], employees=employees,
+        )
+
+    def test_bot_identity_blanked_but_row_kept(self):
+        report, raw = self._build(employees=["alice"])
+        self.assertEqual(len(raw["pipelines"]), 2)
+        self.assertEqual(len(raw["deployments"]), 2)
+
+        bot_pipe = next(p for p in raw["pipelines"] if p["user_username"] != "alice")
+        self.assertEqual(bot_pipe["user_username"], "")
+        self.assertEqual(bot_pipe["user_name"], "")
+        self.assertEqual(bot_pipe["status"], "failed")
+
+        bot_dep = next(d for d in raw["deployments"] if d["user_username"] != "alice")
+        self.assertEqual(bot_dep["user_username"], "")
+        self.assertEqual(bot_dep["user_name"], "")
+
+    def test_no_allowlist_leaves_raw_identity_untouched(self):
+        _, raw = self._build(employees=[])
+        usernames = {p["user_username"] for p in raw["pipelines"]}
+        self.assertEqual(usernames, {"alice", "group_12231_bot_ci"})
+
+    def test_team_engineering_totals_identical_with_and_without_allowlist(self):
+        report_open, _ = self._build(employees=[])
+        report_scoped, _ = self._build(employees=["alice"])
+        self.assertEqual(report_open["engineering"]["pipelines"], report_scoped["engineering"]["pipelines"])
+        self.assertEqual(report_open["engineering"]["deployments"], report_scoped["engineering"]["deployments"])
+        self.assertEqual(report_scoped["engineering"]["pipelines"]["count"], 2)
+        self.assertEqual(report_scoped["engineering"]["deployments"]["count"], 2)
+
+    def test_deployment_only_login_is_counted_as_seen_for_the_allowlist(self):
+        """Finding 3: a login seen only as a deployment trigger — never as a
+        Jira assignee, MR author, or pipeline user — must still show up in
+        params.allowlist.excluded_logins, matching what raw["deployments"]
+        already blanks out for it (test_bot_identity_blanked_but_row_kept
+        above)."""
+        gitlab = FakeGitLabClient(
+            project_ids={"group/proj": 42},
+            deployments_by_project={"group/proj": [
+                {"user_username": "deploy_only_bot", "user_name": "Deploy Bot", "status": "success"},
+            ]},
+        )
+        report = report_data.build_combined_report(
+            self.client, sprint_ids=[2200], now=dt(2026, 2, 7),
+            gitlab_client_obj=gitlab, gitlab_projects=["group/proj"], employees=["alice"],
+        )
+        self.assertIn("deploy_only_bot", report["params"]["allowlist"]["excluded_logins"])
 
 
 if __name__ == "__main__":

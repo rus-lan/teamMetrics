@@ -360,20 +360,14 @@ def _sum_or_blank(values: list) -> Any:
     return round(sum(vals), 2) if vals else ""
 
 
-def _report_per_employee_rows(people: list, mrs: list, pipelines: list, deployments: list) -> list:
+def _report_per_employee_rows(people: list, mrs: list, pipelines: list) -> list:
     rows = []
     for p in people:
         m = p["metrics"]
         login = p["login"]
         my_mrs = [x for x in mrs if x.get("author") == login]
         my_pipes = [x for x in pipelines if x.get("user_username") == login]
-        my_deps = [x for x in deployments if x.get("user_username") == login]
         pipe_failed = sum(1 for x in my_pipes if x.get("status") == "failed")
-        dep_failed = sum(1 for x in my_deps if x.get("status") == "failed")
-        # A person with pipeline attribution but zero deployments must read
-        # as a genuine measured zero in BOTH the count and failed columns —
-        # not a "0" count next to a blank "unmeasured" failed cell.
-        has_deploy_data = bool(my_deps) or bool(my_pipes)
         rows.append(
             {
                 "employee": p["display_name"], "gitlab_username": login, "jira_username": login,
@@ -385,9 +379,6 @@ def _report_per_employee_rows(people: list, mrs: list, pipelines: list, deployme
                 "total_mr_additions": _sum_or_blank(x.get("additions") for x in my_mrs),
                 "total_mr_deletions": _sum_or_blank(x.get("deletions") for x in my_mrs),
                 "total_mr_commits": _cell(m["mr_commits_sum"]),
-                "deployment_count": len(my_deps) if has_deploy_data else "",
-                "deployment_failed": dep_failed if has_deploy_data else "",
-                "deployment_fail_rate": round(dep_failed / len(my_deps), 4) if my_deps else "",
                 "pipeline_count": len(my_pipes) if my_pipes else "",
                 "pipeline_failed": pipe_failed if my_pipes else "",
                 "pipeline_fail_rate": round(pipe_failed / len(my_pipes), 4) if my_pipes else "",
@@ -516,7 +507,7 @@ def write_all(out_dir, report: dict, raw: dict) -> list[Path]:
     written.append(out_writer.write_csv(out_dir, "sprints.csv", _sprints_rows(axis)))
     written.append(out_writer.write_csv(out_dir, "jira_by_sprint.csv", _jira_by_sprint_rows(axis, done_flows)))
     written.append(out_writer.write_csv(out_dir, "gitlab_by_sprint.csv", _gitlab_by_sprint_rows(axis, mrs, pipelines, deployments)))
-    written.append(out_writer.write_csv(out_dir, "report_per_employee.csv", _report_per_employee_rows(people, mrs, pipelines, deployments)))
+    written.append(out_writer.write_csv(out_dir, "report_per_employee.csv", _report_per_employee_rows(people, mrs, pipelines)))
     written.append(out_writer.write_csv(out_dir, "report_team.csv", _report_team_row(report, people, mrs)))
     written.append(out_writer.write_csv(out_dir, "report_merged.csv", _report_merged_rows(mrs, facts_by_key)))
     written.append(out_writer.write_text(out_dir, "heatmap.csv", raw["heatmap_csv_text"]))

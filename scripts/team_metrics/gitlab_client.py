@@ -144,6 +144,21 @@ def _parse_iso(s: Optional[str]) -> Optional[datetime]:
     return d.astimezone(UTC)
 
 
+def _deployment_effective_timestamp(d: dict) -> Optional[datetime]:
+    """`finished_at` -> `updated_at` -> `created_at`, first one present wins.
+
+    GitLab leaves `finished_at` null for a deployment that has not reached a
+    finished state; falling through to `updated_at`/`created_at` lets such a
+    record still be windowed instead of looking timestamp-less. `None` here
+    means all three were null/unparseable — the caller keeps the record
+    rather than guessing it is outside the window."""
+    for key in ("finished_at", "updated_at", "created_at"):
+        ts = _parse_iso(d.get(key))
+        if ts is not None:
+            return ts
+    return None
+
+
 def _format_window_bound(d: datetime) -> str:
     # Not strftime("%Y-..."): %Y delegates to the platform C library, which
     # does not zero-pad years below 1000 on Python 3.9 (e.g. "1-01-01"
@@ -833,29 +848,37 @@ class GitLabClient:
         and push `updated_at` further ahead of `finished_at`, by an amount
         this client has no way to bound.
 
+        Patch release round 3: a live GitLab server rejects the bare
+        `updated_after` pre-filter itself with a 400 ("`updated_at` filter
+        requires `updated_at` sort") — the ONLY combination it accepts is
+        `updated_after` sent together with `order_by=updated_at` and a
+        `sort`. Both go out on every windowed request now, so the filter is
+        accepted on the first try — the retry-without-a-filter fallback
+        below should no longer fire in practice, but is kept as a last
+        resort (see "Resilience" below).
+
         That one-directional guarantee is exactly why the pre-filter is
         `updated_after=window.start` with NO upper bound (no
-        updated_before, no order_by/sort/status): a deployment whose
-        finished_at truly falls in [window.start, window.end] can never
-        have updated_at before window.start, so it can never be excluded by
-        this filter — an upper bound would require guessing how late an
-        async worker might run, and a wrong guess would silently drop a
-        deployment (worse than the errors this whole fix line has been
-        chasing). The cost is volume scaled to "activity since window.start
-        until now" rather than the exact window — acceptable for the
-        common case (a report run soon after the window it covers); a
-        report run long after an old window against a since-very-active
-        project fetches more than strictly needed, but never fetches the
-        project's entire history the way dropping the filter outright
-        would.
+        updated_before, no status): a deployment whose finished_at truly
+        falls in [window.start, window.end] can never have updated_at
+        before window.start, so it can never be excluded by this filter —
+        an upper bound would require guessing how late an async worker
+        might run, and a wrong guess would silently drop a deployment
+        (worse than the errors this whole fix line has been chasing). The
+        cost is volume scaled to "activity since window.start until now"
+        rather than the exact window — acceptable for the common case (a
+        report run soon after the window it covers); a report run long
+        after an old window against a since-very-active project fetches
+        more than strictly needed, but never fetches the project's entire
+        history the way dropping the filter outright would.
 
         Resilience (patch release, round 2): we have now been wrong about
-        this endpoint's filter requirements twice, both times based on
-        GitLab's own docs and (the second time) its own open-source model —
-        so this method no longer bets the whole feature on being right a
-        third time. If the server rejects the `updated_after` pre-filter
-        itself with a 400, it retries ONCE with no filter at all — exactly
-        what the original source skill always sent here
+        this endpoint's filter requirements multiple times, based on
+        GitLab's own docs, its own open-source model, and a live server —
+        so this method no longer bets the whole feature on being right the
+        next time either. If the server still rejects the `updated_after`
+        pre-filter with a 400, it retries ONCE with no filter at all —
+        exactly what the original source skill always sent here
         (gitlab_collector.py:353, `params = {"per_page": 100}`, nothing
         else) — windowing entirely client-side, same as above. The one gap
         the original had that this keeps closed: an unfiltered fetch on an
@@ -867,10 +890,27 @@ class GitLabClient:
         `getattr(client, "deployment_warnings", [])`, the same safe pattern
         `request_count` uses, so a duck-typed fake built before this
         existed keeps working unchanged.
+
+        The client-side keep/drop decision below reads `finished_at`, then
+        `updated_at`, then `created_at` as the record's own effective
+        timestamp — GitLab leaves `finished_at` null for a deployment that
+        is not yet in a finished state, and a record whose timestamp is
+        unknown along all three fields is KEPT rather than silently
+        dropped (a caller can still exclude it deliberately later; this
+        client must never make that call for them).
+
+        `order_by=updated_at&sort=desc` plus offset pagination means a
+        deployment updated by the server while this method is still
+        paging can shift across a page boundary and be handed back twice.
+        `records` is deduped on `deployment_id` below, keeping the first
+        occurrence (a `deployment_id` of `None` is kept as-is, same
+        never-silently-drop rule as the timestamp fallback above).
         """
         params: dict = {}
         if window is not None:
             params["updated_after"] = _format_window_bound(window.start)
+            params["order_by"] = "updated_at"
+            params["sort"] = "desc"
 
         try:
             raw = self._fetch_deployments_page(project_path, project_id, params)
@@ -880,7 +920,11 @@ class GitLabClient:
                     {
                         "project": project_path,
                         "code": "FILTER_REJECTED_FALLBACK",
-                        "message": f"updated_after filter rejected by GitLab (HTTP 400: {e.message}); fell back to an unfiltered fetch",
+                        # No raw HTTP body here (finding 1c) — this is the
+                        # internal/log channel (see the module docstring);
+                        # the report-facing text is built fresh from `code`
+                        # alone by labels_ru.warn_message().
+                        "message": "updated_after filter rejected by GitLab (HTTP 400); fell back to an unfiltered fetch",
                     }
                 )
                 raw = self._fetch_deployments_page(project_path, project_id, {})
@@ -888,10 +932,16 @@ class GitLabClient:
                 raise
 
         records = []
+        seen_deployment_ids: set = set()
         for d in raw:
+            dep_id = d.get("id")
+            if dep_id is not None:
+                if dep_id in seen_deployment_ids:
+                    continue
+                seen_deployment_ids.add(dep_id)
             if window is not None:
-                finished = _parse_iso(d.get("finished_at"))
-                if finished is None or not (window.start.astimezone(UTC) <= finished <= window.end_of_day):
+                ts = _deployment_effective_timestamp(d)
+                if ts is not None and not (window.start.astimezone(UTC) <= ts <= window.end_of_day):
                     continue
             user = d.get("user") or {}
             env = d.get("environment") or {}

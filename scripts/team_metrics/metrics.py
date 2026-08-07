@@ -16,7 +16,7 @@ from typing import Optional
 
 from . import model
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def ratio_pct(num: float, den: float) -> tuple[float, str]:

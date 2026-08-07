@@ -249,8 +249,8 @@ class BuildKpiTests(unittest.TestCase):
 
 
 class SchemaVersionTests(unittest.TestCase):
-    def test_schema_version_is_2(self):
-        self.assertEqual(metrics.SCHEMA_VERSION, 2)
+    def test_schema_version_is_3(self):
+        self.assertEqual(metrics.SCHEMA_VERSION, 3)
 
 
 def _issue(key, assignee, *, committed=False, delivered=False, story_points=1.0, day_statuses=None):

@@ -100,7 +100,6 @@ _RU_PIPELINE_ARG_HELP = {
     "board_id": "Id доски — сверяется с доской найденных целевых спринтов",
     "history": "Сколько предыдущих закрытых спринтов, кроме целевых, учитывать (0 -> по умолчанию 5, максимум 20)",
     "seed": "Seed для Monte-Carlo прогноза (детерминированный)",
-    "target_items": "Целевое число задач для прогноза; по умолчанию — оставшиеся задачи активного спринта доски",
     "iterations": "Число итераций Monte-Carlo (0 -> по умолчанию 5000)",
     "config": f"Путь к JSON-файлу настроек (по умолчанию: ./{config_mod.DEFAULT_CONFIG_FILENAME}, если есть)",
     "no_gitlab": "Пропустить обе вкладки GitLab, даже если заданы GITLAB_URL/GITLAB_TOKEN",
@@ -807,7 +806,6 @@ def cmd_run(
             story_points_field_id=run_cfg.file_config.story_points_field_id,
             seed=run_cfg.seed,
             iterations=run_cfg.iterations,
-            target_items=run_cfg.target_items,
             gitlab_client_obj=gitlab_cli,
             gitlab_projects=run_cfg.file_config.gitlab_projects,
             employees=run_cfg.file_config.employees,
@@ -867,7 +865,7 @@ def _check_schema_version(report: dict) -> None:
     got = report.get("schema_version")
     if got not in SUPPORTED_SCHEMA_VERSIONS:
         raise CliError(
-            f"schema_version {got!r} в JSON-файле не поддерживается этой версией инструмента (нужна схема v2). "
+            f"schema_version {got!r} в JSON-файле не поддерживается этой версией инструмента (нужна схема v3). "
             "Этот JSON создан старой версией team-metrics — пересоздайте его командой `team-metrics run`."
         )
 

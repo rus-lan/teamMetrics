@@ -244,10 +244,9 @@ class CsvHeaderTests(unittest.TestCase):
             ["employee", "gitlab_username", "jira_username", "email", "team", "mr_count", "mr_merged_count",
              "mr_closed_count", "mr_merge_rate", "avg_mr_cycle_time_hours", "avg_mr_diff_size",
              "avg_mr_changes_count", "total_mr_changes", "total_mr_additions", "total_mr_deletions",
-             "total_mr_commits", "deployment_count", "deployment_failed", "deployment_fail_rate",
-             "pipeline_count", "pipeline_failed", "pipeline_fail_rate", "issues_count", "tasks_done",
-             "bug_count", "defect_rate", "avg_issue_cycle_time_hours", "rework_count", "story_points_total",
-             "avg_story_points", "qa_estimation_total", "avg_qa_estimation"],
+             "total_mr_commits", "pipeline_count", "pipeline_failed", "pipeline_fail_rate", "issues_count",
+             "tasks_done", "bug_count", "defect_rate", "avg_issue_cycle_time_hours", "rework_count",
+             "story_points_total", "avg_story_points", "qa_estimation_total", "avg_qa_estimation"],
         )
 
     def test_report_team_header(self):
@@ -520,26 +519,167 @@ class AvgDefectRateUsesPerEmployeeAverageTests(unittest.TestCase):
         self.assertEqual(row["avg_defect_rate"], "0.5")
 
 
-class DeploymentColumnConsistencyTests(unittest.TestCase):
-    """Finding #10: deployment_count/deployment_failed/deployment_fail_rate
-    must encode "no data" the same way within one row."""
+class DeploymentColumnsRemovedFromPerEmployeeTests(unittest.TestCase):
+    """Release 3.1.0 audit: deployments are a team-only metric -- GitLab
+    gives no reliable per-person attribution for them, unlike pipelines
+    (attributed via the jobs endpoint, personal_metrics.personal_pipeline_success).
+    report_per_employee.csv must carry no deployment_* column; report_team.csv
+    keeps its flat team deployment totals unchanged."""
 
-    def test_person_with_pipelines_but_no_deployments_reads_as_measured_zero(self):
+    def test_no_deployment_column_in_report_per_employee_csv(self):
+        report, raw = _build_report_and_raw()
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_export.write_all(tmp, report, raw)
+            header = (Path(tmp) / "report_per_employee.csv").read_text(encoding="utf-8").splitlines()[0].split(",")
+        self.assertNotIn("deployment_count", header)
+        self.assertNotIn("deployment_failed", header)
+        self.assertNotIn("deployment_fail_rate", header)
+
+    def test_pipeline_columns_stay_and_stay_accurate(self):
         report, raw = _build_report_and_raw()
         with tempfile.TemporaryDirectory() as tmp:
             csv_export.write_all(tmp, report, raw)
             text = (Path(tmp) / "report_per_employee.csv").read_text(encoding="utf-8")
         header = text.splitlines()[0].split(",")
+        self.assertIn("pipeline_count", header)
         rows = {line.split(",")[0]: dict(zip(header, line.split(","))) for line in text.splitlines()[1:]}
-        # bob: 3 pipelines attributed (proves attribution works for him),
-        # zero deployments -- a real, measured zero, not "unknown".
-        self.assertEqual(rows["Bob"]["deployment_count"], "0")
-        self.assertEqual(rows["Bob"]["deployment_failed"], "0")
-        self.assertEqual(rows["Bob"]["deployment_fail_rate"], "")  # 0/0 stays undefined
-        # carol has neither pipelines nor deployments -- stays fully blank.
-        self.assertEqual(rows["Carol"]["deployment_count"], "")
-        self.assertEqual(rows["Carol"]["deployment_failed"], "")
-        self.assertEqual(rows["Carol"]["deployment_fail_rate"], "")
+        self.assertEqual(rows["Bob"]["pipeline_count"], "3")
+        # carol has no pipeline attribution at all -> empty cell, not 0.
+        self.assertEqual(rows["Carol"]["pipeline_count"], "")
+
+    def test_report_team_deployment_totals_unaffected(self):
+        report, raw = _build_report_and_raw()
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_export.write_all(tmp, report, raw)
+            text = (Path(tmp) / "report_team.csv").read_text(encoding="utf-8")
+        header = text.splitlines()[0].split(",")
+        row = dict(zip(header, text.splitlines()[1].split(",")))
+        self.assertEqual(row["total_deployments"], "1")
+
+
+class RemovedDeploymentColumnsAreDocumentedTests(unittest.TestCase):
+    """Release 3.1.0 review, finding 6: the report_per_employee.csv column
+    removal above shipped with no trace in the CHANGELOG's breaking-change
+    notes, and README.md/SKILL.md both still promised the CSVs match
+    aiIntegrationMetrics "by names AND columns" — a false claim for this
+    one file. Both docs must name the removed columns."""
+
+    _ROOT = Path(_pathfix._ROOT)
+
+    def test_changelog_3_1_0_breaking_notes_mention_the_removed_columns(self):
+        text = (self._ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        section = text.split("## [3.1.0]", 1)[1].split("## [3.0.0]", 1)[0]
+        self.assertIn("deployment_count", section)
+        self.assertIn("deployment_failed", section)
+        self.assertIn("deployment_fail_rate", section)
+        self.assertIn("report_per_employee.csv", section)
+
+    def test_readme_no_longer_claims_unqualified_column_compatibility(self):
+        text = (self._ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertNotIn("совместимыми по именам и колонкам", text)
+        self.assertIn("report_per_employee.csv", text.split("aiIntegrationMetrics", 1)[1][:400])
+
+    def test_skill_md_no_longer_claims_unqualified_column_compatibility(self):
+        text = (self._ROOT / "SKILL.md").read_text(encoding="utf-8")
+        self.assertNotIn("совместимы по именам и колонкам", text)
+
+
+class _BotFakeGitLabClient:
+    """One allowlisted employee (alice) plus one bot-shaped login outside the
+    allowlist on both pipelines and deployments -- release 3.1.0's leak: a
+    whole-project fetch can carry a service account's trigger."""
+
+    def __init__(self):
+        self.request_count = 0
+        self.deployment_warnings = []
+
+    def project_id(self, path):
+        return 1
+
+    def merge_requests(self, path, project_id, authors, *, states=(), window=None, errors=None, fetch_mr_details=True):
+        return []
+
+    def pipelines(self, path, project_id, *, window=None, fetch_pipeline_user=True):
+        return [
+            {"project": path, "pipeline_id": 1, "status": "success",
+             "created_at": "2026-01-06T00:00:00Z", "updated_at": "2026-01-06T00:00:00Z",
+             "user_username": "alice", "user_name": "Alice"},
+            {"project": path, "pipeline_id": 2, "status": "failed",
+             "created_at": "2026-01-06T00:00:00Z", "updated_at": "2026-01-06T00:00:00Z",
+             "user_username": "group_12231_bot_ci", "user_name": "****"},
+        ]
+
+    def deployments(self, path, project_id, *, window=None):
+        return [
+            {"project": path, "deployment_id": 1, "status": "success",
+             "created_at": "2026-01-06T00:00:00Z", "finished_at": "2026-01-06T00:00:00Z",
+             "user_username": "alice", "user_name": "Alice"},
+            {"project": path, "deployment_id": 2, "status": "success",
+             "created_at": "2026-01-06T00:00:00Z", "finished_at": "2026-01-06T00:00:00Z",
+             "user_username": "group_12231_bot_ci", "user_name": "****"},
+        ]
+
+    def coverage(self, path, project_id, *, window=None):
+        return []
+
+
+class NonAllowlistedIdentityLeakTests(unittest.TestCase):
+    """Release 3.1.0 audit, Fix 1: `employees` is a hard allowlist for every
+    identity path -- pipelines/deployments are whole-project fetches and can
+    carry a bot/service-account trigger. That login must appear in no CSV;
+    the row itself stays (team totals stay whole-project by design)."""
+
+    def setUp(self):
+        facts = [_fact("T-1", "alice", dt(2026, 1, 7, 10))]
+        client = _FakeJiraClient(facts)
+        self.report, self.raw = report_data.build_combined_report_with_raw(
+            client, sprint_ids=[100], history_sprint_count=1, now=dt(2026, 1, 10),
+            gitlab_client_obj=_BotFakeGitLabClient(), gitlab_projects=["group/app"], employees=["alice"],
+        )
+        self.tmp = tempfile.TemporaryDirectory()
+        self.out_dir = Path(self.tmp.name)
+        csv_export.write_all(self.out_dir, self.report, self.raw)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _rows(self, filename):
+        lines = (self.out_dir / filename).read_text(encoding="utf-8").splitlines()
+        header = lines[0].split(",")
+        return [dict(zip(header, line.split(","))) for line in lines[1:]]
+
+    def test_bot_login_appears_in_no_csv_file(self):
+        for path in self.out_dir.glob("*.csv"):
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("group_12231_bot_ci", text, path.name)
+            self.assertNotIn("****", text, path.name)
+
+    def test_gitlab_pipelines_csv_keeps_the_row_but_blanks_identity(self):
+        rows = self._rows("gitlab_pipelines.csv")
+        self.assertEqual(len(rows), 2)
+        bot_row = next(r for r in rows if r["user_username"] != "alice")
+        self.assertEqual(bot_row["user_username"], "")
+        self.assertEqual(bot_row["user_name"], "")
+        self.assertEqual(bot_row["status"], "failed")
+
+    def test_gitlab_deployments_csv_keeps_the_row_but_blanks_identity(self):
+        rows = self._rows("gitlab_deployments.csv")
+        self.assertEqual(len(rows), 2)
+        bot_row = next(r for r in rows if r["user_username"] != "alice")
+        self.assertEqual(bot_row["user_username"], "")
+        self.assertEqual(bot_row["user_name"], "")
+
+    def test_gitlab_users_csv_lists_only_the_allowlisted_login(self):
+        rows = self._rows("gitlab_users.csv")
+        self.assertEqual({r["login"] for r in rows}, {"alice"})
+
+    def test_team_totals_unaffected_by_allowlist(self):
+        self.assertEqual(self.report["engineering"]["pipelines"]["count"], 2)
+        self.assertEqual(self.report["engineering"]["pipelines"]["failed"], 1)
+        self.assertEqual(self.report["engineering"]["deployments"]["count"], 2)
+        row = self._rows("report_team.csv")[0]
+        self.assertEqual(row["total_pipelines"], "2")
+        self.assertEqual(row["total_deployments"], "2")
 
 
 if __name__ == "__main__":

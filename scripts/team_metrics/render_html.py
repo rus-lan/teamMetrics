@@ -40,7 +40,7 @@ MINUS = "−"
 
 TOKEN_RE = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
 
-SUPPORTED_SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSION = 3
 
 
 class TemplateError(Exception):
@@ -111,6 +111,17 @@ def bool_ru(value: Optional[bool]) -> str:
     return "да" if value else "нет"
 
 
+def stat_value_html(value_html: str, unit: str = "") -> str:
+    """Inner markup for a `.stat-value` tile. A bare em-dash reads as a
+    broken tile rather than a deliberate no-data state (§P1-9), so a
+    formatted value that came back as the standard EM_DASH renders as a
+    small muted «нет данных» label instead."""
+    if value_html == EM_DASH:
+        return '<span class="stat-nodata">нет данных</span>'
+    unit_html = f'<span class="u">{esc(unit)}</span>' if unit else ""
+    return f"{value_html}{unit_html}"
+
+
 def ru_plural(n: float, one: str, few: str, many: str) -> str:
     """Picks the Russian noun form for a count: 1 (not 11) -> `one`,
     2-4 (not 12-14) -> `few`, everything else -> `many`."""
@@ -146,6 +157,40 @@ def truncate(text: str, n: int, ellipsis: str = "…") -> str:
     if len(text) <= n:
         return text
     return text[: max(0, n - len(ellipsis))] + ellipsis
+
+
+def shorten_axis_labels(labels: list) -> tuple:
+    """Finds the longest run of characters every label in `labels` starts
+    with, trims it back to the last shared space/dash/slash boundary, and
+    returns (caption, [suffix, ...]) so a caller can hoist the shared
+    prefix into one axis caption instead of repeating it on every tick —
+    e.g. ["T100-T102 26.1", "T100-T102 26.2"] -> ("T100-T102 26.", ["1", "2"]).
+    Returns (None, labels) unchanged when there are fewer than 2 labels,
+    any label is empty after stripping the prefix, or the prefix saves
+    fewer than 4 characters (not worth hoisting)."""
+    labels = [str(x) for x in labels]
+    if len(labels) < 2:
+        return None, labels
+    prefix = labels[0]
+    for lab in labels[1:]:
+        i = 0
+        max_i = min(len(prefix), len(lab))
+        while i < max_i and prefix[i] == lab[i]:
+            i += 1
+        prefix = prefix[:i]
+        if not prefix:
+            return None, labels
+    cut = 0
+    for i, ch in enumerate(prefix):
+        if ch in " -/–—_.":
+            cut = i + 1
+    prefix = prefix[:cut]
+    if len(prefix) < 4:
+        return None, labels
+    suffixes = [lab[len(prefix):] for lab in labels]
+    if any(not s for s in suffixes):
+        return None, labels
+    return prefix, suffixes
 
 
 _SNAKE_RE = re.compile(r"\b[a-z][a-z0-9]+(?:_[a-z0-9]+)+\b")
@@ -358,6 +403,50 @@ def _series_class(i: int) -> str:
     return PALETTE_CLASSES[i % len(PALETTE_CLASSES)]
 
 
+def _tick_label_svg(x: float, y: float, full: str, short: str, rotate: bool) -> str:
+    """A single categorical-axis tick label. `rotate` draws it at -45°,
+    right-anchored at (x, y), for the fallback case where no common prefix
+    could be hoisted into an axis caption and the plain horizontal label
+    would collide with its neighbour (§P0-3)."""
+    if rotate:
+        return (
+            f'<text class="c-tick-label" x="{x:.1f}" y="{y:.1f}" text-anchor="end" '
+            f'transform="rotate(-45 {x:.1f} {y:.1f})"><title>{esc(full)}</title>{esc(short)}</text>'
+        )
+    return f'<text class="c-tick-label" x="{x:.1f}" y="{y:.1f}" text-anchor="middle"><title>{esc(full)}</title>{esc(short)}</text>'
+
+
+_TICK_LABEL_CHAR_W = 6.2  # px/char estimate for the 11px .c-tick-label font;
+# generous vs. a straight font-size ratio, since Cyrillic glyphs run wider
+# than Latin ones in the report's default sans stack.
+_ROTATE_LABEL_MARGIN = 10.0  # px of slack past the estimated rotated-text extent
+
+
+def _rotated_label_reach(short_labels: Iterable) -> float:
+    """How far a -45° rotated tick label (`_tick_label_svg`, drawn
+    text-anchor="end" so it pivots around its own right/bottom corner)
+    reaches beyond its anchor point, in both the down and the left
+    direction. Scales with the longest label actually drawn instead of a
+    fixed guess, since names vary in length."""
+    labels = [str(s) for s in short_labels]
+    if not labels:
+        return 0.0
+    max_w = max(len(s) * _TICK_LABEL_CHAR_W for s in labels)
+    return max_w / math.sqrt(2) + _ROTATE_LABEL_MARGIN
+
+
+def prepare_category_axis(labels: list) -> tuple:
+    """Shared P0-3 fix for every categorical-axis chart builder: tries to
+    hoist a common prefix into one caption (`shorten_axis_labels`); when
+    that does not apply and there are enough categories to collide at a
+    narrow chart width, falls back to rotating the full labels -45°
+    instead of guessing at a shorter axis width. Returns
+    (caption_or_None, short_labels, rotate: bool)."""
+    caption, short_labels = shorten_axis_labels(labels)
+    rotate = caption is None and len(labels) > 6
+    return caption, short_labels, rotate
+
+
 # --------------------------------------------------------------------------
 # §G new SVG builders
 # --------------------------------------------------------------------------
@@ -401,7 +490,7 @@ def build_donut_svg(chart_id: str, title: str, items: list, center_label: str) -
     H = H_base + 18 * (legend_rows - 1) if legend_rows > 1 else H_base
 
     parts = [
-        f'<svg id="{esc(chart_id)}" class="chart" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
+        f'<svg id="{esc(chart_id)}" class="chart" style="min-width:{W}px" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
         f'role="img" aria-label="{esc(title)}" xmlns="http://www.w3.org/2000/svg">'
     ]
     start = -90.0
@@ -444,15 +533,53 @@ def build_donut_svg(chart_id: str, title: str, items: list, center_label: str) -
     return "".join(parts)
 
 
-def build_hbar_svg(chart_id: str, title: str, items: list, unit: str = "") -> Optional[str]:
-    """items = [(label, value_or_none), ...] — a None row prints «нет данных»."""
+def donut_block(chart_id: str, title: str, items: list, center_label: str, hint_html: str, is_rate_pair: bool = False) -> str:
+    """Chooses a real donut when 2+ categories carry data, a compact
+    numeric stat tile when exactly one does — a full-circle ring conveys
+    no comparison, just a number in the middle (§P1-7) — and the standard
+    chart_block empty-data box when every value is zero or missing.
+
+    `center_label` is only safe to reuse as-is for the single-segment
+    stat tile when it is a total that necessarily equals the one
+    surviving segment (e.g. an issue-type count where the total IS that
+    segment's own count). `is_rate_pair` marks the other shape — items
+    are a success/fail-style pair and `center_label` is a rate pinned to
+    the FIRST item — where reusing it verbatim would label whichever
+    segment survived with a rate that describes the other one. When set,
+    the tile instead shows that segment's own share of the pair."""
+    vals = [(str(label), float(v)) for label, v in items if v is not None and v > 0]
+    if not vals:
+        return chart_block(chart_id, title, None, hint_html)
+    if len(vals) == 1:
+        label, v = vals[0]
+        value_html = center_label
+        if is_rate_pair:
+            total = sum(float(x) for _, x in items if x is not None)
+            if total > 0:
+                value_html = fmt_pct(v / total * 100)
+        return (
+            f'<div class="chartbox card stat-tile-box" id="cb-{esc(chart_id)}"><h3>{esc(title)}</h3>'
+            f'<div class="stat"><div class="stat-label">{esc(label)}</div>'
+            f'<div class="stat-value">{esc(value_html)}</div></div>'
+            f'<p class="hint">{hint_html}</p></div>'
+        )
+    svg = build_donut_svg(chart_id, title, items, center_label)
+    return chart_block(chart_id, title, svg, hint_html)
+
+
+def build_hbar_svg(chart_id: str, title: str, items: list, unit: str = "", logins: Optional[list] = None) -> Optional[str]:
+    """items = [(label, value_or_none), ...] — a None row prints «нет данных».
+    Every bar shares one colour (§P1-7): the row is already labelled by
+    name, so a 21-colour palette added no information. `logins`, if given,
+    parallels `items` and wraps each row in `<g data-login="...">` so the
+    people multi-select (tabs 05/06) can show/hide it."""
     n = len(items)
     if n == 0:
         return None
-    W, row_h = 560, 30
+    W, row_h = 480, 30
     H = max(80, 44 + n * row_h + 12)
-    label_x = 170
-    plot_w = W - label_x - 70
+    label_x = 172
+    plot_w = W - label_x - 62
     vals = [v for _, v in items if v is not None]
     vmax = max(vals) if vals else 1
     if vmax <= 0:
@@ -461,57 +588,84 @@ def build_hbar_svg(chart_id: str, title: str, items: list, unit: str = "") -> Op
     rows = []
     for i, (label, value) in enumerate(items):
         full = str(label)
-        short = truncate(full, 16)
+        short = truncate(full, 22)
         y = 34 + i * row_h
-        cls = _series_class(i)
+        login = logins[i] if logins and i < len(logins) else None
+        g_open = f'<g data-login="{esc(login)}">' if login else "<g>"
         if value is None:
             rows.append(
-                f'<text class="c-hbar-label" x="{label_x - 8}" y="{y + 13}" text-anchor="end">'
+                g_open
+                + f'<text class="c-hbar-label" x="{label_x - 8}" y="{y + 13}" text-anchor="end">'
                 f'<title>{esc(full)}</title>{esc(short)}</text>'
-                f'<text class="c-hbar-nodata" x="{label_x}" y="{y + 13}">нет данных</text>'
+                f'<text class="c-hbar-nodata" x="{label_x}" y="{y + 13}">нет данных</text></g>'
             )
             continue
         bar_w = max((value / vmax) * plot_w, 2)
         val_txt = f"{fmt_num(value, 1)} {unit}".strip()
         rows.append(
-            f'<text class="c-hbar-label" x="{label_x - 8}" y="{y + 13}" text-anchor="end">'
+            g_open
+            + f'<text class="c-hbar-label" x="{label_x - 8}" y="{y + 13}" text-anchor="end">'
             f'<title>{esc(full)}</title>{esc(short)}</text>'
-            f'<rect class="{cls}" x="{label_x}" y="{y}" width="{bar_w:.1f}" height="18" rx="3">'
+            f'<rect class="c-bar" x="{label_x}" y="{y}" width="{bar_w:.1f}" height="18" rx="3">'
             f'<title>{esc(full)}: {esc(val_txt)}</title></rect>'
-            f'<text class="c-hbar-value" x="{label_x + bar_w + 6:.1f}" y="{y + 14}">{esc(val_txt)}</text>'
+            f'<text class="c-hbar-value" x="{label_x + bar_w + 6:.1f}" y="{y + 14}">{esc(val_txt)}</text></g>'
         )
     return (
-        f'<svg id="{esc(chart_id)}" class="chart" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
+        f'<svg id="{esc(chart_id)}" class="chart" style="min-width:{W}px" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
         f'role="img" aria-label="{esc(title)}" xmlns="http://www.w3.org/2000/svg">' + "".join(rows) + "</svg>"
     )
 
 
-def build_grouped_bar_svg(chart_id: str, title: str, cat_labels: list, series: list, unit: str = "") -> Optional[str]:
-    """series = [(name_ru, [values_by_category]), ...]."""
+def build_grouped_bar_svg(chart_id: str, title: str, cat_labels: list, series: list, unit: str = "", rotate_labels: bool = False, cat_logins: Optional[list] = None) -> Optional[str]:
+    """series = [(name_ru, [values_by_category]), ...]. Category count here
+    is typically the number of people (unbounded, can exceed 20 — §P0-2),
+    so unlike the sprint-axis bar charts this one keeps its width
+    proportional to `cat_labels` and renders through `chart_block_wide`
+    (horizontal scroll, no squeeze) instead of trying to fit into one
+    fixed-width column. `cat_logins`, if given, parallels `cat_labels` and
+    wraps each person's bar group in `<g data-login="...">` for the
+    people multi-select (§control C)."""
     n_cats = len(cat_labels)
     n_series = len(series)
     if n_cats == 0 or n_series == 0:
         return None
-    W = max(380, 120 + n_cats * 96)
-    bottom = 200
-    plot_h = bottom - 46 - 16
+    short_labels = [truncate(str(cat), 16) for cat in cat_labels]
+    W = max(420, 70 + n_cats * 64)
+    bottom = 200 + (18 if rotate_labels else 0)
+    plot_h = bottom - 46 - 16 - (18 if rotate_labels else 0)
     left = 40
     chart_w = W - left - 24
     xstep = chart_w / max(n_cats, 1)
-    bar_w = max((xstep - 18) / max(n_series, 1), 6)
+    bar_w = max((xstep - 18) / max(n_series, 1), 10)
+
+    # Rotated labels (§P0-3 fallback) pivot on their own right/bottom
+    # corner (`_tick_label_svg`), so a long name reaches further down AND
+    # further left than a fixed reserve accounts for (§tab05 cycle-time
+    # regression — real names overflowed the viewBox by up to 35px). `W`
+    # and `left` grow by the same amount so `chart_w`/`xstep`/`bar_w`
+    # above stay exactly as computed — only the canvas gets wider, not
+    # the bars.
+    reach = _rotated_label_reach(short_labels) if rotate_labels else 0.0
+    first_tick_x = left + xstep / 2
+    extra_left = math.ceil(max(0.0, reach - first_tick_x)) if rotate_labels else 0
+    left += extra_left
+    W += extra_left
 
     all_vals = [v for _n, vals in series for v in vals if v is not None]
     vmax = max(all_vals) if all_vals else 1
     if vmax <= 0:
         vmax = 1
+    H = bottom + max(52, math.ceil(14 + reach + 22))
 
     parts = [
-        f'<svg id="{esc(chart_id)}" class="chart" viewBox="0 0 {W} 252" width="{W}" height="252" '
+        f'<svg id="{esc(chart_id)}" class="chart-svg" style="min-width:{W}px" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
         f'role="img" aria-label="{esc(title)}" xmlns="http://www.w3.org/2000/svg">'
     ]
     parts.append(f'<line class="c-axis" x1="{left}" y1="{bottom}" x2="{W - 12}" y2="{bottom}"/>')
     for i, cat in enumerate(cat_labels):
         xg = left + i * xstep
+        login = cat_logins[i] if cat_logins and i < len(cat_logins) else None
+        parts.append(f'<g data-login="{esc(login)}">' if login else "<g>")
         for j, (sname, vals) in enumerate(series):
             v = vals[i] if i < len(vals) else None
             if v is None:
@@ -528,38 +682,44 @@ def build_grouped_bar_svg(chart_id: str, title: str, cat_labels: list, series: l
             )
             parts.append(f'<text class="c-bar-value" x="{x + bar_w / 2:.1f}" y="{y - 4:.1f}" text-anchor="middle">{esc(val_txt)}</text>')
         label = str(cat)
-        short = truncate(label, 12)
-        parts.append(
-            f'<text class="c-tick-label" x="{xg + xstep / 2:.1f}" y="{bottom + 14}" text-anchor="middle">'
-            f'<title>{esc(label)}</title>{esc(short)}</text>'
-        )
+        short = short_labels[i]
+        tick_x = xg + xstep / 2
+        parts.append(_tick_label_svg(tick_x, bottom + 14, label, short, rotate_labels))
+        parts.append("</g>")
 
-    ly, lx = 230, 8
+    ly, lx = H - 22, 8
     for j, (sname, _vals) in enumerate(series):
         cls = _series_class(j)
         parts.append(f'<rect class="{cls}" x="{lx}" y="{ly}" width="10" height="10" rx="2"/>')
         parts.append(f'<text class="c-legend-text" x="{lx + 14}" y="{ly + 9}">{esc(sname)}</text>')
-        lx += 34 + len(sname) * 5.5
+        lx += 34 + len(sname) * 6.5
     parts.append("</svg>")
     return "".join(parts)
 
 
-def build_stacked_bar_svg(chart_id: str, title: str, cat_labels: list, series: list, unit: str = "", ref_line: Optional[float] = None) -> Optional[str]:
+def build_stacked_bar_svg(chart_id: str, title: str, cat_labels: list, series: list, unit: str = "", ref_line: Optional[float] = None, rotate_labels: bool = False) -> Optional[str]:
     """series = [(name_ru, [values_by_category]), ...], segments stacked
     bottom-up in series order. Maps the full range of partial sums reached
     while stacking (not just each category's final total), so a segment
     with a negative running sum still lands inside the viewBox instead of
-    the fixed zero-at-bottom assumption pushing it off-canvas."""
+    the fixed zero-at-bottom assumption pushing it off-canvas.
+
+    Width is a FIXED baseline (§P0-2) rather than growing with `cat_labels`
+    — this builder is used for the bounded sprint axis, and a viewBox
+    wider than the chart-grid column it renders into is what shrank axis
+    text down to 3-6px in production. Categories that still don't fit get
+    shortened labels from `shorten_axis_labels` (called by the tab
+    builder) or, failing that, `rotate_labels`."""
     n_cats = len(cat_labels)
     if n_cats == 0 or not series:
         return None
-    W = max(380, 120 + n_cats * 96)
-    bottom = 200
-    plot_h = bottom - 46 - 16
+    W = 480
+    bottom = 200 + (18 if rotate_labels else 0)
+    plot_h = bottom - 46 - 16 - (18 if rotate_labels else 0)
     left = 40
     chart_w = W - left - 24
     xstep = chart_w / max(n_cats, 1)
-    bar_w = max(xstep - 24, 10)
+    bar_w = max(xstep - 16, 6)
 
     extents = [0.0] + ([ref_line] if ref_line is not None else [])
     for i in range(n_cats):
@@ -577,9 +737,10 @@ def build_stacked_bar_svg(chart_id: str, title: str, cat_labels: list, series: l
         return bottom - (v - vmin) / (vmax - vmin) * plot_h
 
     zero_y = y_of(0.0)
+    H = bottom + 52
 
     parts = [
-        f'<svg id="{esc(chart_id)}" class="chart" viewBox="0 0 {W} 252" width="{W}" height="252" '
+        f'<svg id="{esc(chart_id)}" class="chart" style="min-width:{W}px" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
         f'role="img" aria-label="{esc(title)}" xmlns="http://www.w3.org/2000/svg">'
     ]
     parts.append(f'<line class="c-axis" x1="{left}" y1="{zero_y:.1f}" x2="{W - 12}" y2="{zero_y:.1f}"/>')
@@ -598,22 +759,20 @@ def build_stacked_bar_svg(chart_id: str, title: str, cat_labels: list, series: l
             parts.append(f'<rect class="{cls}" x="{xg:.1f}" y="{top:.1f}" width="{bar_w:.1f}" height="{h:.1f}"><title>{esc(bar_title)}</title></rect>')
             cum += v
         label = str(cat)
-        short = truncate(label, 12)
-        parts.append(
-            f'<text class="c-tick-label" x="{xg + bar_w / 2:.1f}" y="{bottom + 14}" text-anchor="middle">'
-            f'<title>{esc(label)}</title>{esc(short)}</text>'
-        )
+        short = truncate(label, 10)
+        tick_x = xg + bar_w / 2
+        parts.append(_tick_label_svg(tick_x, bottom + 14, label, short, rotate_labels))
     if ref_line is not None:
         ry = y_of(ref_line)
         parts.append(f'<line class="c-marker" x1="{left}" y1="{ry:.1f}" x2="{W - 12}" y2="{ry:.1f}"/>')
         parts.append(f'<text class="c-marker-label" x="{W - 12}" y="{ry - 4:.1f}" text-anchor="end">{fmt_num(ref_line, 0)}</text>')
 
-    ly, lx = 230, 8
+    ly, lx = H - 22, 8
     for j, (sname, _vals) in enumerate(series):
         cls = _series_class(j)
         parts.append(f'<rect class="{cls}" x="{lx}" y="{ly}" width="10" height="10" rx="2"/>')
         parts.append(f'<text class="c-legend-text" x="{lx + 14}" y="{ly + 9}">{esc(sname)}</text>')
-        lx += 34 + len(sname) * 5.5
+        lx += 34 + len(sname) * 6.5
     parts.append("</svg>")
     return "".join(parts)
 
@@ -626,15 +785,20 @@ def build_vbar_svg(
     unit: str = "",
     ref_line: Optional[float] = None,
     ref_lines: Optional[list] = None,
+    rotate_labels: bool = False,
 ) -> Optional[str]:
-    """Single-series vertical bars. `ref_lines` (list of (value, label_text))
-    is the extension used by the forecast histogram to draw P50/P85/P95 at
-    once; `ref_line` is the single-value convenience form used elsewhere."""
+    """Single-series vertical bars over a bounded category axis (sprints).
+    `ref_lines` (list of (value, label_text)) draws multiple horizontal
+    threshold lines at once (e.g. several named targets on the same %
+    axis); `ref_line` is the single-value convenience form. Width is a
+    fixed §P0-2 baseline, not proportional to `values` — see
+    `build_stacked_bar_svg` for why."""
     n = len(values)
     if n == 0:
         return None
-    W, H = 640, 260
-    x0, x1 = 50.0, W - 16.0
+    W = 480
+    H = 260 + (18 if rotate_labels else 0)
+    x0, x1 = 46.0, W - 14.0
     y_top, y_base = 20.0, 210.0
     nums = [v for v in values if v is not None]
     all_refs = [r for r, _l in (ref_lines or [])] + ([ref_line] if ref_line is not None else [])
@@ -658,11 +822,13 @@ def build_vbar_svg(
     )
 
     bars = []
+    tick_y = y_base + 16
     for x, cat, v in zip(xs, cat_labels, values):
         label = str(cat)
-        short = truncate(label, 14)
+        short = truncate(label, 10)
+        tick_x = x + bar_w / 2
         if v is None:
-            bars.append(f'<text class="c-tick-label" x="{x + bar_w / 2:.1f}" y="{y_base + 16:.0f}" text-anchor="middle"><title>{esc(label)}</title>{esc(short)}</text>')
+            bars.append(_tick_label_svg(tick_x, tick_y, label, short, rotate_labels))
             continue
         h = y_base - y_of(v)
         val_txt = fmt_num(v, 1)
@@ -671,7 +837,7 @@ def build_vbar_svg(
             f'<rect class="c-bar" x="{x:.2f}" y="{y_of(v):.2f}" width="{bar_w:.2f}" height="{max(h, 1):.2f}" rx="2">'
             f'<title>{esc(bar_title)}</title></rect>'
         )
-        bars.append(f'<text class="c-tick-label" x="{x + bar_w / 2:.1f}" y="{y_base + 16:.0f}" text-anchor="middle"><title>{esc(label)}</title>{esc(short)}</text>')
+        bars.append(_tick_label_svg(tick_x, tick_y, label, short, rotate_labels))
 
     ref_html_parts = []
     if ref_line is not None:
@@ -686,12 +852,107 @@ def build_vbar_svg(
         ref_html_parts.append(f'<text class="c-marker-label" x="{x1}" y="{ry - 4:.1f}" text-anchor="end">{esc(rlabel)}</text>')
 
     return (
-        f'<svg id="{esc(chart_id)}" class="chart" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
+        f'<svg id="{esc(chart_id)}" class="chart" style="min-width:{W}px" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
         f'role="img" aria-label="{esc(title)}" xmlns="http://www.w3.org/2000/svg">'
         f"<g>{grid}</g><g>{y_labels}</g>"
         f'<line class="c-axis" x1="{x0}" y1="{y_base}" x2="{x1}" y2="{y_base}"/>'
         + "".join(bars)
         + "".join(ref_html_parts)
+        + "</svg>"
+    )
+
+
+def build_forecast_histogram_svg(chart_id: str, title: str, bins: list, percentiles: list, unit_ru: str) -> Optional[str]:
+    """bins = [(sp_value, count), ...]; percentiles = [(sp_value, label), ...].
+
+    Fixes §P1-4: the old renderer marked P50/P85/P95 with the categorical
+    vbar builder's horizontal `ref_lines` — a Y-axis threshold marker —
+    even though a percentile is a value on the X axis (story points), not
+    the Y axis (iteration count); all three collapsed into one
+    near-invisible horizontal band at the bottom. Bars sit on a
+    continuous numeric X axis keyed by their `sp` value, so a percentile
+    gets an exact X position instead of being forced onto a bar's
+    categorical slot. Markers are vertical, span the full plot height,
+    and stagger their labels onto two rows when two percentiles land
+    within ~40px of each other."""
+    bins = [(float(sp), int(count)) for sp, count in bins if sp is not None]
+    if not bins:
+        return None
+    W, H = 480, 282
+    x0, x1 = 46.0, W - 14.0
+    y_top, y_base = 44.0, 210.0
+
+    sp_values = [sp for sp, _c in bins]
+    counts = [c for _sp, c in bins]
+    p_values = [p for p, _l in percentiles if p is not None]
+    lo = min(sp_values + p_values)
+    hi = max(sp_values + p_values)
+    if hi <= lo:
+        hi = lo + 1.0
+    span = hi - lo
+
+    def X(v: float) -> float:
+        return x0 + (v - lo) / span * (x1 - x0)
+
+    n_ticks = 5
+    step_val = nice_step(max(counts) if counts else 1.0, n_ticks)
+    top = step_val * n_ticks
+
+    def Y(v: float) -> float:
+        return y_base - (v / top) * (y_base - y_top) if top else y_base
+
+    sorted_sp = sorted(set(sp_values))
+    gaps = [b - a for a, b in zip(sorted_sp, sorted_sp[1:]) if b > a]
+    gap = min(gaps) if gaps else span or 1.0
+    bar_w = max((gap / span) * (x1 - x0) * 0.72, 6)
+
+    grid = "".join(f'<line class="c-grid" x1="{x0}" y1="{Y(step_val * i):.1f}" x2="{x1}" y2="{Y(step_val * i):.1f}"/>' for i in range(1, n_ticks + 1))
+    y_tick_decimals = axis_label_decimals([step_val * i for i in range(0, n_ticks + 1)])
+    y_labels = "".join(
+        f'<text class="c-unit-label" x="{x0 - 8}" y="{Y(step_val * i) + 4:.1f}" text-anchor="end">{fmt_num(step_val * i, y_tick_decimals)}</text>'
+        for i in range(0, n_ticks + 1)
+    )
+
+    bars = []
+    for sp, count in bins:
+        x = X(sp)
+        h = y_base - Y(count)
+        val_txt = fmt_int(count)
+        bar_title = f"{fmt_num(sp, 1)} {unit_ru}: {val_txt} прогонов".strip()
+        bars.append(
+            f'<rect class="c-bar" x="{x - bar_w / 2:.2f}" y="{Y(count):.2f}" width="{bar_w:.2f}" '
+            f'height="{max(h, 1):.2f}" rx="2"><title>{esc(bar_title)}</title></rect>'
+        )
+    x_ticks = "".join(
+        f'<text class="c-tick-label" x="{X(sp):.1f}" y="{y_base + 16:.0f}" text-anchor="middle">{fmt_num(sp, 1)}</text>'
+        for sp in sorted_sp
+    )
+
+    marker_positions = sorted(((X(p), lab) for p, lab in percentiles if p is not None), key=lambda t: t[0])
+    markers = []
+    # Greedy 2-row bin-packing keyed by each label's own estimated text
+    # width (labels are full Russian phrases like "безопасный внешний
+    # срок", not just "P95" — a fixed pixel gap collided regardless of
+    # how long the label actually was). Each label goes in row 0 unless
+    # it would overlap the last label already placed there, in which
+    # case it drops to row 1.
+    row_right_edge = [float("-inf"), float("-inf")]
+    for x, lab in marker_positions:
+        half_w = 3.3 * len(str(lab)) + 6
+        row = 0 if x - half_w >= row_right_edge[0] else 1
+        row_right_edge[row] = x + half_w
+        label_y = y_top - 6 - (14 if row == 1 else 0)
+        markers.append(f'<line class="c-marker-v" x1="{x:.1f}" y1="{y_top}" x2="{x:.1f}" y2="{y_base}"/>')
+        markers.append(f'<text class="c-marker-v-label" x="{x:.1f}" y="{label_y:.1f}" text-anchor="middle">{esc(lab)}</text>')
+
+    return (
+        f'<svg id="{esc(chart_id)}" class="chart" style="min-width:{W}px" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
+        f'role="img" aria-label="{esc(title)}" xmlns="http://www.w3.org/2000/svg">'
+        f"<g>{grid}</g><g>{y_labels}</g>"
+        f'<line class="c-axis" x1="{x0}" y1="{y_base}" x2="{x1}" y2="{y_base}"/>'
+        + "".join(bars)
+        + x_ticks
+        + "".join(markers)
         + "</svg>"
     )
 
@@ -705,30 +966,47 @@ def build_multiline_svg(
     ref_lines: tuple = (),
     show_trend: bool = True,
     trend_values: Optional[list] = None,
+    rotate_labels: bool = False,
+    external_legend: bool = False,
+    series_logins: Optional[list] = None,
 ) -> Optional[str]:
-    """series = [(name_ru, [values_or_none_by_category]), ...]."""
+    """series = [(name_ru, [values_or_none_by_category]), ...]. Width is a
+    fixed §P0-2 baseline matching the chart-grid column, not proportional
+    to `labels` — see `build_stacked_bar_svg`.
+
+    `external_legend=True` skips the in-SVG legend entirely (the caller
+    then builds one from the same `series` list via `chart_legend_html`,
+    §P1-6 — a legend outside the viewBox does not shrink with it and does
+    not eat into plot height). `series_logins`, when given, parallels
+    `series` and wraps each person's path+points in `<g data-login="...">`
+    so the people multi-select (tabs 05/06, §control C) can toggle a
+    whole series at once."""
     n = len(labels)
     has_any = any(v is not None for _n, vals in series for v in vals)
     if n == 0 or not series or not has_any:
         return None
 
     left, right, top = 46.0, 14.0, 42.0
-    W = 640
+    W = 480
 
-    legend_rows = 1
-    lx = left
-    for sname, _vals in series:
-        w = 24 + len(sname) * 5.6
-        if lx + w > W - right:
-            lx = left
-            legend_rows += 1
-        lx += w
-    if legend_rows > 1:
-        H = 320 + 16 * (legend_rows - 1)
-        bottom = 44 + 16 * (legend_rows - 1)
+    if external_legend:
+        legend_rows = 0
     else:
-        H = 320
-        bottom = 44
+        legend_rows = 1
+        lx = left
+        for sname, _vals in series:
+            w = 24 + len(sname) * 6.2
+            if lx + w > W - right:
+                lx = left
+                legend_rows += 1
+            lx += w
+    extra_bottom = 18 if rotate_labels else 0
+    if legend_rows > 1:
+        H = 300 + 16 * (legend_rows - 1) + extra_bottom
+        bottom = 44 + 16 * (legend_rows - 1) + extra_bottom
+    else:
+        H = 300 + extra_bottom
+        bottom = 44 + extra_bottom
     plot_h = H - top - bottom
     plot_w = W - left - right
 
@@ -749,7 +1027,7 @@ def build_multiline_svg(
         return top + plot_h * (1 - (v - ymin) / (ymax - ymin))
 
     parts = [
-        f'<svg id="{esc(chart_id)}" class="chart" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
+        f'<svg id="{esc(chart_id)}" class="chart" style="min-width:{W}px" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
         f'role="img" aria-label="{esc(title)}" xmlns="http://www.w3.org/2000/svg">'
     ]
     grid_values = [ymin + (ymax - ymin) * k / 4 for k in range(5)]
@@ -759,10 +1037,11 @@ def build_multiline_svg(
         parts.append(f'<line class="c-grid" x1="{left}" y1="{y:.1f}" x2="{W - right}" y2="{y:.1f}"/>')
         parts.append(f'<text class="c-unit-label" x="{left - 6}" y="{y + 3:.1f}" text-anchor="end">{fmt_num(v, grid_decimals)}</text>')
 
+    tick_y = H - bottom + 14
     for i, lab in enumerate(labels):
         txt = str(lab)
-        short = truncate(txt, 14)
-        parts.append(f'<text class="c-tick-label" x="{X(i):.1f}" y="{H - bottom + 14}" text-anchor="middle"><title>{esc(txt)}</title>{esc(short)}</text>')
+        short = truncate(txt, 10)
+        parts.append(_tick_label_svg(X(i), tick_y, txt, short, rotate_labels))
 
     for rv in ref_lines:
         if rv is None:
@@ -773,6 +1052,9 @@ def build_multiline_svg(
 
     for si, (sname, vals) in enumerate(series):
         cls = _series_class(si)
+        login = series_logins[si] if series_logins and si < len(series_logins) else None
+        g_attr = f' data-login="{esc(login)}"' if login else ""
+        parts.append(f"<g{g_attr}>")
         pts = [(i, X(i), Y(v)) for i, v in enumerate(vals) if v is not None]
         if len(pts) >= 2:
             d = "M " + " L ".join(f"{x:.1f} {y:.1f}" for _i, x, y in pts)
@@ -783,6 +1065,7 @@ def build_multiline_svg(
             parts.append(f'<circle class="{cls} c-point" cx="{x:.1f}" cy="{y:.1f}" r="3.5"><title>{esc(pt_title)}</title></circle>')
             if len(series) == 1 and n <= 12:
                 parts.append(f'<text class="c-point-label" x="{x:.1f}" y="{y - 6:.1f}" text-anchor="middle">{esc(val_txt)}</text>')
+        parts.append("</g>")
 
     if show_trend:
         if trend_values is not None:
@@ -798,30 +1081,91 @@ def build_multiline_svg(
             y1 = Y(k_ * (n - 1) + b_)
             parts.append(f'<line class="c-trend" x1="{left:.1f}" y1="{y0:.1f}" x2="{left + plot_w:.1f}" y2="{y1:.1f}"/>')
 
-    ly, lx = H - 8, left
-    for si, (sname, _vals) in enumerate(series):
-        cls = _series_class(si)
-        w = 24 + len(sname) * 5.6
-        if lx + w > W - right:
-            lx = left
-            ly -= 16
-        parts.append(f'<rect class="{cls}" x="{lx}" y="{ly - 9}" width="10" height="10" rx="2"/>')
-        parts.append(f'<text class="c-legend-text" x="{lx + 14}" y="{ly}">{esc(sname)}</text>')
-        lx += w
+    if not external_legend:
+        ly, lx = H - 8, left
+        for si, (sname, _vals) in enumerate(series):
+            cls = _series_class(si)
+            w = 24 + len(sname) * 6.2
+            if lx + w > W - right:
+                lx = left
+                ly -= 16
+            parts.append(f'<rect class="{cls}" x="{lx}" y="{ly - 9}" width="10" height="10" rx="2"/>')
+            parts.append(f'<text class="c-legend-text" x="{lx + 14}" y="{ly}">{esc(sname)}</text>')
+            lx += w
     parts.append("</svg>")
     return "".join(parts)
 
 
-def chart_block(chart_id: str, title: str, svg_or_none: Optional[str], hint_html: str) -> str:
-    inner = svg_or_none if svg_or_none is not None else '<p class="empty">Недостаточно данных для построения графика.</p>'
+_PEOPLE_FILTER_EMPTY_TEXT = "Текущий фильтр не выбирает ни одного человека — отметьте хотя бы одного, чтобы увидеть данные."
+
+
+def _people_filter_empty_note() -> str:
+    return f'<p class="filter-empty">{esc(_PEOPLE_FILTER_EMPTY_TEXT)}</p>'
+
+
+def chart_block(chart_id: str, title: str, svg_or_none: Optional[str], hint_html: str, caption: Optional[str] = None, legend_html: str = "", people_scope: bool = False) -> str:
+    inner = f'<div class="scroll-x">{svg_or_none}</div>' if svg_or_none is not None else '<p class="empty">Недостаточно данных для построения графика.</p>'
+    caption_html = f'<p class="axis-caption">{esc(caption)}…</p>' if caption else ""
+    scoped = people_scope and svg_or_none is not None
+    scope_attr = " data-people-scope" if scoped else ""
+    empty_note = _people_filter_empty_note() if scoped else ""
     return (
-        f'<div class="chartbox card" id="cb-{esc(chart_id)}"><h3>{esc(title)}</h3>{inner}'
+        f'<div class="chartbox card"{scope_attr} id="cb-{esc(chart_id)}"><h3>{esc(title)}</h3>{caption_html}{inner}{empty_note}{legend_html}'
         f'<p class="hint">{hint_html}</p></div>'
     )
 
 
-def table_hint(table_html: str, hint_html: str) -> str:
-    return f'{table_html}<p class="hint">{hint_html}</p>'
+def _table_scroll_note(total_rows: Optional[int]) -> str:
+    """A height-capped `.table-wrap` (420px, no `no-cap`/`scroll-x`) clips
+    rows below the fold with only a visual fade — this spells out the real
+    row count so a reader knows there's more instead of assuming the table
+    just ends there. `total_rows` must be the caller's own real row count;
+    every capped table gets one of these, not just the ones somebody
+    remembered to wire up."""
+    if total_rows is not None and total_rows > 10:
+        row_word = ru_plural(total_rows, "строка", "строки", "строк")
+        return f'<p class="scroll-note">Показаны не все строки — всего {total_rows} {row_word}, прокрутите таблицу, чтобы увидеть остальные.</p>'
+    return ""
+
+
+def table_hint(table_html: str, hint_html: str, total_rows: Optional[int] = None) -> str:
+    return f'{table_html}{_table_scroll_note(total_rows)}<p class="hint">{hint_html}</p>'
+
+
+def chart_block_wide(chart_id: str, title: str, svg_or_none: Optional[str], hint_html: str, people_scope: bool = False) -> str:
+    """Like `chart_block`, but for a chart whose natural width grows with
+    an unbounded category count (people, not sprints) — wraps the SVG in
+    `.scroll-x` instead of letting the grid squeeze it into one column,
+    which is what caused the §P0-2 viewBox-vs-container mismatch."""
+    if svg_or_none is None:
+        return chart_block(chart_id, title, None, hint_html)
+    scoped = people_scope
+    scope_attr = " data-people-scope" if scoped else ""
+    empty_note = _people_filter_empty_note() if scoped else ""
+    return (
+        f'<div class="chartbox card"{scope_attr} id="cb-{esc(chart_id)}"><h3>{esc(title)}</h3>'
+        f'<div class="scroll-x">{svg_or_none}</div>{empty_note}'
+        f'<p class="hint">{hint_html}</p></div>'
+    )
+
+
+def chart_legend_html(items: list) -> str:
+    """items = [(name, css_class, login_or_None), ...]. External HTML
+    legend (§P1-6) for charts with too many series for an in-SVG legend to
+    stay both space-efficient and readable — a legend entry here always
+    corresponds to a drawn series, since both are built from the same
+    list. `login`, when given, lets the people multi-select (tabs 05/06)
+    hide the legend entry together with its series."""
+    if not items:
+        return ""
+    parts = ['<div class="chart-legend">']
+    for name, cls, login in items:
+        attr = f' data-login="{esc(login)}"' if login else ""
+        parts.append(
+            f'<span class="lg-item"{attr}><i class="lg-swatch {esc(cls)}"></i>{esc(name)}</span>'
+        )
+    parts.append("</div>")
+    return "".join(parts)
 
 
 def empty_state_html(text: str = "Нет данных.") -> str:
@@ -857,7 +1201,7 @@ def build_burndown_svg(chart_id: str, points: list, unit: str) -> tuple:
     n = len(points)
     if n == 0:
         svg = (
-            '<svg class="chart-svg" viewBox="0 0 760 344" role="img" aria-label="нет данных">'
+            '<svg class="chart-svg" style="min-width:760px" viewBox="0 0 760 344" role="img" aria-label="нет данных">'
             '<text class="c-axis-title" x="380" y="172" text-anchor="middle">нет данных</text></svg>'
         )
         return svg, False
@@ -891,10 +1235,6 @@ def build_burndown_svg(chart_id: str, points: list, unit: str) -> tuple:
     x_sub = "".join(f'<text x="{x:.2f}" y="{y_base + 29}">{_WEEKDAY_RU_SHORT[_weekday(p["date"])]}</text>' for x, p in zip(xs, points))
 
     ideal_path = "M " + " L ".join(f"{x:.2f} {y_of(v):.2f}" for x, v in zip(xs, ideal))
-    area_path = (
-        "M " + " L ".join(f"{x:.2f} {y_of(v):.2f}" for x, v in zip(xs, remaining))
-        + f" L {xs[-1]:.2f} {y_base} L {xs[0]:.2f} {y_base} Z"
-    )
     actual_pts = " ".join(f"{x:.2f},{y_of(v):.2f}" for x, v in zip(xs, remaining))
 
     dots = []
@@ -909,15 +1249,12 @@ def build_burndown_svg(chart_id: str, points: list, unit: str) -> tuple:
         f"осталось {fmt_num(remaining[-1], 1)} {unit_label}</text></g>"
     )
 
-    grad_id = f"grad-{esc(chart_id)}"
     aria = f"Burndown, остаток в {unit_label}: " + ", ".join(fmt_num(v, 1) for v in remaining)
     dots_html = "".join(dots)
 
     svg = (
-        f'<svg id="{esc(chart_id)}" class="chart-svg" viewBox="0 0 760 344" preserveAspectRatio="xMidYMid meet" '
+        f'<svg id="{esc(chart_id)}" class="chart-svg" style="min-width:760px" viewBox="0 0 760 344" preserveAspectRatio="xMidYMid meet" '
         f'role="img" aria-label="{esc(aria)}">'
-        f'<defs><linearGradient id="{grad_id}" x1="0" y1="0" x2="0" y2="1">'
-        '<stop class="c-area-top" offset="0%"/><stop class="c-area-bottom" offset="100%"/></linearGradient></defs>'
         f"{weekend_html}"
         f'<g class="c-grid">{grid}</g>'
         f'<g class="c-unit-label" text-anchor="end">{y_labels}</g>'
@@ -930,7 +1267,6 @@ def build_burndown_svg(chart_id: str, points: list, unit: str) -> tuple:
         f'<g class="c-tick-sub" text-anchor="middle">{x_sub}</g>'
         f'<text class="c-axis-title" x="{(x0 + x1) / 2:.0f}" y="{y_base + 48:.0f}" text-anchor="middle">Календарный день</text>'
         f'<path class="c-ideal" d="{ideal_path}"/>'
-        f'<path class="c-area" d="{area_path}" style="fill:url(#{grad_id})"/>'
         f'<polyline class="c-actual" points="{actual_pts}"/>'
         f'<g class="c-actual-pt">{dots_html}</g>'
         f"{callout}"
@@ -947,7 +1283,7 @@ def build_burndown_svg(chart_id: str, points: list, unit: str) -> tuple:
 
 def require(report: dict, key: str) -> Any:
     if key not in report:
-        raise TemplateError(f"report is missing required schema v2 key: {key!r}")
+        raise TemplateError(f"report is missing required schema v3 key: {key!r}")
     return report[key]
 
 
@@ -1147,11 +1483,35 @@ _TAB01_OVERVIEW_PARA = (
     "личным средним сотрудников; пайплайны и деплои посчитаны один раз по всей команде."
 )
 
-_TAB01_DIST_PARA = (
-    "Типы задач — по полю «Тип» завершённых задач Jira за период. Доли успеха — (все запуски − "
-    "упавшие) / все запуски по данным GitLab; отменённые и пропущенные запуски считаются неупавшими. "
-    "Частота: пайплайнов {pw_pipe} в неделю, деплоев {pw_dep} в неделю."
+_TAB01_ISSUE_DIST_PARA = "Типы задач — по полю «Тип» завершённых задач Jira за период."
+
+_TAB01_ENG_DIST_PARA_TMPL = (
+    "Доля успеха — (все запуски − упавшие) / все запуски по данным GitLab; отменённые и пропущенные "
+    "запуски считаются неупавшими. Частота: {pw} в неделю."
 )
+
+
+def build_recommendations_html(report: dict) -> str:
+    """§CONTRACT: `recommendations` restores the standalone section the
+    previous version had — rendered prominently on tab 01 right under the
+    KPI tiles, numbered, colour-coded by severity."""
+    recos = report.get("recommendations") or []
+    intro = report.get("recommendations_intro_ru") or ""
+    intro_html = f'<p class="reco-intro">{esc(intro)}</p>' if intro else ""
+    if not recos:
+        empty = report.get("recommendations_empty_ru") or "Рекомендаций нет."
+        return f'{intro_html}<p class="section-desc" style="text-align:left">{esc(empty)}</p>'
+    items = []
+    for r in recos:
+        severity = r.get("severity") or "warn"
+        items.append(
+            f'<li class="reco-item" data-severity="{esc(severity)}"><div class="reco-body">'
+            f'<b>{esc(r.get("metric_ru"))}: {esc(r.get("value_ru"))}</b>'
+            f'<div class="reco-signal">{esc(r.get("signal_ru"))}</div>'
+            f'<div class="reco-action"><b>Действие:</b> {esc(r.get("action_ru"))}</div>'
+            "</div></li>"
+        )
+    return f'{intro_html}<ul class="reco-list">{"".join(items)}</ul>'
 
 
 def build_tab01(report: dict) -> str:
@@ -1168,6 +1528,12 @@ def build_tab01(report: dict) -> str:
         f'<p class="hint">{esc(_TAB01_KPI_PARA.format(name=primary.get("name", "")))}</p></div></section>'
     )
 
+    sec_reco = (
+        '<section class="section" id="sec-01-recommendations"><div class="section-head">'
+        '<span class="section-index">01.2</span><h2 class="section-title">Рекомендации</h2></div>'
+        f'<div class="section-body">{build_recommendations_html(report)}</div></section>'
+    )
+
     overview_cards = [
         ("Сотрудников", fmt_int(overview.get("employees")), ""),
         ("MR (всего)", fmt_int(overview.get("mr_total")), ""),
@@ -1180,7 +1546,7 @@ def build_tab01(report: dict) -> str:
     ]
     cards_html = "".join(
         f'<div class="stat"><div class="stat-label">{esc(label)}</div>'
-        f'<div class="stat-value">{value}<span class="u">{esc(unit)}</span></div></div>'
+        f'<div class="stat-value">{stat_value_html(value, unit)}</div></div>'
         for label, value, unit in overview_cards
     )
     gw = (report.get("params") or {}).get("gitlab_window") or {}
@@ -1190,31 +1556,30 @@ def build_tab01(report: dict) -> str:
         gw_period_text = "не определён (GitLab не настроен для этого запуска)"
     sec2 = (
         '<section class="section" id="sec-01-overview"><div class="section-head">'
-        '<span class="section-index">01.2</span><h2 class="section-title">Команда за период</h2></div>'
+        '<span class="section-index">01.3</span><h2 class="section-title">Команда за период</h2></div>'
         f'<div class="section-body"><div class="person-stats stat-grid">{cards_html}</div>'
         f'<p class="hint">{esc(_TAB01_OVERVIEW_PARA.format(period=gw_period_text))}</p>'
         "</div></section>"
     )
 
     issue_dist = overview.get("issue_type_dist") or {}
-    donut1 = build_donut_svg("chart-issue-type-dist", "Распределение типов задач", list(issue_dist.items()), fmt_int(overview.get("tasks_done_total")))
     pipe = (eng.get("pipelines") or {}) if eng.get("available") else {}
     dep = (eng.get("deployments") or {}) if eng.get("available") else {}
     pipe_items = [("Успешно", (pipe.get("count") or 0) - (pipe.get("failed") or 0)), ("Упало", pipe.get("failed") or 0)] if pipe else []
     dep_items = [("Успешно", (dep.get("count") or 0) - (dep.get("failed") or 0)), ("Упало", dep.get("failed") or 0)] if dep else []
-    donut2 = build_donut_svg("chart-pipeline-success", "Доля успешных пайплайнов", pipe_items, fmt_pct(pipe.get("success_rate_pct")) if pipe else EM_DASH)
-    donut3 = build_donut_svg("chart-deploy-success", "Доля успешных деплоев", dep_items, fmt_pct(dep.get("success_rate_pct")) if dep else EM_DASH)
 
     pw_pipe = fmt_num(pipe.get("per_week"), 1) if pipe.get("per_week") is not None else "нет данных"
     pw_dep = fmt_num(dep.get("per_week"), 1) if dep.get("per_week") is not None else "нет данных"
-    dist_hint = esc(_TAB01_DIST_PARA.format(pw_pipe=pw_pipe, pw_dep=pw_dep))
+    issue_dist_hint = esc(_TAB01_ISSUE_DIST_PARA)
+    pipeline_hint = esc(_TAB01_ENG_DIST_PARA_TMPL.format(pw=pw_pipe))
+    deploy_hint = esc(_TAB01_ENG_DIST_PARA_TMPL.format(pw=pw_dep))
     sec3 = (
         '<section class="section" id="sec-01-dist"><div class="section-head">'
-        '<span class="section-index">01.3</span><h2 class="section-title">Распределение и стабильность</h2></div>'
+        '<span class="section-index">01.4</span><h2 class="section-title">Распределение и стабильность</h2></div>'
         '<div class="section-body"><div class="donut-row">'
-        + chart_block("chart-issue-type-dist", "Распределение типов задач", donut1, dist_hint)
-        + chart_block("chart-pipeline-success", "Доля успешных пайплайнов", donut2, dist_hint)
-        + chart_block("chart-deploy-success", "Доля успешных деплоев", donut3, dist_hint)
+        + donut_block("chart-issue-type-dist", "Распределение типов задач", list(issue_dist.items()), fmt_int(overview.get("tasks_done_total")), issue_dist_hint)
+        + donut_block("chart-pipeline-success", "Доля успешных пайплайнов", pipe_items, fmt_pct(pipe.get("success_rate_pct")) if pipe else EM_DASH, pipeline_hint, is_rate_pair=True)
+        + donut_block("chart-deploy-success", "Доля успешных деплоев", dep_items, fmt_pct(dep.get("success_rate_pct")) if dep else EM_DASH, deploy_hint, is_rate_pair=True)
         + "</div></div></section>"
     )
 
@@ -1222,13 +1587,13 @@ def build_tab01(report: dict) -> str:
     notes_html = "".join(f"<li>{esc(n)}</li>" for n in notes)
     sec4 = (
         '<section class="section" id="sec-01-warnings"><div class="section-head">'
-        '<span class="section-index">01.4</span><h2 class="section-title">Предупреждения</h2></div>'
+        '<span class="section-index">01.5</span><h2 class="section-title">Предупреждения</h2></div>'
         f'<div class="section-body">{warnings_list_html(report.get("warnings") or [])}'
         '<details class="thresholds"><summary>Как читать цифры (важные оговорки)</summary>'
         f'<ul class="warn-list">{notes_html}</ul></details></div></section>'
     )
 
-    return sec1 + sec2 + sec3 + sec4
+    return sec1 + sec_reco + sec2 + sec3 + sec4
 
 
 # ==========================================================================
@@ -1267,7 +1632,8 @@ def build_unit_toggle(chart_id: str, svg_items: str, svg_sp: str) -> str:
         f'<label class="unit-tab" for="ut-items-{esc(chart_id)}">Задачи</label>'
         f'<label class="unit-tab" for="ut-sp-{esc(chart_id)}">SP</label>'
         "</div>"
-        f'<div class="unit-panels"><div class="unit-panel">{svg_items}</div><div class="unit-panel">{svg_sp}</div></div>'
+        f'<div class="unit-panels"><div class="unit-panel"><div class="scroll-x">{svg_items}</div></div>'
+        f'<div class="unit-panel"><div class="scroll-x">{svg_sp}</div></div></div>'
         "</div>"
     )
 
@@ -1337,47 +1703,70 @@ def build_breakdown_table(report: dict, bd: dict) -> str:
 
 
 def build_tab02(report: dict) -> str:
-    sprints = require(report, "sprints")
+    """§control A: burndown/heatmap/breakdown now cover every sprint on
+    `sprint_axis`, not just the target sprint(s) — a <select> at the top
+    lets the reader jump between them. Every sprint block is rendered and
+    left visible in the markup (§graceful degradation); JS narrows the
+    view to the selected one instead of revealing hidden content, so a
+    reader with JavaScript disabled still sees every sprint, one after
+    another."""
+    axis = require(report, "sprint_axis")
+    primary = primary_target_axis(report)
+    primary_sid = primary["id"]
+
     burndown_by_id = {b["sprint_id"]: b for b in report.get("burndown") or []}
     heatmap_by_id = {h["sprint_id"]: h for h in report.get("heatmap") or []}
     breakdown_by_id = {b["sprint_id"]: b for b in report.get("issue_breakdown") or []}
 
+    options_html = "".join(
+        f'<option value="{esc(s["id"])}"{" selected" if s["id"] == primary_sid else ""}>{esc(s["name"])}</option>'
+        for s in axis
+    )
+    select_html = (
+        '<div class="control-bar"><label for="sprint-select">Спринт:</label>'
+        f'<select id="sprint-select" data-sprint-select>{options_html}</select></div>'
+    )
+
     blocks = []
-    for s in sprints:
-        if not s.get("target"):
-            continue
-        meta = s["meta"]
-        sid = meta["id"]
-        name = meta["name"]
+    for s in axis:
+        sid = s["id"]  # raw — used only as a dict key against burndown/heatmap/breakdown
+        sid_html = esc(sid)  # escaped — every HTML id/attribute below uses this
+        name = s["name"]
         bd_points = (burndown_by_id.get(sid) or {}).get("points") or []
-        svg_items, has_weekend1 = build_burndown_svg(f"chart-burndown-items-{sid}", bd_points, "items")
-        svg_sp, has_weekend2 = build_burndown_svg(f"chart-burndown-sp-{sid}", bd_points, "sp")
-        burndown_html = build_unit_toggle(f"burndown-{sid}", svg_items, svg_sp)
+        svg_items, _hw1 = build_burndown_svg(f"chart-burndown-items-{sid_html}", bd_points, "items")
+        svg_sp, _hw2 = build_burndown_svg(f"chart-burndown-sp-{sid_html}", bd_points, "sp")
+        burndown_html = build_unit_toggle(f"burndown-{sid_html}", svg_items, svg_sp)
         sec_burndown = (
             f'<div class="chartbox card"><h3>Burndown — {esc(name)}</h3>{burndown_html}'
             f'<p class="hint">{esc(_TAB02_BURNDOWN_PARA)}</p></div>'
         )
 
         hm = heatmap_by_id.get(sid) or {"days": [], "rows": []}
-        heatmap_table = build_heatmap_table(report, hm)
+        if hm.get("rows"):
+            heatmap_table = build_heatmap_table(report, hm)
+        else:
+            heatmap_table = empty_state_html("В этом спринте нет задач для тепловой карты.")
         sec_heatmap = (
             f'<div class="table-block"><h3>Тепловая карта статусов — {esc(name)}</h3>{heatmap_table}'
             f'<p class="hint">{auto_code_wrap(esc(_TAB02_HEATMAP_PARA))}</p></div>'
         )
 
         bd = breakdown_by_id.get(sid) or {"rows": []}
-        breakdown_table = build_breakdown_table(report, bd)
+        if bd.get("rows"):
+            breakdown_table = build_breakdown_table(report, bd)
+        else:
+            breakdown_table = empty_state_html("В этом спринте нет задач.")
         sec_breakdown = (
             f'<div class="table-block"><h3>Разбивка по задачам (по спринту) — {esc(name)}</h3>{breakdown_table}'
             f'<p class="hint">{esc(_TAB02_BREAKDOWN_PARA)}</p></div>'
         )
 
         blocks.append(
-            f'<section class="section" id="sec-02-{sid}"><div class="section-head">'
+            f'<section class="section" id="sec-02-{sid_html}" data-sprint-block data-sprint-id="{sid_html}"><div class="section-head">'
             f'<h2 class="section-title">{esc(name)}</h2></div>'
             f'<div class="section-body">{sec_burndown}{sec_heatmap}{sec_breakdown}</div></section>'
         )
-    return "".join(blocks)
+    return select_html + "".join(blocks)
 
 
 # ==========================================================================
@@ -1420,10 +1809,17 @@ _TAB03_BOARD_CHART_PARA = {
 }
 
 
+# §P2-10: the by-sprint pipeline/deployment charts already live on tab 07
+# (with fuller context: window-applied notes, project breakdown). Rendering
+# the identical team_series entries here too duplicated two full charts.
+_TAB03_SKIP_TEAM_SERIES_KEYS = {"pipelines_deployments", "ci_deploy_success"}
+
+
 def build_tab03(report: dict) -> str:
     sprints = require(report, "sprints")
     axis = require(report, "sprint_axis")
     cat_labels = [s["name"] for s in axis]
+    axis_caption, cat_labels_short, rotate = prepare_category_axis(cat_labels)
 
     committed_sp = [s["metrics"]["committed_sp"] for s in sprints]
     delivered_sp = [s["metrics"]["delivered_sp"] for s in sprints]
@@ -1439,39 +1835,39 @@ def build_tab03(report: dict) -> str:
     charts = [
         chart_block(
             "chart-board-commitment", "Commitment (SP)",
-            build_stacked_bar_svg("chart-board-commitment", "Commitment (SP)", cat_labels, [("Обязательство", committed_sp), ("Поставлено", delivered_sp)], "SP"),
-            auto_code_wrap(esc(_TAB03_BOARD_CHART_PARA["commitment"])),
+            build_stacked_bar_svg("chart-board-commitment", "Commitment (SP)", cat_labels_short, [("Обязательство", committed_sp), ("Поставлено", delivered_sp)], "SP", rotate_labels=rotate),
+            auto_code_wrap(esc(_TAB03_BOARD_CHART_PARA["commitment"])), caption=axis_caption,
         ),
         chart_block(
             "chart-board-performance", "Performance (Say/Do), %",
-            build_vbar_svg("chart-board-performance", "Performance (Say/Do), %", cat_labels, performance_pct, "%", ref_line=80.0),
-            auto_code_wrap(esc(_TAB03_BOARD_CHART_PARA["performance"])),
+            build_vbar_svg("chart-board-performance", "Performance (Say/Do), %", cat_labels_short, performance_pct, "%", ref_line=80.0, rotate_labels=rotate),
+            auto_code_wrap(esc(_TAB03_BOARD_CHART_PARA["performance"])), caption=axis_caption,
         ),
         chart_block(
             "chart-board-load", "Загрузка, %",
-            build_vbar_svg("chart-board-load", "Загрузка, %", cat_labels, load_pct, "%", ref_line=100.0),
-            auto_code_wrap(esc(_TAB03_BOARD_CHART_PARA["load"])),
+            build_vbar_svg("chart-board-load", "Загрузка, %", cat_labels_short, load_pct, "%", ref_line=100.0, rotate_labels=rotate),
+            auto_code_wrap(esc(_TAB03_BOARD_CHART_PARA["load"])), caption=axis_caption,
         ),
         chart_block(
             "chart-board-scope-change", "Изменение объёма (SP)",
             build_stacked_bar_svg(
-                "chart-board-scope-change", "Изменение объёма (SP)", cat_labels,
-                [("Добавлено", scope_added), ("Изменение оценки", scope_est), ("Убрано", scope_removed)], "SP",
+                "chart-board-scope-change", "Изменение объёма (SP)", cat_labels_short,
+                [("Добавлено", scope_added), ("Изменение оценки", scope_est), ("Убрано", scope_removed)], "SP", rotate_labels=rotate,
             ),
-            auto_code_wrap(esc(_TAB03_BOARD_CHART_PARA["scope_change"])),
+            auto_code_wrap(esc(_TAB03_BOARD_CHART_PARA["scope_change"])), caption=axis_caption,
         ),
         chart_block(
             "chart-board-velocity", "Velocity (SP)",
             build_multiline_svg(
-                "chart-board-velocity", "Velocity (SP)", cat_labels,
-                [("Velocity", velocity_sp), ("SMA5", velocity_sma5)], "SP", show_trend=False,
+                "chart-board-velocity", "Velocity (SP)", cat_labels_short,
+                [("Velocity", velocity_sp), ("SMA5", velocity_sma5)], "SP", show_trend=False, rotate_labels=rotate,
             ),
-            auto_code_wrap(esc(_TAB03_BOARD_CHART_PARA["velocity"])),
+            auto_code_wrap(esc(_TAB03_BOARD_CHART_PARA["velocity"])), caption=axis_caption,
         ),
         chart_block(
             "chart-board-throughput", "Throughput (задач)",
-            build_vbar_svg("chart-board-throughput", "Throughput (задач)", cat_labels, throughput, "задач"),
-            auto_code_wrap(esc(_TAB03_BOARD_CHART_PARA["throughput"])),
+            build_vbar_svg("chart-board-throughput", "Throughput (задач)", cat_labels_short, throughput, "задач", rotate_labels=rotate),
+            auto_code_wrap(esc(_TAB03_BOARD_CHART_PARA["throughput"])), caption=axis_caption,
         ),
     ]
     sec1 = (
@@ -1483,12 +1879,14 @@ def build_tab03(report: dict) -> str:
     team_series = report.get("team_series") or []
     ts_charts = []
     for item in team_series:
+        if item.get("key") in _TAB03_SKIP_TEAM_SERIES_KEYS:
+            continue
         series = [(s["name_ru"], s["values"]) for s in item.get("series") or []]
         svg = build_multiline_svg(
-            f'chart-team-{id_safe(item["key"])}', item["title_ru"], cat_labels, series, item.get("unit_ru") or "",
-            show_trend=bool(item.get("show_trend")),
+            f'chart-team-{id_safe(item["key"])}', item["title_ru"], cat_labels_short, series, item.get("unit_ru") or "",
+            show_trend=bool(item.get("show_trend")), rotate_labels=rotate,
         )
-        ts_charts.append(chart_block(f'chart-team-{id_safe(item["key"])}', item["title_ru"], svg, auto_code_wrap(esc(item.get("hint_ru") or ""))))
+        ts_charts.append(chart_block(f'chart-team-{id_safe(item["key"])}', item["title_ru"], svg, auto_code_wrap(esc(item.get("hint_ru") or "")), caption=axis_caption))
     sec2 = (
         '<section class="section" id="sec-03-series"><div class="section-head">'
         '<span class="section-index">03.2</span><h2 class="section-title">Динамика доставки (Jira + GitLab)</h2></div>'
@@ -1503,82 +1901,139 @@ def build_tab03(report: dict) -> str:
 # ==========================================================================
 
 _TAB04_UNAVAILABLE_PARA = (
-    "Прогноз строится, когда в истории есть не меньше 10 дневных точек с закрытыми задачами. "
-    "Добавьте закрытых спринтов в базу (--history) или дождитесь данных."
-)
-
-_TAB04_PERCENTILES_PARA = (
-    "P50/P85/P95 — за сколько календарных дней команда закроет {target_items} задач с вероятностью "
-    "50/85/95%. Метод: bootstrap-симуляция ({iterations} итераций) по дневному throughput последних "
-    "{sample_sprints} закрытых спринтов, с нулевыми днями и выходными."
+    "Прогноз строится по истории Story Points, поставленных за закрытые спринты. Добавьте больше "
+    "закрытых спринтов в базу (--history) или дождитесь данных."
 )
 
 _TAB04_HISTOGRAM_PARA = (
-    "Распределение исходов симуляции: по горизонтали — число дней, по вертикали — сколько итераций "
-    "закончилось за это число дней. Пунктирные линии — перцентили P50/P85/P95."
+    "Распределение исходов симуляции: по горизонтали — Story Points, поставленные за спринт, по "
+    "вертикали — сколько итераций bootstrap-симуляции дали такой исход. Вертикальные линии — "
+    "перцентили из плиток выше."
 )
 
 _TAB04_CV_PARA = (
-    "CV (коэффициент вариации) — насколько нестабилен понедельный поток закрытий: "
-    "среднеквадратичное отклонение недельных сумм к их среднему, ×100. Выше 50% — перцентили "
-    "ненадёжны."
+    "CV (коэффициент вариации) — насколько нестабильна поставка по спринтам: среднеквадратичное "
+    "отклонение к среднему, ×100. Выше 50% — перцентили ненадёжны."
 )
 
 
-def build_tab04(report: dict) -> str:
-    forecast = report.get("forecast")
-    if not forecast or not forecast.get("available"):
-        error = (forecast or {}).get("error") or {}
-        msg = error.get("message_ru") or "Прогноз недоступен."
-        return (
-            '<section class="section" id="sec-04-forecast"><div class="section-head">'
-            '<span class="section-index">04.1</span><h2 class="section-title">Прогноз Monte-Carlo</h2></div>'
-            f'<div class="section-body"><p class="section-desc" style="text-align:left">{esc(msg)}</p>'
-            f'<p class="hint">{esc(_TAB04_UNAVAILABLE_PARA)}</p></div></section>'
-        )
-
-    percentiles = forecast.get("percentiles") or []
+def _forecast_scope_body(scope_id: str, unit_ru: str, data: dict) -> str:
+    """One forecast scope (team or one person) — §CONTRACT `forecast.team`
+    / one entry of `forecast.people`. Every percentile shows its own
+    `label_ru` next to the number, per the user's explicit request."""
+    percentiles = data.get("percentiles") or []
     tiles = "".join(
         f'<div class="stat"><div class="stat-label">{esc(p.get("label_ru"))}</div>'
-        f'<div class="stat-value">{fmt_int(p.get("days"))}<span class="u">дней</span></div></div>'
+        f'<div class="stat-value">{stat_value_html(fmt_num(p.get("sp"), 1), unit_ru)}</div></div>'
         for p in percentiles
     )
-    percentile_map = {p["percentile"]: p["days"] for p in percentiles}
-    para = _TAB04_PERCENTILES_PARA.format(
-        target_items=forecast.get("target_items"), iterations=(report.get("params") or {}).get("iterations"),
-        sample_sprints=forecast.get("sample_sprints"),
-    )
-
-    hist = forecast.get("histogram") or []
-    cat_labels = [str(h["days"]) for h in hist]
-    values = [h["count"] for h in hist]
-    ref_lines = [
-        (percentile_map.get(50), "P50"),
-        (percentile_map.get(85), "P85"),
-        (percentile_map.get(95), "P95"),
-    ]
-    hist_svg = build_vbar_svg("chart-forecast-histogram", "Гистограмма исходов симуляции", cat_labels, values, "прогонов", ref_lines=ref_lines)
+    marker_pairs = [(p.get("sp"), p.get("label_ru") or "") for p in percentiles if p.get("sp") is not None]
+    hist = data.get("histogram") or []
+    bins = [(h.get("sp"), h.get("count")) for h in hist]
+    chart_id = f"chart-forecast-{scope_id}"
+    hist_svg = build_forecast_histogram_svg(chart_id, "Гистограмма исходов симуляции", bins, marker_pairs, unit_ru)
 
     cv_block = ""
-    if forecast.get("cv_warning_ru"):
-        cv_block = f'<div class="banner"><span class="banner-tag">CV</span><div class="banner-body">{esc(forecast["cv_warning_ru"])}</div></div>'
+    if data.get("cv_warning_ru"):
+        cv_block = f'<div class="banner"><span class="banner-tag">CV</span><div class="banner-body">{esc(data["cv_warning_ru"])}</div></div>'
 
-    target_source = forecast.get("target_items_source_ru") or ""
-    body = (
+    basis = data.get("basis_ru") or ""
+    stats_line = (
+        f'<p class="section-desc" style="text-align:left;margin:8px 0">Среднее: '
+        f'<b>{fmt_num(data.get("mean_sp"), 1)} {esc(unit_ru)}</b> · Выборка: '
+        f'<b>{fmt_int(data.get("sample_sprints"))}</b> спринтов.</p>'
+    )
+    return (
         f'<div class="person-stats stat-grid">{tiles}</div>'
-        f'<p class="hint">{esc(para)}</p>'
-        f'<p class="section-desc" style="text-align:left;margin:12px 0">Целевое число задач: '
-        f'<b>{fmt_int(forecast.get("target_items"))}</b> — {esc(target_source)}. Изменить: флаг '
-        "--target-items у команды run.</p>"
-        + chart_block("chart-forecast-histogram", "Гистограмма исходов симуляции", hist_svg, esc(_TAB04_HISTOGRAM_PARA))
-        + f'<p class="section-desc" style="text-align:left;margin:8px 0">{esc(forecast.get("sample_hint_ru") or "")}</p>'
+        + (f'<p class="section-desc" style="text-align:left;margin:8px 0">{esc(basis)}</p>' if basis else "")
+        + stats_line
+        + chart_block(chart_id, "Гистограмма исходов симуляции", hist_svg, esc(_TAB04_HISTOGRAM_PARA))
         + cv_block
         + f'<p class="hint">{esc(_TAB04_CV_PARA)}</p>'
     )
+
+
+def _forecast_person_scope(login: str) -> str:
+    """Namespaces a person's forecast scope value so a login can never
+    collide with the team's "team" sentinel value (a login literally
+    named `team` would otherwise match the same <option>/data attribute
+    as the whole-team scope)."""
+    return "person-" + login
+
+
+def build_tab04(report: dict) -> str:
+    """§control B: `forecast.team` renders by default; a <select> —
+    «Вся команда» plus one option per `forecast.people` — swaps in that
+    person's percentiles/histogram. Every scope block is rendered up
+    front (§graceful degradation: with JS off, both the team scope and
+    every person's scope are visible, stacked); JS narrows to the
+    selected one."""
+    forecast = report.get("forecast") or {}
+    team = forecast.get("team")
+    people = forecast.get("people") or []
+    # `forecast.available` reflects the TEAM scope only — report_data.py
+    # still returns a `people` entry per person independently, some of
+    # which can be `available: true` even when the team-wide bootstrap
+    # didn't have enough closed sprints. Only bail out to the single
+    # "unavailable" message when there is truly nothing to show — team
+    # AND every person unavailable — otherwise render the select with
+    # whatever scopes DO have data, and show team's own error inline
+    # instead of hiding person forecasts that exist.
+    if team is None and not any(p.get("available") for p in people):
+        error = forecast.get("error") or {}
+        msg = error.get("message_ru") or "Прогноз недоступен."
+        detail = error.get("detail")
+        detail_html = f" <code>{esc(detail)}</code>" if detail else ""
+        return (
+            '<section class="section" id="sec-04-forecast"><div class="section-head">'
+            '<span class="section-index">04.1</span><h2 class="section-title">Прогноз Monte-Carlo</h2></div>'
+            f'<div class="section-body"><p class="section-desc" style="text-align:left">{esc(msg)}{detail_html}</p>'
+            f'<p class="hint">{esc(_TAB04_UNAVAILABLE_PARA)}</p></div></section>'
+        )
+
+    unit_ru = forecast.get("unit_ru") or "SP"
+
+    options = ['<option value="team" selected>Вся команда</option>']
+    for p in people:
+        options.append(f'<option value="{esc(_forecast_person_scope(p["login"]))}">{esc(p.get("display_name") or p["login"])}</option>')
+    select_html = (
+        '<div class="control-bar"><label for="forecast-scope-select">Показать:</label>'
+        f'<select id="forecast-scope-select" data-forecast-select>{"".join(options)}</select></div>'
+    )
+
+    blocks = []
+    if team:
+        blocks.append(f'<div data-forecast-scope="team"><h3>Вся команда</h3>{_forecast_scope_body("team", unit_ru, team)}</div>')
+    else:
+        error = forecast.get("error") or {}
+        msg = error.get("message_ru") or "Командный прогноз недоступен."
+        detail = error.get("detail")
+        detail_html = f" <code>{esc(detail)}</code>" if detail else ""
+        blocks.append(
+            f'<div data-forecast-scope="team"><h3>Вся команда</h3>'
+            f'<p class="section-desc" style="text-align:left">{esc(msg)}{detail_html}</p></div>'
+        )
+
+    for p in people:
+        login = p["login"]
+        name = p.get("display_name") or login
+        scope = _forecast_person_scope(login)
+        if not p.get("available"):
+            reason = p.get("unavailable_reason_ru") or "Недостаточно данных для прогноза по этому человеку."
+            blocks.append(
+                f'<div data-forecast-scope="{esc(scope)}" data-login="{esc(login)}"><h3>{esc(name)}</h3>'
+                f'<p class="section-desc" style="text-align:left">{esc(reason)}</p></div>'
+            )
+            continue
+        blocks.append(
+            f'<div data-forecast-scope="{esc(scope)}" data-login="{esc(login)}"><h3>{esc(name)}</h3>'
+            f"{_forecast_scope_body(id_safe(login), unit_ru, p)}</div>"
+        )
+
     return (
         '<section class="section" id="sec-04-forecast"><div class="section-head">'
         '<span class="section-index">04.1</span><h2 class="section-title">Прогноз Monte-Carlo</h2></div>'
-        f'<div class="section-body">{body}</div></section>'
+        f'<div class="section-body">{select_html}{"".join(blocks)}</div></section>'
     )
 
 
@@ -1625,11 +2080,29 @@ _EXTRA_PERSON_KEYS = [
 ]
 
 
+def build_people_multiselect_html(people: list, select_id: str) -> str:
+    """§control C: a checkbox per person plus a "select all" button, all
+    hidden until `html.js` (mirrors `.theme-switch`) since it does nothing
+    without the listener that toggles `.tm-hidden` — the underlying
+    content stays fully visible without it."""
+    if not people:
+        return ""
+    checks = "".join(
+        f'<label class="pf-check"><input type="checkbox" checked data-login-check="{esc(p["login"])}"> {esc(p["display_name"])}</label>'
+        for p in people
+    )
+    return (
+        f'<div class="people-filter" data-people-filter="{esc(select_id)}">'
+        f'<button type="button" class="pf-all" data-select-all="{esc(select_id)}">Выбрать всех</button>{checks}</div>'
+    )
+
+
 def build_tab05(report: dict) -> str:
     people = report.get("people") or []
-    parts = [f'<p class="hint">{esc(_TAB05_INTRO_PARA)}</p>']
+    parts = [f'<p class="hint">{esc(_TAB05_INTRO_PARA)}</p>', build_people_multiselect_html(people, "tab05")]
 
     names = [p["display_name"] for p in people]
+    logins = [p["login"] for p in people]
 
     def _hbar_items(key):
         return list(zip(names, [p["metrics"].get(key) for p in people]))
@@ -1642,7 +2115,7 @@ def build_tab05(report: dict) -> str:
     ]
     compare_hint = esc(_TAB05_COMPARE_PARA)
     hbars_html = "".join(
-        chart_block(cid, title, build_hbar_svg(cid, title, _hbar_items(key), unit), compare_hint)
+        chart_block(cid, title, build_hbar_svg(cid, title, _hbar_items(key), unit, logins=logins), compare_hint, people_scope=True)
         for cid, title, key, unit in hbar_defs
     )
     sec1 = (
@@ -1655,39 +2128,38 @@ def build_tab05(report: dict) -> str:
         ("Среднее", [p["metrics"].get("task_cycle_time_avg_hours") for p in people]),
         ("Медиана", [p["metrics"].get("task_cycle_time_median_hours") for p in people]),
     ]
-    grouped_svg = build_grouped_bar_svg("chart-cmp-cycle-grouped", "Cycle time по сотрудникам (среднее и медиана, ч)", names, grouped_series, "ч")
+    grouped_svg = build_grouped_bar_svg(
+        "chart-cmp-cycle-grouped", "Cycle time по сотрудникам (среднее и медиана, ч)", names, grouped_series, "ч",
+        rotate_labels=True, cat_logins=logins,
+    )
     sec2 = (
         '<section class="section" id="sec-05-cycle"><div class="section-head">'
         '<span class="section-index">05.2</span><h2 class="section-title">Cycle time по сотрудникам (среднее и медиана, ч)</h2></div>'
-        f'<div class="section-body">{chart_block("chart-cmp-cycle-grouped", "Cycle time по сотрудникам (среднее и медиана, ч)", grouped_svg, esc(_TAB05_CYCLE_PARA))}</div></section>'
+        f'<div class="section-body">{chart_block_wide("chart-cmp-cycle-grouped", "Cycle time по сотрудникам (среднее и медиана, ч)", grouped_svg, esc(_TAB05_CYCLE_PARA), people_scope=True)}</div></section>'
     )
 
     if people:
         mdefs = [d for d in (report.get("metric_defs") or []) if d.get("scope") != "team"]
         cols_meta = labels_of(report).get("columns") or {}
         extra_rows = [(k, cols_meta.get(k, k)) for k in _EXTRA_PERSON_KEYS if any(k in (p.get("metrics") or {}) for p in people)]
-        header_people = "".join(f'<th class="col-num">{esc(p["display_name"])}</th>' for p in people)
-        rows_html = []
-        for d in mdefs:
-            key, is_pct = d["key"], d.get("is_pct")
+        header_people = "".join(f'<th class="col-num" data-login="{esc(p["login"])}">{esc(p["display_name"])}</th>' for p in people)
+
+        def _row(label: str, key: str, is_pct: bool) -> str:
             cells = "".join(
-                f'<td class="col-num">{(fmt_num(p["metrics"].get(key), 1) + "%") if (is_pct and p["metrics"].get(key) is not None) else fmt_num(p["metrics"].get(key), 2)}</td>'
+                f'<td class="col-num" data-login="{esc(p["login"])}">'
+                f'{(fmt_num(p["metrics"].get(key), 1) + "%") if (is_pct and p["metrics"].get(key) is not None) else fmt_num(p["metrics"].get(key), 2)}</td>'
                 for p in people
             )
-            rows_html.append(f'<tr><td>{esc(d["label_ru"])}</td>{cells}</tr>')
-        for key, label in extra_rows:
-            is_pct = key.endswith("_pct")
-            cells = "".join(
-                f'<td class="col-num">{(fmt_num(p["metrics"].get(key), 1) + "%") if (is_pct and p["metrics"].get(key) is not None) else fmt_num(p["metrics"].get(key), 2)}</td>'
-                for p in people
-            )
-            rows_html.append(f'<tr><td>{esc(label)}</td>{cells}</tr>')
+            return f"<tr><td>{esc(label)}</td>{cells}</tr>"
+
+        rows_html = [_row(d["label_ru"], d["key"], bool(d.get("is_pct"))) for d in mdefs]
+        rows_html += [_row(label, key, key.endswith("_pct")) for key, label in extra_rows]
         table = (
-            '<div class="table-card card"><div class="table-wrap"><table class="data wide">'
+            '<div class="table-card card" data-people-scope><div class="table-wrap"><table class="data wide">'
             f'<thead><tr><th scope="col">Метрика</th>{header_people}</tr></thead>'
-            f'<tbody>{"".join(rows_html)}</tbody></table></div></div>'
+            f'<tbody>{"".join(rows_html)}</tbody></table></div>{_people_filter_empty_note()}</div>'
         )
-        sec3_body = table_hint(table, esc(_TAB05_TABLE_PARA))
+        sec3_body = table_hint(table, esc(_TAB05_TABLE_PARA), total_rows=len(rows_html))
     else:
         sec3_body = empty_state_html("Нет данных: список сотрудников пуст.") + f'<p class="hint">{esc(_TAB05_TABLE_PARA)}</p>'
     sec3 = (
@@ -1699,20 +2171,31 @@ def build_tab05(report: dict) -> str:
     dist_hint = esc(_TAB05_DIST_PARA)
     if people:
         person_cards = []
+        no_pipeline_people = []
         for i, p in enumerate(people):
             dist = p.get("issue_type_dist") or {}
             cid1, cid2 = f"chart-p-dist-{i}", f"chart-p-pipe-{i}"
-            d1 = build_donut_svg(cid1, f'Распределение типов задач — {p["display_name"]}', list(dist.items()), fmt_int(p["metrics"].get("tasks_done")))
+            dist_block = donut_block(cid1, f'Распределение типов задач — {p["display_name"]}', list(dist.items()), fmt_int(p["metrics"].get("tasks_done")), dist_hint)
             rate = p["metrics"].get("pipeline_success_rate_pct")
-            d2_items = [("Успешно", rate), ("Не успешно", (100.0 - rate) if rate is not None else None)] if rate is not None else []
-            d2 = build_donut_svg(cid2, f'Доля успешных пайплайнов — {p["display_name"]}', d2_items, fmt_pct(rate))
-            person_cards.append(
-                '<div class="donut-pair">'
-                + chart_block(cid1, f'Распределение типов задач — {p["display_name"]}', d1, dist_hint)
-                + chart_block(cid2, f'Доля успешных пайплайнов — {p["display_name"]}', d2, dist_hint)
-                + "</div>"
-            )
-        sec4_body = "".join(person_cards)
+            if rate is None:
+                no_pipeline_people.append(p["display_name"])
+                person_cards.append(f'<div class="donut-pair" data-login="{esc(p["login"])}">{dist_block}</div>')
+                continue
+            d2_items = [("Успешно", rate), ("Не успешно", 100.0 - rate)]
+            pipe_block = donut_block(cid2, f'Доля успешных пайплайнов — {p["display_name"]}', d2_items, fmt_pct(rate), dist_hint, is_rate_pair=True)
+            person_cards.append(f'<div class="donut-pair" data-login="{esc(p["login"])}">{dist_block}{pipe_block}</div>')
+        cards_body = "".join(person_cards)
+        if no_pipeline_people:
+            cards_body += f'<p class="hint">Нет данных о пайплайнах GitLab: {esc(", ".join(no_pipeline_people))}.</p>'
+        # Collapsed by default — this is the tallest single block in the
+        # report (a donut pair per person), and <details> keeps every
+        # card reachable with a native click, no JS required, unlike the
+        # tm-hidden mechanism JS uses elsewhere for the people filter.
+        who = ru_plural(len(people), "сотрудник", "сотрудника", "сотрудников")
+        sec4_body = (
+            f'<details class="donut-wall" data-people-scope><summary>Показать персональные распределения — {len(people)} {who}</summary>'
+            f'<div class="donut-wall-body">{cards_body}</div>{_people_filter_empty_note()}</details>'
+        )
     else:
         sec4_body = empty_state_html("Нет данных: список сотрудников пуст.") + f'<p class="hint">{dist_hint}</p>'
     sec4 = (
@@ -1726,9 +2209,10 @@ def build_tab05(report: dict) -> str:
         rows = entry.get("rows") or []
         rows_html2 = []
         for r in rows:
+            login = r.get("assignee_login") or ""
             rows_html2.append(
-                "<tr>"
-                f"<td>{person_name_html(r.get('assignee_display_name') or 'Без исполнителя', r.get('assignee_login') or '')}</td>"
+                f'<tr data-login="{esc(login)}">'
+                f"<td>{person_name_html(r.get('assignee_display_name') or 'Без исполнителя', login)}</td>"
                 f'<td class="col-num">{fmt_num(r.get("committed_sp"), 1)}</td>'
                 f'<td class="col-num">{fmt_int(r.get("committed_items"))}</td>'
                 f'<td class="col-num">{fmt_num(r.get("delivered_sp"), 1)}</td>'
@@ -1739,12 +2223,12 @@ def build_tab05(report: dict) -> str:
                 "</tr>"
             )
         table2 = (
-            '<div class="table-card card"><div class="table-wrap"><table class="data mid">'
+            '<div class="table-card card" data-people-scope><div class="table-wrap"><table class="data mid">'
             "<thead><tr><th scope=\"col\">Исполнитель</th><th scope=\"col\">Обязательство, SP</th>"
             "<th scope=\"col\">Обязательство, задач</th><th scope=\"col\">Поставлено, SP</th>"
             "<th scope=\"col\">Поставлено, задач</th><th scope=\"col\">Performance, %</th>"
             "<th scope=\"col\">Velocity, SP</th><th scope=\"col\">Throughput, задач</th></tr></thead>"
-            f'<tbody>{"".join(rows_html2)}</tbody></table></div></div>'
+            f'<tbody>{"".join(rows_html2)}</tbody></table></div>{_table_scroll_note(len(rows))}{_people_filter_empty_note()}</div>'
         )
         ind_tables.append(f'<h3>{esc(entry.get("sprint_name"))}</h3>{table2}')
     sec5 = (
@@ -1787,33 +2271,60 @@ def _mean_by_index(series_values: list) -> list:
     return out
 
 
-def _people_series_charts(report: dict, keys: list, cat_labels: list, with_trend: bool) -> str:
+def _people_series_charts(report: dict, keys: list, with_trend: bool, axis_caption: Optional[str], cat_labels_short: list, rotate: bool) -> str:
+    """A person count that can exceed 20 makes an in-SVG legend both
+    unreadable (§P1-6: 6.5px text eating a quarter of the chart height)
+    and prone to entries with no matching line, so this always uses the
+    external HTML legend and wraps each series in a `data-login` group for
+    the people multi-select (§control C)."""
     by_key = {item["key"]: item for item in report.get("people_series") or []}
     charts = []
     for key in keys:
         item = by_key.get(key)
         if not item:
             continue
-        series = [(s["display_name"], s["values"]) for s in item.get("series") or []]
-        trend_values = _mean_by_index([s["values"] for s in item.get("series") or []]) if with_trend else None
+        series_items = item.get("series") or []
+        series = [(s["display_name"], s["values"]) for s in series_items]
+        logins = [s["login"] for s in series_items]
+        trend_values = _mean_by_index([s["values"] for s in series_items]) if with_trend else None
+        chart_id = f"chart-people-{id_safe(key)}"
         svg = build_multiline_svg(
-            f"chart-people-{id_safe(key)}", item["title_ru"], cat_labels, series, item.get("unit_ru") or "",
-            show_trend=with_trend, trend_values=trend_values,
+            chart_id, item["title_ru"], cat_labels_short, series, item.get("unit_ru") or "",
+            show_trend=with_trend, trend_values=trend_values, rotate_labels=rotate,
+            external_legend=True, series_logins=logins,
         )
-        charts.append(chart_block(f"chart-people-{id_safe(key)}", item["title_ru"], svg, auto_code_wrap(esc(item.get("hint_ru") or ""))))
+        legend_html = ""
+        if svg:
+            # A legend entry must never exist without a matching drawn
+            # mark (§P1-6) — a series with zero non-None values draws
+            # nothing (no path, no point), so it is dropped here too.
+            # Index `i` still comes from the unfiltered list so the
+            # legend swatch colour matches the class build_multiline_svg
+            # assigned that series internally.
+            legend_items = [
+                (s["display_name"], _series_class(i), s["login"])
+                for i, s in enumerate(series_items)
+                if any(v is not None for v in s["values"])
+            ]
+            legend_html = chart_legend_html(legend_items)
+        charts.append(
+            chart_block(chart_id, item["title_ru"], svg, auto_code_wrap(esc(item.get("hint_ru") or "")), caption=axis_caption, legend_html=legend_html, people_scope=True)
+        )
     return "".join(charts)
 
 
 def build_tab06(report: dict) -> str:
     axis = require(report, "sprint_axis")
     cat_labels = [s["name"] for s in axis]
-    parts = [f'<p class="hint">{esc(_TAB06_INTRO_PARA)}</p>']
+    axis_caption, cat_labels_short, rotate = prepare_category_axis(cat_labels)
+    people = report.get("people") or []
+    parts = [f'<p class="hint">{esc(_TAB06_INTRO_PARA)}</p>', build_people_multiselect_html(people, "tab06")]
 
     jira_keys = ["throughput_by_person", "task_cycle_time_by_person", "rework_by_person", "story_points_by_person", "qa_estimation_by_person"]
     sec1 = (
         '<section class="section" id="sec-06-jira"><div class="section-head">'
         '<span class="section-index">06.1</span><h2 class="section-title">Задачи и оценки (Jira)</h2></div>'
-        f'<div class="section-body"><div class="chart-grid">{_people_series_charts(report, jira_keys, cat_labels, False)}</div></div></section>'
+        f'<div class="section-body"><div class="chart-grid">{_people_series_charts(report, jira_keys, False, axis_caption, cat_labels_short, rotate)}</div></div></section>'
     )
 
     gitlab_keys = ["mr_count_by_person", "pr_cycle_time_by_person", "mr_weight_by_person"]
@@ -1821,11 +2332,11 @@ def build_tab06(report: dict) -> str:
         '<section class="section" id="sec-06-gitlab"><div class="section-head">'
         '<span class="section-index">06.2</span><h2 class="section-title">Merge-реквесты (GitLab)</h2></div>'
         f'<div class="section-body"><p class="hint">{esc(_TAB06_TREND_PARA)}</p>'
-        f'<div class="chart-grid">{_people_series_charts(report, gitlab_keys, cat_labels, True)}</div></div></section>'
+        f'<div class="chart-grid">{_people_series_charts(report, gitlab_keys, True, axis_caption, cat_labels_short, rotate)}</div></div></section>'
     )
 
     cards = []
-    for p in report.get("people") or []:
+    for p in people:
         rows = []
         for row in p.get("by_sprint") or []:
             has_data = row.get("has_data")
@@ -1848,7 +2359,7 @@ def build_tab06(report: dict) -> str:
             )
         warn_html = warnings_inline_html(p.get("warnings") or [])
         card = (
-            f'<div class="person-card card"><div class="person-head"><div>'
+            f'<div class="person-card card" data-login="{esc(p["login"])}"><div class="person-head"><div>'
             f'<h3 class="person-name" title="{esc(p["login"])}">{esc(p["display_name"])}</h3></div></div>'
             f"{warn_html}"
             '<div class="mini-wrap"><table class="sprint-mini">'
@@ -1860,7 +2371,8 @@ def build_tab06(report: dict) -> str:
     sec3 = (
         '<section class="section" id="sec-06-cards"><div class="section-head">'
         '<span class="section-index">06.3</span><h2 class="section-title">Карточки сотрудников</h2></div>'
-        f'<div class="section-body"><div class="person-cards">{"".join(cards)}</div>'
+        '<div class="section-body"><div data-people-scope>'
+        f'<div class="person-cards">{"".join(cards)}</div>{_people_filter_empty_note()}</div>'
         f'<p class="hint">{esc(_TAB06_CARDS_PARA)}</p></div></section>'
     )
 
@@ -1905,17 +2417,22 @@ _TAB07_COMPLETENESS_PARA = (
 
 
 def _eng_tiles_html(count, failed, rate, per_week) -> str:
+    per_week_html = stat_value_html(fmt_num(per_week, 1) if per_week is not None else EM_DASH)
     return (
         '<div class="person-stats stat-grid">'
-        f'<div class="stat"><div class="stat-label">Всего запусков</div><div class="stat-value">{fmt_int(count)}</div></div>'
-        f'<div class="stat"><div class="stat-label">Упавших</div><div class="stat-value">{fmt_int(failed)}</div></div>'
-        f'<div class="stat"><div class="stat-label">Доля успешных, %</div><div class="stat-value">{fmt_pct(rate)}</div></div>'
-        f'<div class="stat"><div class="stat-label">В неделю, шт</div><div class="stat-value">{fmt_num(per_week, 1) if per_week is not None else "нет данных"}</div></div>'
+        f'<div class="stat"><div class="stat-label">Всего запусков</div><div class="stat-value">{stat_value_html(fmt_int(count))}</div></div>'
+        f'<div class="stat"><div class="stat-label">Упавших</div><div class="stat-value">{stat_value_html(fmt_int(failed))}</div></div>'
+        f'<div class="stat"><div class="stat-label">Доля успешных, %</div><div class="stat-value">{stat_value_html(fmt_pct(rate))}</div></div>'
+        f'<div class="stat"><div class="stat-label">В неделю, шт</div><div class="stat-value">{per_week_html}</div></div>'
         "</div>"
     )
 
 
-def _eng_project_table(rows: list, value_cols: list) -> str:
+def _eng_project_table(rows: list, value_cols: list, empty_text: str = "Нет данных.") -> str:
+    """§P1-9: an empty `rows` renders one explicit no-data line instead of
+    a `<thead>` with headers over an empty `<tbody>`."""
+    if not rows:
+        return empty_state_html(empty_text)
     ths = "".join(f'<th scope="col">{esc(h)}</th>' for h in ["Проект"] + [c[0] for c in value_cols])
     trs = []
     for r in rows:
@@ -1943,8 +2460,10 @@ def build_tab07(report: dict) -> str:
             _eng_project_table(
                 pipe.get("per_project") or [],
                 [("Запусков", lambda r: fmt_int(r.get("count"))), ("Упавших", lambda r: fmt_int(r.get("failed"))), ("Доля успешных, %", lambda r: fmt_pct(r.get("success_rate_pct")))],
+                empty_text="Нет данных о пайплайнах.",
             ),
             esc(_TAB07_PIPELINES_PARA),
+            total_rows=len(pipe.get("per_project") or []),
         )
         + "</div></section>"
     )
@@ -1957,16 +2476,18 @@ def build_tab07(report: dict) -> str:
             _eng_project_table(
                 dep.get("per_project") or [],
                 [("Запусков", lambda r: fmt_int(r.get("count"))), ("Упавших", lambda r: fmt_int(r.get("failed"))), ("Доля успешных, %", lambda r: fmt_pct(r.get("success_rate_pct")))],
+                empty_text="Нет данных о деплоях.",
             ),
             esc(_TAB07_DEPLOYMENTS_PARA),
+            total_rows=len(dep.get("per_project") or []),
         )
         + "</div></section>"
     )
 
     cov_tiles = (
         '<div class="person-stats stat-grid">'
-        f'<div class="stat"><div class="stat-label">Среднее покрытие, %</div><div class="stat-value">{fmt_pct(cov.get("coverage_avg_pct")) if cov.get("coverage_avg_pct") is not None else "нет данных"}</div></div>'
-        f'<div class="stat"><div class="stat-label">Число замеров</div><div class="stat-value">{fmt_int(cov.get("sample_count"))}</div></div>'
+        f'<div class="stat"><div class="stat-label">Среднее покрытие, %</div><div class="stat-value">{stat_value_html(fmt_pct(cov.get("coverage_avg_pct")) if cov.get("coverage_avg_pct") is not None else EM_DASH)}</div></div>'
+        f'<div class="stat"><div class="stat-label">Число замеров</div><div class="stat-value">{stat_value_html(fmt_int(cov.get("sample_count")))}</div></div>'
         "</div>"
     )
     sec3 = (
@@ -1977,8 +2498,10 @@ def build_tab07(report: dict) -> str:
             _eng_project_table(
                 cov.get("per_project") or [],
                 [("Покрытие, %", lambda r: fmt_pct(r.get("coverage_avg_pct")) if r.get("coverage_avg_pct") is not None else "нет данных"), ("Число замеров", lambda r: fmt_int(r.get("sample_count")))],
+                empty_text="Нет данных о покрытии тестами.",
             ),
             esc(_TAB07_COVERAGE_PARA),
+            total_rows=len(cov.get("per_project") or []),
         )
         + "</div></section>"
     )
@@ -1986,23 +2509,24 @@ def build_tab07(report: dict) -> str:
     by_sprint = eng.get("by_sprint") or []
     axis = report.get("sprint_axis") or []
     cat_labels = [s["name"] for s in axis]
+    axis_caption, cat_labels_short, rotate = prepare_category_axis(cat_labels)
     counts_svg = build_multiline_svg(
-        "chart-eng-counts", "Пайплайны и деплои по спринтам", cat_labels,
+        "chart-eng-counts", "Пайплайны и деплои по спринтам", cat_labels_short,
         [("Пайплайны", [b.get("pipeline_count") for b in by_sprint]), ("Деплои", [b.get("deployment_count") for b in by_sprint])],
-        "шт", show_trend=False,
+        "шт", show_trend=False, rotate_labels=rotate,
     )
     rate_svg = build_multiline_svg(
-        "chart-eng-rate", "Успешность CI и деплоев, %", cat_labels,
+        "chart-eng-rate", "Успешность CI и деплоев, %", cat_labels_short,
         [("Пайплайны", [b.get("pipeline_success_rate_pct") for b in by_sprint]), ("Деплои", [b.get("deployment_success_rate_pct") for b in by_sprint])],
-        "%", show_trend=False,
+        "%", show_trend=False, rotate_labels=rotate,
     )
     by_sprint_hint = esc(_TAB07_BY_SPRINT_PARA)
     sec4 = (
         '<section class="section" id="sec-07-by-sprint"><div class="section-head">'
         '<span class="section-index">07.4</span><h2 class="section-title">CI/CD по спринтам</h2></div>'
         '<div class="section-body"><div class="chart-grid">'
-        + chart_block("chart-eng-counts", "Пайплайны и деплои по спринтам", counts_svg, by_sprint_hint)
-        + chart_block("chart-eng-rate", "Успешность CI и деплоев, %", rate_svg, by_sprint_hint)
+        + chart_block("chart-eng-counts", "Пайплайны и деплои по спринтам", counts_svg, by_sprint_hint, caption=axis_caption)
+        + chart_block("chart-eng-rate", "Успешность CI и деплоев, %", rate_svg, by_sprint_hint, caption=axis_caption)
         + "</div></div></section>"
     )
 
@@ -2016,14 +2540,23 @@ def build_tab07(report: dict) -> str:
     issues = report.get("gitlab_fetch_issues") or {}
     items = []
     for sp in issues.get("skipped_projects") or []:
-        items.append(f'<li>{esc(sp.get("message_ru"))} — {esc(sp.get("project"))} <code>{esc(sp.get("message"))}</code></li>')
+        items.append(f'<li>{esc(sp.get("message_ru"))} — {esc(sp.get("project"))}</li>')
     for me in issues.get("mr_fetch_errors") or []:
         author_login = me.get("author") or ""
         author_html = person_name_html(display_name_for_login(report, author_login), author_login) if author_login else EM_DASH
-        items.append(f'<li>{esc(me.get("message_ru"))} — {esc(me.get("project"))} / {author_html} <code>{esc(me.get("message"))}</code></li>')
+        items.append(f'<li>{esc(me.get("message_ru"))} — {esc(me.get("project"))} / {author_html}</li>')
     for dw in issues.get("deployment_warnings") or []:
         cls = ' style="border-color:var(--bad);background:var(--bad-soft)"' if dw.get("code") == "PAGINATION_LIMIT" else ""
-        items.append(f'<li{cls}>{esc(dw.get("message_ru"))} — {esc(dw.get("project"))} <code>{esc(dw.get("message"))}</code></li>')
+        projects_count = dw.get("projects_count") or 0
+        projects = dw.get("projects") or []
+        project_word = ru_plural(projects_count, "проект", "проекта", "проектов")
+        details = ""
+        if projects:
+            proj_items = "".join(f"<li>{esc(pr)}</li>" for pr in projects)
+            details = f"<details><summary>Список проектов</summary><ul>{proj_items}</ul></details>"
+        items.append(
+            f'<li{cls}>{esc(dw.get("message_ru"))} — затронуто {projects_count} {project_word}{details}</li>'
+        )
     completeness_html = ("<ul class=\"warn-list\">" + "".join(items) + "</ul>") if items else '<p class="section-desc" style="text-align:left">Данные GitLab получены полностью.</p>'
     sec5 = (
         '<section class="section" id="sec-07-completeness"><div class="section-head">'
@@ -2057,12 +2590,14 @@ _TAB08_BOARD_EXPORT_PARA = (
 
 _TAB08_FILES_PARA = (
     "Все артефакты запуска лежат в одной папке (по умолчанию ./out, флаг --out-dir). CSV-файлы "
-    "совместимы по именам и колонкам с набором aiIntegrationMetrics; report.json — полные данные "
-    "отчёта (схема v2), из него можно перерисовать HTML командой team-metrics report."
+    "совместимы по именам с набором aiIntegrationMetrics — и по колонкам везде, кроме "
+    "report_per_employee.csv (с 3.1.0 в нём больше нет deployment_count/deployment_failed/"
+    "deployment_fail_rate); report.json — полные данные отчёта (схема v3), из него можно "
+    "перерисовать HTML командой team-metrics report."
 )
 
 _OUT_FILES = [
-    ("report.json", "полные данные отчёта в схеме v2 — из него перерисовывается HTML", "always"),
+    ("report.json", "полные данные отчёта в схеме v3 — из него перерисовывается HTML", "always"),
     ("report.html", "этот файл — самодостаточный HTML-отчёт", "always"),
     ("gitlab_mrs.csv", "все MR за период: автор, статус, время цикла, размер диффа", "gitlab"),
     ("gitlab_pipelines.csv", "все запуски CI: проект, статус, автор, время", "gitlab"),
@@ -2123,8 +2658,6 @@ def build_tab08(report: dict) -> str:
         (col_label(report, "history_sprint_count"), fmt_int(params.get("history_sprint_count"))),
         (col_label(report, "seed"), fmt_int(params.get("seed"))),
         (col_label(report, "iterations"), fmt_int(params.get("iterations"))),
-        (col_label(report, "target_items_requested"), fmt_int(params.get("target_items_requested")) if params.get("target_items_requested") is not None else None),
-        (col_label(report, "target_items_resolved"), fmt_int(params.get("target_items_resolved")) if params.get("target_items_resolved") is not None else None),
         (col_label(report, "generated_at"), fmt_datetime(params.get("generated_at"))),
         (col_label(report, "tool_version"), params.get("tool_version")),
         (col_label(report, "out_dir"), params.get("out_dir")),
@@ -2140,7 +2673,7 @@ def build_tab08(report: dict) -> str:
     sec1 = (
         '<section class="section" id="sec-08-params"><div class="section-head">'
         '<span class="section-index">08.1</span><h2 class="section-title">Параметры запуска</h2></div>'
-        f'<div class="section-body">{table_hint(table1, auto_code_wrap(esc(_TAB08_PARAMS_PARA)))}</div></section>'
+        f'<div class="section-body">{table_hint(table1, auto_code_wrap(esc(_TAB08_PARAMS_PARA)), total_rows=len(param_rows))}</div></section>'
     )
 
     def _export_table(tbl: dict) -> str:
@@ -2163,15 +2696,55 @@ def build_tab08(report: dict) -> str:
         f'<div class="section-body">{table_hint(_export_table(export_tables.get("board") or {}), auto_code_wrap(esc(_TAB08_BOARD_EXPORT_PARA)))}</div></section>'
     )
 
-    files_rows = "".join(f"<tr><td><code>{esc(name)}</code></td><td>{esc(desc)}</td></tr>" for name, desc in _out_files_rows(report))
+    out_files = _out_files_rows(report)
+    files_rows = "".join(f"<tr><td><code>{esc(name)}</code></td><td>{esc(desc)}</td></tr>" for name, desc in out_files)
     table4 = f'<div class="table-card card"><div class="table-wrap"><table class="data"><thead><tr><th scope="col">Файл</th><th scope="col">Что внутри</th></tr></thead><tbody>{files_rows}</tbody></table></div></div>'
     sec4 = (
         '<section class="section" id="sec-08-files"><div class="section-head">'
         '<span class="section-index">08.4</span><h2 class="section-title">Файлы папки out/</h2></div>'
-        f'<div class="section-body">{table_hint(table4, auto_code_wrap(esc(_TAB08_FILES_PARA)))}</div></section>'
+        f'<div class="section-body">{table_hint(table4, auto_code_wrap(esc(_TAB08_FILES_PARA)), total_rows=len(out_files))}</div></section>'
     )
 
-    return sec1 + sec2 + sec3 + sec4
+    sec5 = _build_allowlist_section(report)
+
+    return sec1 + sec2 + sec3 + sec4 + sec5
+
+
+_TAB08_ALLOWLIST_PARA = (
+    "employees в .team-metrics.json ограничивает, какие люди попадают в персональные и "
+    "инженерные метрики — полезно, когда в Jira/GitLab есть сервисные или внештатные аккаунты, "
+    "которых не нужно считать частью команды."
+)
+
+
+def _build_allowlist_section(report: dict) -> str:
+    allowlist = (report.get("params") or {}).get("allowlist")
+    if not allowlist:
+        return ""
+    applied = allowlist.get("applied")
+    rows = [
+        ("Применён", bool_ru(applied)),
+        ("Людей в списке", fmt_int(allowlist.get("configured_count"))),
+    ]
+    rows_html = "".join(f"<tr><td>{esc(k)}</td><td>{esc_or_dash(v)}</td></tr>" for k, v in rows)
+    excluded = allowlist.get("excluded_logins") or []
+    missing = allowlist.get("missing_logins") or []
+    lists_html = ""
+    if excluded:
+        items = "".join(f"<li>{esc(display_name_for_login(report, lg))}</li>" for lg in excluded)
+        lists_html += f"<h3>Исключены (есть в данных, не в списке)</h3><ul class=\"warn-list\">{items}</ul>"
+    if missing:
+        items = "".join(f"<li><code>{esc(lg)}</code></li>" for lg in missing)
+        lists_html += f"<h3>В списке, но не найдены в данных</h3><ul class=\"warn-list\">{items}</ul>"
+    note = allowlist.get("note_ru") or ""
+    table = f'<div class="table-card card"><div class="table-wrap"><table class="data"><tbody>{rows_html}</tbody></table></div></div>'
+    return (
+        '<section class="section" id="sec-08-allowlist"><div class="section-head">'
+        '<span class="section-index">08.5</span><h2 class="section-title">Allowlist сотрудников</h2></div>'
+        f'<div class="section-body">{table_hint(table, auto_code_wrap(esc(_TAB08_ALLOWLIST_PARA)), total_rows=len(rows))}{lists_html}'
+        + (f'<p class="section-desc" style="text-align:left;margin-top:10px">{esc(note)}</p>' if note else "")
+        + "</div></section>"
+    )
 
 
 # ==========================================================================
@@ -2238,7 +2811,7 @@ def build_tab09(report: dict) -> str:
         "</tr>"
         for d in mdefs
     )
-    table3 = f'<div class="table-card card"><div class="table-wrap"><table class="data wide"><thead><tr><th scope="col">Метрика</th><th scope="col">Ед.</th><th scope="col">Источник</th><th scope="col">Комментарий</th></tr></thead><tbody>{md_rows}</tbody></table></div></div>'
+    table3 = f'<div class="table-card card"><div class="table-wrap no-cap"><table class="data wide"><thead><tr><th scope="col">Метрика</th><th scope="col">Ед.</th><th scope="col">Источник</th><th scope="col">Комментарий</th></tr></thead><tbody>{md_rows}</tbody></table></div></div>'
     sec3 = (
         '<section class="section" id="sec-09-metric-defs"><div class="section-head">'
         '<span class="section-index">09.3</span><h2 class="section-title">Полный справочник метрик</h2></div>'
@@ -2251,7 +2824,7 @@ def build_tab09(report: dict) -> str:
     sec4 = (
         '<section class="section" id="sec-09-roles"><div class="section-head">'
         '<span class="section-index">09.4</span><h2 class="section-title">Роли</h2></div>'
-        f'<div class="section-body">{table_hint(table4, esc(_TAB09_ROLES_PARA))}</div></section>'
+        f'<div class="section-body">{table_hint(table4, esc(_TAB09_ROLES_PARA), total_rows=len(roles))}</div></section>'
     )
 
     statuses = statuses_map(report)
@@ -2259,7 +2832,7 @@ def build_tab09(report: dict) -> str:
         f'<tr><td>{esc(name)}</td><td>{esc(entry.get("category_ru"))}</td><td>{esc_or_dash(entry.get("override_ru"))}</td></tr>'
         for name, entry in statuses.items()
     )
-    table5 = f'<div class="table-card card"><div class="table-wrap"><table class="data"><thead><tr><th scope="col">Статус (как в Jira)</th><th scope="col">Категория</th><th scope="col">Переопределение из настроек</th></tr></thead><tbody>{st_rows}</tbody></table></div></div>'
+    table5 = f'<div class="table-card card"><div class="table-wrap no-cap"><table class="data"><thead><tr><th scope="col">Статус (как в Jira)</th><th scope="col">Категория</th><th scope="col">Переопределение из настроек</th></tr></thead><tbody>{st_rows}</tbody></table></div></div>'
     jira_note = labels_of(report).get("jira_label_note_ru") or ""
     sec5 = (
         '<section class="section" id="sec-09-statuses"><div class="section-head">'
@@ -2273,12 +2846,14 @@ def build_tab09(report: dict) -> str:
     transport_codes = {code: msg for code, msg in catalog.items() if code not in report_codes}
     table6a = _warn_codes_table_html(report_codes)
     table6b = _warn_codes_table_html(transport_codes)
+    note_a = f'<p class="scroll-note">Всего кодов: {len(report_codes)}.</p>' if len(report_codes) > 10 else ""
+    note_b = f'<p class="scroll-note">Всего кодов: {len(transport_codes)}.</p>' if len(transport_codes) > 10 else ""
     sec6 = (
         '<section class="section" id="sec-09-warnings"><div class="section-head">'
         '<span class="section-index">09.6</span><h2 class="section-title">Предупреждения и ошибки</h2></div>'
         '<div class="section-body">'
-        f'<h3>Коды предупреждений и ошибок отчёта (<code>WARN_*</code>, <code>ERR_*</code>)</h3>{table6a}'
-        f'<h3>Технические коды запросов к GitLab</h3>{table6b}'
+        f'<h3>Коды предупреждений и ошибок отчёта (<code>WARN_*</code>, <code>ERR_*</code>)</h3>{table6a}{note_a}'
+        f'<h3>Технические коды запросов к GitLab</h3>{table6b}{note_b}'
         f'<p class="hint">{esc(_TAB09_WARN_PARA)}</p></div></section>'
     )
 

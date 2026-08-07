@@ -1036,7 +1036,7 @@ class RunCommandTests(unittest.TestCase):
 def _build_fixture_report_and_raw():
     client = _FakeJiraClient()
     return report_data.build_combined_report_with_raw(
-        client, sprint_ids=[100], history_sprint_count=5, target_items=7, now=dt(2026, 1, 24)
+        client, sprint_ids=[100], history_sprint_count=5, now=dt(2026, 1, 24)
     )
 
 

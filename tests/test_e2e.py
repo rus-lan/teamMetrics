@@ -105,7 +105,8 @@ TOP_LEVEL_SCHEMA_V2_KEYS = frozenset(
         "schema_version", "board", "params", "warnings", "sprint_axis", "sprints", "board_kpi",
         "overview", "burndown", "heatmap", "issue_breakdown", "forecast", "people_available",
         "people_reason_ru", "people", "people_individual_jira", "engineering", "team_series",
-        "people_series", "export_tables", "glossary", "metric_defs", "risks", "labels",
+        "people_series", "export_tables", "glossary", "metric_defs", "risks",
+        "recommendations", "recommendations_empty_ru", "recommendations_intro_ru", "labels",
         "semantics_notes", "gitlab_fetch_issues",
     }
 )
@@ -173,6 +174,20 @@ def _tempdir():
             yield Path(tmp)
         finally:
             os.chdir(cwd)
+
+
+def _current_schema_fixture_path(tmp: Path) -> Path:
+    """A copy of tests/fixtures/report_v2.json (owned by the render track,
+    never edited here) with `schema_version` patched to the tool's current
+    accepted value — the fixture predates the 3.1.0 fix-release schema bump,
+    and this file only needs a report `cli.cmd_report` accepts, not that
+    exact fixture's on-disk content."""
+    fixture_path = Path(__file__).resolve().parent / "fixtures" / "report_v2.json"
+    data = json.loads(fixture_path.read_text(encoding="utf-8"))
+    data["schema_version"] = metrics_mod.SCHEMA_VERSION
+    out_path = tmp / "current_schema_fixture.json"
+    out_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return out_path
 
 
 def _run_main(argv, environ):
@@ -329,7 +344,7 @@ def _assert_schema_v2_shape(testcase: unittest.TestCase, data: dict):
     _walk(data)
 
 
-_RUN_ARGV = ["run", "--sprint-ids", str(wire.SPRINT_TARGET_ID), "--target-items", "5", "--seed", "42"]
+_RUN_ARGV = ["run", "--sprint-ids", str(wire.SPRINT_TARGET_ID), "--seed", "42"]
 
 
 def _do_run(tmp: Path, opener: FakeOpener, argv=None, environ=None):
@@ -692,8 +707,8 @@ class RunAndReportE2ETests(unittest.TestCase):
         """SPEC §H.13, second half: `report` itself is a pure function of its
         input JSON — two independent renders of the fixture must match
         byte-for-byte, zero network either time."""
-        fixture_path = Path(__file__).resolve().parent / "fixtures" / "report_v2.json"
         with _tempdir() as tmp, _forbidden_opener():
+            fixture_path = _current_schema_fixture_path(tmp)
             out1 = tmp / "r1.html"
             out2 = tmp / "r2.html"
             code1, _o1, e1 = _run_main(["report", str(fixture_path), "-o", str(out1)], environ={})
@@ -846,8 +861,8 @@ class LoggingE2ETests(unittest.TestCase):
         """SPEC task item 6: `report` with no `-o` writes the rendered HTML
         straight to stdout; logging (on stderr, if any were emitted) must
         never leak into that stream."""
-        fixture_path = Path(__file__).resolve().parent / "fixtures" / "report_v2.json"
-        with _isolated_logging(), _forbidden_opener():
+        with _tempdir() as tmp, _isolated_logging(), _forbidden_opener():
+            fixture_path = _current_schema_fixture_path(tmp)
             code, out, err = _run_main(["report", str(fixture_path)], environ={})
         self.assertEqual(code, 0, err)
         self.assertTrue(out.lstrip().startswith("<!DOCTYPE html>"), out[:200])
